@@ -26,5 +26,8 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
 plus MegaPPBox's `roms/megatouch`. Restage after every change.
 
 ## Building (Windows)
-MSYS2 UCRT64 with Qt6:
-`cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DQT=ON -DUSE_QT6=ON && cmake --build build`
+Static (the default, and what gets staged): MSYS2 UCRT64 with `qt6-static`, `libtiff`,
+`libwebp` and `libusb` installed:
+`MSYSTEM_PREFIX=C:/msys64/ucrt64 cmake -S . -B build-static -G Ninja -DCMAKE_BUILD_TYPE=Release -DQT=ON -DUSE_QT6=ON -DSTATIC_BUILD=ON && cmake --build build-static`
+A dynamic `build/` (`-DSTATIC_BUILD=OFF`) links faster while iterating; run it with
+`C:\msys64\ucrt64\bin` on PATH, or Windows loads a mismatched Qt6Core.
