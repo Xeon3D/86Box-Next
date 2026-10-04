@@ -50,6 +50,7 @@
 extern const device_t te100pc16_device;
 extern const device_t threec589d_device;
 extern const device_t pccard_sram_device;
+extern const device_t pccard_flash_device;
 
 int  pcmcia_enabled;
 int  pcmcia_card_type[PCMCIA_SOCKETS];
@@ -61,11 +62,12 @@ static const struct {
     int             network;
 } cards[] = {
     // clang-format off
-    { &device_none,       0 },
-    { &threec589d_device, 1 },
-    { &te100pc16_device,  1 },
-    { &pccard_sram_device, 0 },
-    { NULL,               0 }
+    { &device_none,         0 },
+    { &threec589d_device,   1 },
+    { &te100pc16_device,    1 },
+    { &pccard_sram_device,  0 },
+    { &pccard_flash_device, 0 },
+    { NULL,                 0 }
     // clang-format on
 };
 

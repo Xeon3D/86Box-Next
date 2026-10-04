@@ -6,7 +6,9 @@
  *             through the controller's common-memory windows.  Attribute
  *             memory holds the CIS (pccard_cis.c), which describes the RAM in
  *             its DEVICE tuple; there are no configuration registers and no
- *             I/O.  A write-protect switch, as on the real cards.
+ *             I/O.  A write-protect switch, as on the real cards: it keeps
+ *             writes from the RAM and shows on the card's WP pin, which the
+ *             socket reports.
  *
  *             The guests: Windows 9x's Card Services with SRAMMTD.VXD,
  *             DOS card services with an SRAM driver, Linux memory_cs.  The
@@ -70,6 +72,12 @@ sram_common_write(uint32_t addr, uint8_t val, void *priv)
     dev->dirty     = 1;
 }
 
+static int
+sram_write_protect(void *priv)
+{
+    return ((sram_t *) priv)->wp;
+}
+
 static void
 sram_save(sram_t *dev)
 {
@@ -114,12 +122,13 @@ sram_init(UNUSED(const device_t *info))
 
     dev->cis_len = pccard_cis_sram(dev->cis, dev->size);
     dev->pccard  = (pccard_t) {
-        .name         = "SRAM memory card",
-        .attr_read    = sram_attr_read,
-        .common_read  = sram_common_read,
-        .common_write = sram_common_write,
-        .reset        = sram_reset,
-        .priv         = dev
+        .name          = "SRAM memory card",
+        .attr_read     = sram_attr_read,
+        .common_read   = sram_common_read,
+        .common_write  = sram_common_write,
+        .reset         = sram_reset,
+        .write_protect = sram_write_protect,
+        .priv          = dev
     };
     pcmcia_insert(dev->socket, &dev->pccard);
     return dev;

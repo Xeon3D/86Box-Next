@@ -35,8 +35,11 @@
  *
  * and, for each socket, what drives a card:
  *
- *   0x01  status: card detect, battery good, power, ready
- *   0x02  power: VCC on (bit 4) and outputs enabled (bit 7) power the card
+ *   0x01  status: card detect, battery good, write protect (the card's WP
+ *         pin), power, ready
+ *   0x02  power: VCC on (bit 4) and outputs enabled (bit 7) power the card;
+ *         bits 1:0 and 3:2 put 0 V, Vcc or 12 V on Vpp1 and Vpp2 (a flash
+ *         card programs at 12 V)
  *   0x03  bits 3:0 the IRQ the card's IREQ is steered to, bit 5 I/O card,
  *         bit 6 clear = card held in RESET
  *   0x04  card status change: bit 3 card detect changed (a card went in or
@@ -107,6 +110,7 @@
 
 #define STATUS_BVD    0x03 /* BVD1/BVD2: battery good (STSCHG/SPKR idle) */
 #define STATUS_CD     0x0c /* CD1/CD2: card fully inserted               */
+#define STATUS_WP     0x10 /* the card's write-protect switch is on      */
 #define STATUS_READY  0x20
 #define STATUS_POWER  0x40
 
@@ -452,6 +456,8 @@ pcic_reg_read(pcic_t *dev, int s, int r)
                 ret |= STATUS_POWER;
             if (sock->live)
                 ret |= STATUS_READY;
+            if (sock->card->write_protect && sock->card->write_protect(sock->card->priv))
+                ret |= STATUS_WP;
             return ret;
 
         case REG_CSC:
@@ -511,6 +517,8 @@ pcic_reg_write(pcic_t *dev, int s, int r, uint8_t val)
 
         case REG_POWER:
         case REG_INTCTL:
+            if ((r == REG_POWER) && (val != dev->reg[s][r]))
+                pcic_log("PCIC: socket %c power %02X (Vpp1 %d, Vpp2 %d)\n", 'A' + s, val, val & 3, (val >> 2) & 3);
             dev->reg[s][r] = val;
             pcic_card_power_update(dev, s);
             break;
@@ -606,6 +614,28 @@ pcmcia_socket_card_name(int socket)
     if ((socket < 0) || (socket >= PCIC_SOCKETS) || !pcic_fitted[socket])
         return NULL;
     return pcic_fitted[socket]->name ? pcic_fitted[socket]->name : "PC Card";
+}
+
+/* Vpp1 (pin 0) or Vpp2 (pin 1) in tenths of a volt: the power register's
+   bits 1:0 or 3:2, 01 = Vcc, 10 = 12 V, with Vcc on. */
+int
+pcmcia_socket_vpp(int socket, int pin)
+{
+    uint8_t p;
+
+    if (!pcic_inst || (socket < 0) || (socket >= PCIC_SOCKETS))
+        return 0;
+    p = pcic_inst->reg[socket][REG_POWER];
+    if (!(p & POWER_VCC))
+        return 0;
+    switch ((p >> (pin ? 2 : 0)) & 3) {
+        case 1:
+            return 50;
+        case 2:
+            return 120;
+        default:
+            return 0;
+    }
 }
 
 int
