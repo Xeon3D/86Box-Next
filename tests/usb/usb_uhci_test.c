@@ -136,6 +136,8 @@ test_stall(void)
     CHECK(!(c & 0x00800000) && (c & 0x00400000), "STALL: inactive with the stalled bit (%08X)", c);
     CHECK(rdw(0x02) & 0x0002, "error interrupt status");
     CHECK(rd32m(QH + 4) == TD0, "queue stops at the stalled TD");
+    fake_frames(2);
+    CHECK(rd32m(QH + 4) == TD0, "and stays stopped on later frames until the driver deals with it");
     wrw(0x02, 0x0003);
 }
 
@@ -145,12 +147,21 @@ test_short_packet(void)
     td(TD0, (TD0 + 0x20) | 4, 0x20000000, USB_PID_IN, 3, 2, 8, BUF + 0x200);   /* SPD */
     td(TD0 + 0x20, 1, 0, USB_PID_IN, 3, 2, 8, BUF + 0x208);
     schedule(TD0);
+    fake.in2_calls = 0;
     fake_frames(1);
     CHECK((rd32m(TD0 + 4) & 0x7ff) == 1 && !(rd32m(TD0 + 4) & 0x00800000), "short packet: 2 bytes, done");
     CHECK(ram[BUF + 0x200] == 0xaa && ram[BUF + 0x201] == 0x55, "short packet data");
     CHECK(rd32m(QH + 4) == TD0, "short packet with SPD stops the queue");
     CHECK(rd32m(TD0 + 0x24) & 0x00800000, "the next TD is untouched");
     CHECK(rdw(0x02) & 0x0001, "short packet raises USBINT");
+    /* What a USB stick's short reply looked like: the next TD of the
+       abandoned data stage must not reach the device on any later frame
+       either, or it reads the status reply as data and the real status read
+       then waits forever. */
+    fake_frames(3);
+    CHECK(rd32m(QH + 4) == TD0, "the stopped queue is not moved on by later frames");
+    CHECK(rd32m(TD0 + 0x24) & 0x00800000, "the abandoned TD is still untouched");
+    CHECK(fake.in2_calls == 1, "only one IN reached the device (%d)", fake.in2_calls);
     wrw(0x02, 0x0003);
 }
 

@@ -40,6 +40,7 @@ typedef struct fake_dev_t {
     usbn_device_t dev;
     int           naks;       /* NAK this many IN packets on ep 0 first */
     int           resets, destroyed;
+    int           in2_calls;  /* IN packets that reached endpoint 2 */
     int           ctl_pos;
 } fake_dev_t;
 

@@ -178,6 +178,7 @@ fake_packet(usbn_device_t *d, uint8_t pid, uint8_t ep, uint8_t *buf, int len)
     if ((ep == 1) && (pid == USB_PID_OUT))
         return USBN_STALL;
     if ((ep == 2) && (pid == USB_PID_IN)) {
+        f->in2_calls++;
         buf[0] = 0xaa;
         buf[1] = 0x55;
         return 2;

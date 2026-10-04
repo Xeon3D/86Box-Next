@@ -240,8 +240,14 @@ uhci_process_td(uhci_t *dev, uint32_t td)
     usbn_device_t *d;
     int            ret;
 
+    /* An inactive TD at the head of a queue means the queue is stopped -- a
+       short packet or an error the driver has not dealt with yet -- and the
+       controller goes on to the next queue without touching it (UHCI Design
+       Guide 1.1).  Only a TD completed now moves a queue's element pointer on;
+       moving past one the driver left there would send the rest of an
+       abandoned transfer to the device. */
     if (!(ctrl & TD_ACTIVE))
-        return TD_DONE;
+        return TD_RETRY;
 
     if (ctrl & TD_ISO) {
         /* Isochronous transfers are not passed through; complete them empty
