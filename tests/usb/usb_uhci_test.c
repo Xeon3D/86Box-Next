@@ -18,9 +18,23 @@
 #include <86box/usb_next.h>
 #include "usb_test_fakes.h"
 
+/* Built once per card: UHCI_INTEL selects the Intel PIIX4 USB, else VIA. */
 extern const device_t usb_uhci_via_device;
-/* The card list names the USB 2.0 card too; this test does not link it. */
-const device_t usb_ehci_via_device = { .name = "unused", .internal_name = "usb_ehci_via" };
+extern const device_t usb_uhci_intel_device;
+#ifdef UHCI_INTEL
+#    define CARD      usb_uhci_intel_device
+#    define VEN       0x8086
+#    define DEV       0x7112
+#    define CARD_NAME "Intel"
+#else
+#    define CARD      usb_uhci_via_device
+#    define VEN       0x1106
+#    define DEV       0x3038
+#    define CARD_NAME "VIA"
+#endif
+/* The card list names the USB 2.0 cards too; this test does not link them. */
+const device_t usb_ehci_via_device   = { .name = "unused", .internal_name = "usb_ehci_via" };
+const device_t usb_ehci_intel_device = { .name = "unused", .internal_name = "usb_ehci_intel" };
 
 static fake_dev_t fake;
 
@@ -53,7 +67,9 @@ schedule(uint32_t first_td)
 static void
 test_pci_and_registers(void)
 {
-    CHECK(fake_pci_rd(0, 0, 1, fake_pci_priv) == 0x06 && fake_pci_rd(0, 1, 1, fake_pci_priv) == 0x11, "vendor is VIA");
+    uint16_t ven = fake_pci_rd(0, 0, 1, fake_pci_priv) | (fake_pci_rd(0, 1, 1, fake_pci_priv) << 8);
+    uint16_t dev = fake_pci_rd(0, 2, 1, fake_pci_priv) | (fake_pci_rd(0, 3, 1, fake_pci_priv) << 8);
+    CHECK(ven == VEN && dev == DEV, "%s identity %04X:%04X", CARD_NAME, ven, dev);
     CHECK(fake_pci_rd(0, 0x0b, 1, fake_pci_priv) == 0x0c && fake_pci_rd(0, 0x0a, 1, fake_pci_priv) == 0x03
               && fake_pci_rd(0, 0x09, 1, fake_pci_priv) == 0x00,
           "class is serial bus / USB / UHCI");
@@ -199,7 +215,7 @@ int
 main(void)
 {
     fake_dev_init(&fake, "fake", USBN_SPEED_FULL);
-    void *dev = usb_uhci_via_device.init(&usb_uhci_via_device);
+    void *dev = CARD.init(&CARD);
 
     test_pci_and_registers();
     test_connect_and_enable();
@@ -209,8 +225,8 @@ main(void)
     test_no_device();
     test_disconnect();
     test_global_reset();
-    usb_uhci_via_device.close(dev);
+    CARD.close(dev);
 
-    printf("UHCI: %d checks, %d failed\n", fake_checks, fake_failures);
+    printf("UHCI (%s): %d checks, %d failed\n", CARD_NAME, fake_checks, fake_failures);
     return fake_failures ? 1 : 0;
 }

@@ -19,7 +19,31 @@
 #include <86box/usb_next.h>
 #include "usb_test_fakes.h"
 
+/* Built once per card: EHCI_INTEL selects the Intel ICH4-style card, whose
+   EHCI is function 7; otherwise the VIA VT6202, whose EHCI is function 1. */
+#ifdef EHCI_INTEL
+extern const device_t usb_ehci_intel_device;
+#    define CARD      usb_ehci_intel_device
+#    define EFN       7
+#    define NO_FN     1
+#    define E_ID      0x8086, 0x24cd
+#    define U_ID      0x8086, 0x24c2
+#    define CARD_NAME "Intel"
+#else
 extern const device_t usb_ehci_via_device;
+#    define CARD      usb_ehci_via_device
+#    define EFN       1
+#    define NO_FN     7
+#    define E_ID      0x1106, 0x3104
+#    define U_ID      0x1106, 0x3038
+#    define CARD_NAME "VIA"
+#endif
+
+static uint16_t
+pci_id(int fn, int reg)
+{
+    return fake_pci_rd(fn, reg, 1, fake_pci_priv) | (fake_pci_rd(fn, reg + 1, 1, fake_pci_priv) << 8);
+}
 
 static fake_dev_t hs, fs;
 
@@ -66,18 +90,21 @@ qh(uint8_t addr, uint8_t ep, int maxp, uint32_t first)
 static void
 test_pci(void)
 {
-    CHECK(fake_pci_rd(1, 0, 1, fake_pci_priv) == 0x06 && fake_pci_rd(1, 2, 1, fake_pci_priv) == 0x04
-              && fake_pci_rd(1, 3, 1, fake_pci_priv) == 0x31,
-          "function 1 is the VIA VT6202 EHCI");
-    CHECK(fake_pci_rd(1, 9, 1, fake_pci_priv) == 0x20 && fake_pci_rd(1, 0x0a, 1, fake_pci_priv) == 0x03,
+    const uint16_t e_id[2] = { E_ID }, u_id[2] = { U_ID };
+    CHECK(pci_id(EFN, 0) == e_id[0] && pci_id(EFN, 2) == e_id[1], "function %d is the %s EHCI (%04X:%04X)", EFN, CARD_NAME,
+          pci_id(EFN, 0), pci_id(EFN, 2));
+    CHECK(fake_pci_rd(EFN, 9, 1, fake_pci_priv) == 0x20 && fake_pci_rd(EFN, 0x0a, 1, fake_pci_priv) == 0x03,
           "class USB, programming interface EHCI");
+    CHECK(pci_id(0, 0) == u_id[0] && pci_id(0, 2) == u_id[1], "function 0 is the %s UHCI companion (%04X:%04X)", CARD_NAME,
+          pci_id(0, 0), pci_id(0, 2));
     CHECK(fake_pci_rd(0, 9, 1, fake_pci_priv) == 0x00 && fake_pci_rd(0, 0x0e, 1, fake_pci_priv) == 0x80,
           "function 0 is the UHCI companion of a multi-function card");
-    CHECK(fake_pci_rd(2, 0, 1, fake_pci_priv) == 0xff, "no function 2");
-    CHECK(fake_pci_rd(1, 0x60, 1, fake_pci_priv) == 0x20, "SBRN says USB 2.0");
+    CHECK(fake_pci_rd(NO_FN, 0, 1, fake_pci_priv) == 0xff && fake_pci_rd(2, 0, 1, fake_pci_priv) == 0xff,
+          "no other functions");
+    CHECK(fake_pci_rd(EFN, 0x60, 1, fake_pci_priv) == 0x20, "SBRN says USB 2.0");
 
-    fake_pci_wr(1, 0x13, 1, 0xfe, fake_pci_priv);
-    fake_pci_wr(1, 0x04, 1, 0x06, fake_pci_priv);
+    fake_pci_wr(EFN, 0x13, 1, 0xfe, fake_pci_priv);
+    fake_pci_wr(EFN, 0x04, 1, 0x06, fake_pci_priv);
     CHECK(fake_mmio_base == 0xfe000000, "BAR0 maps the registers (%08X)", fake_mmio_base);
     fake_pci_wr(0, 0x21, 1, 0xe0, fake_pci_priv);
     fake_pci_wr(0, 0x04, 1, 0x05, fake_pci_priv);
@@ -224,7 +251,7 @@ main(void)
 {
     fake_dev_init(&hs, "high-speed", USBN_SPEED_HIGH);
     fake_dev_init(&fs, "full-speed", USBN_SPEED_FULL);
-    void *dev = usb_ehci_via_device.init(&usb_ehci_via_device);
+    void *dev = CARD.init(&CARD);
 
     test_pci();
     test_ownership();
@@ -232,9 +259,9 @@ main(void)
     test_short_and_stall();
     test_doorbell();
     test_unplug_and_release();
-    usb_ehci_via_device.close(dev);
+    CARD.close(dev);
     CHECK(fs.destroyed == 1, "closing the card releases what was plugged in");
 
-    printf("EHCI: %d checks, %d failed\n", fake_checks, fake_failures);
+    printf("EHCI (%s): %d checks, %d failed\n", CARD_NAME, fake_checks, fake_failures);
     return fake_failures ? 1 : 0;
 }

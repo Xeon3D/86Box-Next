@@ -3,11 +3,15 @@
  *
  *             A PCI USB 2.0 host controller card: an Enhanced Host Controller
  *             (EHCI 1.0) for high-speed devices with a UHCI companion for
- *             full- and low-speed ones, sharing two ports -- the arrangement
- *             of the VIA VT6202 USB 2.0 add-in cards (VIA's VT83C572 UHCI as
- *             function 0, the VT6202 EHCI, 1106:3104, as function 1).  Windows
- *             XP and 2000 (SP4) and Linux drive it with their own EHCI and
- *             UHCI drivers.
+ *             full- and low-speed ones, sharing two ports.  Two cards:
+ *               - VIA: the VT6202 USB 2.0 add-in card arrangement, VIA's
+ *                 VT83C572 UHCI as function 0, the VT6202 EHCI (1106:3104)
+ *                 as function 1;
+ *               - Intel: laid out like the ICH4 southbridge, its UHCI
+ *                 (82801DB, 8086:24C2) as function 0 and its EHCI (8086:24CD)
+ *                 as function 7, where Intel puts it.
+ *             Windows XP and 2000 (SP4) and Linux drive them with their own
+ *             EHCI and UHCI drivers; NUSB does on Windows 98 SE.
  *
  *             Port ownership is the EHCI way: until the guest's EHCI driver
  *             sets CONFIGFLAG every port belongs to the companion; after it,
@@ -133,7 +137,21 @@ ehci_log(const char *fmt, ...)
 
 #define XFER_MAX       20480
 
+/* A card: who its two functions say they are, and where the EHCI one sits. */
+typedef struct ehci_variant_t {
+    usbn_pci_id_t uhci, ehci;
+    int           ehci_func;
+} ehci_variant_t;
+
+static const ehci_variant_t ehci_variants[] = {
+    /* VIA VT6202 */
+    { { 0x1106, 0x3038, 0x1a, 0x1106, 0x3038 }, { 0x1106, 0x3104, 0x63, 0x1106, 0x3104 }, 1 },
+    /* Intel ICH4 (82801DB) */
+    { { 0x8086, 0x24c2, 0x02, 0x0000, 0x0000 }, { 0x8086, 0x24cd, 0x02, 0x0000, 0x0000 }, 7 },
+};
+
 typedef struct ehci_t {
+    const ehci_variant_t *var;
     uint8_t       pci_conf[256];
     uint8_t       slot;
     uint8_t       irq_state;
@@ -702,7 +720,7 @@ ehci_card_read(int func, int addr, int len, void *priv)
 
     if (func == 0)
         return uhci_pci_read(0, addr, len, dev->uhci);
-    if (func == 1)
+    if (func == dev->var->ehci_func)
         return dev->pci_conf[addr & 0xff];
     return 0xff;
 }
@@ -716,7 +734,7 @@ ehci_card_write(int func, int addr, int len, uint8_t val, void *priv)
         uhci_pci_write(0, addr, len, val, dev->uhci);
         return;
     }
-    if (func != 1)
+    if (func != dev->var->ehci_func)
         return;
 
     switch (addr) {
@@ -749,20 +767,25 @@ ehci_card_write(int func, int addr, int len, uint8_t val, void *priv)
 static void
 ehci_pci_init_conf(ehci_t *dev)
 {
-    uint8_t *c = dev->pci_conf;
+    const usbn_pci_id_t *id = &dev->var->ehci;
+    uint8_t             *c  = dev->pci_conf;
 
     memset(c, 0, sizeof(dev->pci_conf));
-    c[0x00] = 0x06; c[0x01] = 0x11;   /* VIA */
-    c[0x02] = 0x04; c[0x03] = 0x31;   /* VT6202 USB 2.0 */
+    c[0x00] = id->vendor & 0xff;
+    c[0x01] = id->vendor >> 8;
+    c[0x02] = id->device & 0xff;
+    c[0x03] = id->device >> 8;
     c[0x06] = 0x10; c[0x07] = 0x02;
-    c[0x08] = 0x63;                   /* revision */
+    c[0x08] = id->revision;
     c[0x09] = 0x20;                   /* prog-if: EHCI */
     c[0x0a] = 0x03;                   /* USB */
     c[0x0b] = 0x0c;                   /* serial bus controller */
     c[0x0d] = 0x16;
     c[0x0e] = 0x80;
-    c[0x2c] = 0x06; c[0x2d] = 0x11;
-    c[0x2e] = 0x04; c[0x2f] = 0x31;
+    c[0x2c] = id->sub_vendor & 0xff;
+    c[0x2d] = id->sub_vendor >> 8;
+    c[0x2e] = id->sub_device & 0xff;
+    c[0x2f] = id->sub_device >> 8;
     c[0x3d] = 0x02;                   /* INTB# (the companion has INTA#) */
     c[0x60] = 0x20;                   /* SBRN: USB 2.0 */
     c[0x61] = 0x20;                   /* FLADJ default */
@@ -771,13 +794,14 @@ ehci_pci_init_conf(ehci_t *dev)
 /* --------------------------------------------------------- the device --- */
 
 static void *
-ehci_init(UNUSED(const device_t *info))
+ehci_init(const device_t *info)
 {
     ehci_t *dev = calloc(1, sizeof(ehci_t));
 
+    dev->var = &ehci_variants[info->local];
     ehci_pci_init_conf(dev);
     pci_add_card(PCI_ADD_NORMAL, ehci_card_read, ehci_card_write, dev, &dev->slot);
-    dev->uhci = uhci_companion_create(&dev->slot);
+    dev->uhci = uhci_companion_create(&dev->slot, &dev->var->uhci);
     mem_mapping_add(&dev->mmio, 0, 0, ehci_readb, ehci_readw, ehci_readl, ehci_writeb, ehci_writew, ehci_writel,
                     NULL, MEM_MAPPING_EXTERNAL, dev);
     mem_mapping_disable(&dev->mmio);
@@ -816,6 +840,20 @@ const device_t usb_ehci_via_device = {
     .internal_name = "usb_ehci_via",
     .flags         = DEVICE_PCI,
     .local         = 0,
+    .init          = ehci_init,
+    .close         = ehci_close,
+    .reset         = ehci_reset,
+    .available     = NULL,
+    .speed_changed = NULL,
+    .force_redraw  = NULL,
+    .config        = NULL
+};
+
+const device_t usb_ehci_intel_device = {
+    .name          = "Intel 82801DB (ICH4) USB 2.0 Host Controller (EHCI + UHCI, PCI)",
+    .internal_name = "usb_ehci_intel",
+    .flags         = DEVICE_PCI,
+    .local         = 1,
     .init          = ehci_init,
     .close         = ehci_close,
     .reset         = ehci_reset,

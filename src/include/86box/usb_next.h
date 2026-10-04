@@ -85,7 +85,15 @@ extern const char *usbn_port_name(int port, char *buf, int len);
    EHCI card, raises INTA on the card's slot, and is told which of the shared
    ports it currently owns. */
 typedef struct uhci_t uhci_t;
-extern uhci_t *uhci_companion_create(uint8_t *card_slot);
+
+/* Who a controller says it is on the PCI bus. */
+typedef struct usbn_pci_id_t {
+    uint16_t vendor, device;
+    uint8_t  revision;
+    uint16_t sub_vendor, sub_device;
+} usbn_pci_id_t;
+
+extern uhci_t *uhci_companion_create(uint8_t *card_slot, const usbn_pci_id_t *id);
 extern void    uhci_companion_close(uhci_t *dev);
 extern void    uhci_companion_reset(uhci_t *dev);
 extern void    uhci_route_port(uhci_t *dev, int port, usbn_device_t *d);   /* NULL: not ours now */

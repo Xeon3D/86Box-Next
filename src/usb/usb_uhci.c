@@ -4,8 +4,9 @@
  *             A PCI USB 1.1 host controller: Universal Host Controller
  *             Interface (UHCI, Intel's design, revision 1.1), presented as
  *             the VIA VT83C572 -- the UHCI function VIA used in its
- *             southbridges and on add-in cards, which Windows 98 SE, ME, 2000
- *             and XP and Linux all drive with their built-in UHCI drivers.
+ *             southbridges and on add-in cards -- or as the Intel PIIX4 USB
+ *             function (82371AB, 8086:7112).  Windows 98 SE, ME, 2000 and XP
+ *             and Linux drive both with their built-in UHCI drivers.
  *
  *             Two root-hub ports.  The schedule (frame list, queue heads,
  *             transfer descriptors) is walked once per emulated millisecond.
@@ -640,26 +641,38 @@ uhci_pci_write(int func, int addr, UNUSED(int len), uint8_t val, void *priv)
     }
 }
 
+/* The standalone cards' identities, by device_t .local. */
+static const usbn_pci_id_t uhci_ids[] = {
+    { 0x1106, 0x3038, 0x1a, 0x1106, 0x3038 },   /* VIA VT83C572                  */
+    { 0x8086, 0x7112, 0x01, 0x0000, 0x0000 },   /* Intel 82371AB/EB (PIIX4) USB  */
+};
+
 static void
-uhci_pci_init_conf(uhci_t *dev)
+uhci_pci_init_conf(uhci_t *dev, const usbn_pci_id_t *id)
 {
     uint8_t *c = dev->pci_conf;
 
     memset(c, 0, sizeof(dev->pci_conf));
-    c[0x00] = 0x06; c[0x01] = 0x11;   /* VIA */
-    c[0x02] = 0x38; c[0x03] = 0x30;   /* VT83C572 USB */
+    c[0x00] = id->vendor & 0xff;
+    c[0x01] = id->vendor >> 8;
+    c[0x02] = id->device & 0xff;
+    c[0x03] = id->device >> 8;
     c[0x06] = 0x00; c[0x07] = 0x02;   /* medium DEVSEL */
-    c[0x08] = 0x1a;                   /* revision */
+    c[0x08] = id->revision;
     c[0x09] = 0x00;                   /* prog-if: UHCI */
     c[0x0a] = 0x03;                   /* USB */
     c[0x0b] = 0x0c;                   /* serial bus controller */
     c[0x0d] = 0x16;
     c[0x20] = 0x01;                   /* BAR4: I/O, 32 bytes */
-    c[0x2c] = 0x06; c[0x2d] = 0x11;   /* subsystem: VIA */
-    c[0x2e] = 0x38; c[0x2f] = 0x30;
+    c[0x2c] = id->sub_vendor & 0xff;
+    c[0x2d] = id->sub_vendor >> 8;
+    c[0x2e] = id->sub_device & 0xff;
+    c[0x2f] = id->sub_device >> 8;
     c[0x3d] = 0x01;                   /* INTA# */
-    c[0x40] = 0x40;
-    c[0x41] = 0x10;
+    if (id->vendor == 0x1106) {       /* VIA's own configuration registers */
+        c[0x40] = 0x40;
+        c[0x41] = 0x10;
+    }
     c[0x60] = 0x10;                   /* SBRN: USB 1.0 / 1.1 */
     c[0xc1] = 0x20;                   /* LEGSUP: PIRQ enable */
 }
@@ -681,11 +694,11 @@ uhci_root_disconnect(void *priv, int port)
 static const usbn_root_ops_t uhci_root_ops = { uhci_root_connect, uhci_root_disconnect };
 
 static uhci_t *
-uhci_core_create(void)
+uhci_core_create(const usbn_pci_id_t *id)
 {
     uhci_t *dev = calloc(1, sizeof(uhci_t));
 
-    uhci_pci_init_conf(dev);
+    uhci_pci_init_conf(dev, id);
     dev->slotp = &dev->pci_slot;
     uhci_reset_regs(dev);
     timer_add(&dev->frame_timer, uhci_frame, dev, 0);
@@ -694,9 +707,9 @@ uhci_core_create(void)
 }
 
 static void *
-uhci_init(UNUSED(const device_t *info))
+uhci_init(const device_t *info)
 {
-    uhci_t *dev = uhci_core_create();
+    uhci_t *dev = uhci_core_create(&uhci_ids[info->local]);
 
     pci_add_card(PCI_ADD_NORMAL, uhci_pci_read, uhci_pci_write, dev, &dev->pci_slot);
     usbn_set_root(&uhci_root_ops, dev, 0);
@@ -731,12 +744,26 @@ const device_t usb_uhci_via_device = {
     .config        = NULL
 };
 
+const device_t usb_uhci_intel_device = {
+    .name          = "Intel 82371AB/EB (PIIX4) USB 1.1 Host Controller (UHCI, PCI)",
+    .internal_name = "usb_uhci_intel",
+    .flags         = DEVICE_PCI,
+    .local         = 1,
+    .init          = uhci_init,
+    .close         = uhci_close,
+    .reset         = uhci_reset,
+    .available     = NULL,
+    .speed_changed = NULL,
+    .force_redraw  = NULL,
+    .config        = NULL
+};
+
 /* ------------------------------------------------- as an EHCI companion --- */
 
 uhci_t *
-uhci_companion_create(uint8_t *card_slot)
+uhci_companion_create(uint8_t *card_slot, const usbn_pci_id_t *id)
 {
-    uhci_t *dev = uhci_core_create();
+    uhci_t *dev = uhci_core_create(id);
 
     dev->companion      = 1;
     dev->slotp          = card_slot;
@@ -771,11 +798,14 @@ uhci_route_port(uhci_t *dev, int port, usbn_device_t *d)
 /* -------------------------------------------------------- the card list --- */
 
 extern const device_t usb_ehci_via_device;
+extern const device_t usb_ehci_intel_device;
 
 static const device_t *usb_cards[] = {
     &device_none,
     &usb_uhci_via_device,
+    &usb_uhci_intel_device,
     &usb_ehci_via_device,
+    &usb_ehci_intel_device,
     NULL
 };
 
