@@ -188,7 +188,8 @@ Run 1 (build 56, blank card) and run 3 (build 57, blank card, power log) behave 
 
 ### Code state
 
-- Nothing committed. `Latest` was restaged on 2026-10-05 with **build 59** (the normal
+- Committed on branch `pcmcia-flash-card` (a5a2e2f46, not pushed, not merged into
+  `master`). `Latest` was restaged on 2026-10-05 with **build 59** (the normal
   build of this work: flash card, WP pin, Vpp; logs compiled out). Builds 56-58 were trace
   builds for `pcictest` only. The sources
   hold the changes listed above plus a `pcic_log` line for power-register writes (compiled
