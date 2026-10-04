@@ -11,15 +11,73 @@
  *             Released under the GNU General Public License version 2 or
  *             later.  See COPYING for more information.
  */
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <86box/86box.h>
+#include <86box/path.h>
+#include <86box/plat.h>
 #include <86box/thread.h>
 #include <86box/usb_next.h>
 
 char usbn_port_cfg[USBN_PORTS][16];
+
+/* ------------------------------------------------------------ the trace --- */
+
+int             usbn_trace_on;
+uint32_t        usbn_frame_count;
+static FILE    *trace_fp;
+static uint32_t trace_t0;
+static mutex_t *trace_lock;
+
+uint32_t
+usbn_ms(void)
+{
+    return plat_get_ticks();
+}
+
+void
+usbn_trace_enable(int on)
+{
+    if (trace_lock == NULL)
+        trace_lock = thread_create_mutex();
+    thread_wait_mutex(trace_lock);
+    if (on && !trace_fp) {
+        char path[1024];
+        path_append_filename(path, usr_path, "usb_trace.txt");
+        trace_fp = plat_fopen(path, "a");
+        trace_t0 = plat_get_ticks();
+        if (trace_fp)
+            fprintf(trace_fp, "\n=== USB trace started ===   time: real seconds since start | f = emulated 1 ms frame\n");
+    } else if (!on && trace_fp) {
+        fprintf(trace_fp, "=== USB trace stopped ===\n");
+        fclose(trace_fp);
+        trace_fp = NULL;
+    }
+    usbn_trace_on = (trace_fp != NULL);
+    thread_release_mutex(trace_lock);
+}
+
+void
+usbn_trace(const char *fmt, ...)
+{
+    va_list ap;
+
+    if (!usbn_trace_on)
+        return;
+    thread_wait_mutex(trace_lock);
+    if (trace_fp) {
+        fprintf(trace_fp, "%9.3f f%-8u ", (plat_get_ticks() - trace_t0) / 1000.0, usbn_frame_count);
+        va_start(ap, fmt);
+        vfprintf(trace_fp, fmt, ap);
+        va_end(ap);
+        fputc('\n', trace_fp);
+        fflush(trace_fp);
+    }
+    thread_release_mutex(trace_lock);
+}
 
 static mutex_t              *lock;
 static usbn_device_t        *devs[USBN_PORTS];    /* plugged in, emulation side   */
@@ -62,6 +120,10 @@ usbn_set_root(const usbn_root_ops_t *ops, void *priv, int high_speed)
     root_priv       = priv;
     root_high_speed = high_speed;
     bus_unlock();
+
+    if (ops && getenv("BOX86NEXT_USB_TRACE") && !usbn_trace_on)
+        usbn_trace_enable(1);
+    usbn_trace(ops ? "USB controller fitted (%s)" : "USB controller removed", high_speed ? "USB 2.0" : "USB 1.1");
 }
 
 int
@@ -88,6 +150,7 @@ usbn_apply(void)
 {
     if (root == NULL)
         return;
+    usbn_frame_count++;
     bus_lock();
     for (int p = 0; p < USBN_PORTS; p++) {
         if (unplug[p]) {
@@ -97,6 +160,7 @@ usbn_apply(void)
                 root->disconnect(root_priv, p);
                 devs[p] = NULL;
                 pclog("USB: %s unplugged from port %d\n", d->name, p + 1);
+                usbn_trace("port %d: %s unplugged", p + 1, d->name);
                 if (d->destroy)
                     d->destroy(d);
             }
@@ -105,6 +169,9 @@ usbn_apply(void)
             devs[p] = plug[p];
             plug[p] = NULL;
             pclog("USB: %s plugged into port %d\n", devs[p]->name, p + 1);
+            usbn_trace("port %d: %s plugged in (%s speed%s)", p + 1, devs[p]->name,
+                       (devs[p]->speed == USBN_SPEED_HIGH) ? "high" : ((devs[p]->speed == USBN_SPEED_LOW) ? "low" : "full"),
+                       root_high_speed ? "" : ", on a USB 1.1 controller");
             root->connect(root_priv, p, devs[p]);
         }
         if (devs[p] && devs[p]->frame)

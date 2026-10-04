@@ -92,6 +92,16 @@ extern void    uhci_route_port(uhci_t *dev, int port, usbn_device_t *d);   /* NU
 extern uint8_t uhci_pci_read(int func, int addr, int len, void *priv);
 extern void    uhci_pci_write(int func, int addr, int len, uint8_t val, void *priv);
 
+/* ---- the USB activity trace (usb_bus.c) ----
+   Off unless switched on (the USB menu, or BOX86NEXT_USB_TRACE=1): port events,
+   control requests and transfers, each with real time and emulated frame,
+   written to usb_trace.txt beside the machine's 86box.cfg. */
+extern int      usbn_trace_on;
+extern uint32_t usbn_frame_count;
+extern void     usbn_trace_enable(int on);
+extern void     usbn_trace(const char *fmt, ...);
+extern uint32_t usbn_ms(void);     /* real time, milliseconds */
+
 /* ---- a high-speed device at full speed (usb_speed.c) ---- */
 extern int  usbn_fs_maxp(int type, int hs_maxp);
 extern void usbn_config_to_full_speed(uint8_t *desc, int len);

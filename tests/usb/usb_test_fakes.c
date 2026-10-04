@@ -131,6 +131,10 @@ fake_frames(int n)
 }
 
 /* ---- the rest ---- */
+char     usr_path[1024];
+uint32_t plat_get_ticks(void) { return 0; }
+FILE    *plat_fopen(const char *p, const char *m) { (void) p; (void) m; return NULL; }
+void     path_append_filename(char *dest, const char *s1, const char *s2) { snprintf(dest, 1024, "%s/%s", s1, s2); }
 mutex_t *thread_create_mutex(void) { return (mutex_t *) 1; }
 int      thread_wait_mutex(mutex_t *m) { (void) m; return 1; }
 int      thread_release_mutex(mutex_t *m) { (void) m; return 1; }

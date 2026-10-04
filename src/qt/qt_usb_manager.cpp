@@ -297,6 +297,11 @@ UsbManager::buildMenu()
             config_set_int((char *) "USB", (char *) "ask_on_plug", 0);
         config_save();
     });
+    auto *trace = menu->addAction(tr("&Log USB activity (usb_trace.txt)"));
+    trace->setCheckable(true);
+    trace->setChecked(usbn_trace_on);
+    trace->setToolTip(tr("Writes every USB request and transfer, with timings, to usb_trace.txt next to the machine's 86box.cfg."));
+    connect(trace, &QAction::toggled, this, [](bool on) { usbn_trace_enable(on); });
     auto *forget = menu->addAction(tr("&Forget remembered choices"));
     forget->setEnabled(config_get_string((char *) "USB", (char *) "remember", (char *) "")[0] != ' ');
     connect(forget, &QAction::triggered, this, []() {

@@ -257,6 +257,7 @@ uhci_process_td(uhci_t *dev, uint32_t td)
 
     d = uhci_find_device(dev, addr);
     if (d == NULL) {
+        usbn_trace("UHCI: no device at address %d (pid %02X ep %d): timeout", addr, pid, ep);
         /* Nobody answered: a timeout.  Real hardware retries up to C_ERR
            times; the device is not going to appear, so give up at once. */
         ctrl = (ctrl & ~(TD_ACTIVE | TD_CERR)) | TD_CRCTO;
@@ -510,7 +511,12 @@ uhci_writew(uint16_t addr, uint16_t val, void *priv)
             p = ((addr & 0x1e) - REG_PORTSC1) >> 1;
             /* Reset ends on the 1 -> 0 transition of PR: the device is reset
                and back at address 0. */
+            if (!(dev->portsc[p] & PORT_PR) && (val & PORT_PR))
+                usbn_trace("UHCI: port %d reset begins", p + 1);
+            if ((dev->portsc[p] & PORT_PED) != (val & PORT_PED))
+                usbn_trace("UHCI: port %d %s", p + 1, (val & PORT_PED) ? "enabled" : "disabled");
             if ((dev->portsc[p] & PORT_PR) && !(val & PORT_PR) && dev->dev[p]) {
+                usbn_trace("UHCI: port %d reset ends", p + 1);
                 dev->dev[p]->addr = 0;
                 if (dev->dev[p]->reset)
                     dev->dev[p]->reset(dev->dev[p]);

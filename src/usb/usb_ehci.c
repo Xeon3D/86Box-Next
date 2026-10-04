@@ -300,6 +300,7 @@ ehci_exec(ehci_t *dev, uint32_t qh)
 
     d = ehci_find_device(dev, addr);
     if (d == NULL) {
+        usbn_trace("EHCI: no device at address %d (ep %d): transaction error", addr, ep);
         token = (token & ~TOK_ACTIVE) | TOK_HALTED | TOK_XACTERR;
         wr32(qh + 0x18, token);
         wr32(qtd + 8, token);
@@ -555,12 +556,14 @@ ehci_write_portsc(ehci_t *dev, int p, uint32_t val)
     v = (v & ~(PORT_SUSP | PORT_FPR | 0x007fc000)) | (val & (PORT_SUSP | PORT_FPR | 0x007fc000));
 
     if ((val & PORT_PR) && !(old & PORT_PR)) {
+        usbn_trace("EHCI: port %d reset begins", p + 1);
         v |= PORT_PR;
         v &= ~PORT_PED;
     } else if (!(val & PORT_PR) && (old & PORT_PR)) {
         /* Reset over: a high-speed device comes out enabled; a full-speed
            one stays disabled, and the driver hands it to the companion. */
         v &= ~PORT_PR;
+        usbn_trace("EHCI: port %d reset ends", p + 1);
         usbn_device_t *d = dev->dev[p];
         if (d && (v & PORT_CCS)) {
             d->addr = 0;
@@ -573,6 +576,7 @@ ehci_write_portsc(ehci_t *dev, int p, uint32_t val)
 
     dev->portsc[p] = (v & ~PORT_PO) | (val & PORT_PO) | PORT_PP;
     if ((old ^ dev->portsc[p]) & PORT_PO) {
+        usbn_trace("EHCI: port %d handed to %s", p + 1, (dev->portsc[p] & PORT_PO) ? "the companion" : "EHCI");
         dev->portsc[p] &= ~PORT_PED;
         ehci_route(dev, p);
     }

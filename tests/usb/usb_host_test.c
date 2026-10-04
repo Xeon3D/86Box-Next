@@ -42,6 +42,10 @@ int        thread_wait_mutex(mutex_t *m) { (void) m; return 1; }
 int        thread_release_mutex(mutex_t *m) { (void) m; return 1; }
 void       plat_delay_ms(uint32_t ms) { (void) ms; }
 int        usbn_bus_high_speed(void) { return 0; }
+int        usbn_trace_on;
+uint32_t   usbn_frame_count;
+void       usbn_trace(const char *fmt, ...) { (void) fmt; }
+uint32_t   usbn_ms(void) { return 0; }
 
 /* ------------------------------------------------------- the fake device */
 
@@ -111,6 +115,7 @@ int            libusb_set_auto_detach_kernel_driver(libusb_device_handle *h, int
 int            libusb_claim_interface(libusb_device_handle *h, int i) { (void) h; (void) i; return 0; }
 int            libusb_release_interface(libusb_device_handle *h, int i) { (void) h; (void) i; return 0; }
 int            libusb_set_configuration(libusb_device_handle *h, int c) { (void) h; (void) c; return 0; }
+int            libusb_get_configuration(libusb_device_handle *h, int *c) { (void) h; *c = 1; return 0; }
 int            libusb_set_interface_alt_setting(libusb_device_handle *h, int i, int a) { (void) h; (void) i; (void) a; return 0; }
 int            libusb_clear_halt(libusb_device_handle *h, unsigned char e) { (void) h; (void) e; return 0; }
 int            libusb_get_string_descriptor_ascii(libusb_device_handle *h, uint8_t i, unsigned char *s, int n) { (void) h; (void) i; (void) s; (void) n; return 0; }
