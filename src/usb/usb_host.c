@@ -98,15 +98,29 @@ host_log(const char *fmt, ...)
 #define CTL_MAX      4096
 #define DATA_MAX     20480    /* an EHCI qTD: five 4 KB pages */
 
+/* One pipe direction's transfer, as the guest side sees it.  The libusb
+   transfer in flight has its own buffer (sub_t below); the callback copies an
+   answer in here and sets state last, with release ordering, so the
+   emulation thread that reads state with acquire ordering sees the data. */
 typedef struct xfer_t {
-    struct libusb_transfer *t;
+    struct libusb_transfer *t;          /* in flight, or NULL */
     uint32_t                t_submit;   /* trace: real ms and frame at submission */
     uint32_t                f_submit;
-    volatile int            state;
+    int                     state;      /* XSTATE() to read across threads */
     int                     status;
     int                     actual;
     uint8_t                 buf[DATA_MAX + 8];
 } xfer_t;
+
+#define XSTATE(x) __atomic_load_n(&(x)->state, __ATOMIC_ACQUIRE)
+
+/* A transfer in flight.  Cancelling one does not wait for libusb to finish
+   with it: the guest side lets go (x = NULL) and carries on, and when the
+   transfer does come back its callback only frees it. */
+typedef struct sub_t {
+    struct host_dev_t *hd;
+    xfer_t            *x;               /* NULL: abandoned */
+} sub_t;
 
 typedef struct host_dev_t {
     usbn_device_t         dev;
@@ -128,6 +142,7 @@ typedef struct host_dev_t {
     xfer_t  ctl;
 
     xfer_t in[16], out[16];
+    int    inflight;           /* libusb transfers not yet called back, abandoned ones too */
 
     /* A high-speed device shown at full speed (dev.fs_view): the guest's
        full-speed packets, gathered into or cut out of high-speed ones. */
@@ -144,6 +159,7 @@ static thread_t       *event_thread;
 static volatile int    event_run;
 static int             open_count;
 static mutex_t        *ctx_lock;
+static mutex_t        *xfer_lock;      /* callbacks against abandoning */
 
 /* --------------------------------------------------------- the context --- */
 
@@ -159,6 +175,8 @@ host_event_loop(UNUSED(void *priv))
 static int
 host_ctx_init(void)
 {
+    if (xfer_lock == NULL)
+        xfer_lock = thread_create_mutex();
     if (ctx)
         return 1;
     if (libusb_init(&ctx) != 0) {
@@ -434,16 +452,30 @@ xfer_status_name(int s)
 static void LIBUSB_CALL
 host_xfer_cb(struct libusb_transfer *t)
 {
-    xfer_t *x = (xfer_t *) t->user_data;
+    sub_t    *sub = (sub_t *) t->user_data;
+    const int ctl = (t->type == LIBUSB_TRANSFER_TYPE_CONTROL);
 
+    thread_wait_mutex(xfer_lock);
+    xfer_t *x = sub->x;
     if (usbn_trace_on)
-        usbn_trace("  done   ep %02X: %s, %d of %d bytes, %u ms, %u frames", t->endpoint, xfer_status_name(t->status),
-                   t->actual_length, (t->type == LIBUSB_TRANSFER_TYPE_CONTROL) ? t->length - 8 : t->length,
-                   usbn_ms() - x->t_submit, usbn_frame_count - x->f_submit);
+        usbn_trace("  done   ep %02X: %s, %d of %d bytes, %u ms, %u frames%s", t->endpoint, xfer_status_name(t->status),
+                   t->actual_length, ctl ? t->length - 8 : t->length, x ? usbn_ms() - x->t_submit : 0,
+                   x ? usbn_frame_count - x->f_submit : 0, x ? "" : " (abandoned)");
+    if (x) {
+        int n = t->actual_length;
+        if (n > 0)
+            memcpy(x->buf + (ctl ? 8 : 0), t->buffer + (ctl ? 8 : 0), n);
+        x->status = t->status;
+        x->actual = n;
+        x->t      = NULL;
+        __atomic_store_n(&x->state, XFER_DONE, __ATOMIC_RELEASE);
+    }
+    sub->hd->inflight--;
+    thread_release_mutex(xfer_lock);
 
-    x->status = t->status;
-    x->actual = t->actual_length;
-    x->state  = XFER_DONE;
+    free(t->buffer);
+    free(sub);
+    libusb_free_transfer(t);
 }
 
 static int
@@ -463,70 +495,117 @@ host_status_to_ret(int status)
     }
 }
 
+/* Let go of a pipe's transfer without waiting for it. */
 static void
 host_cancel(xfer_t *x)
 {
-    if (x->t && (x->state == XFER_PENDING))
+    thread_wait_mutex(xfer_lock);
+    if (x->t) {
+        ((sub_t *) x->t->user_data)->x = NULL;
         libusb_cancel_transfer(x->t);
+        x->t = NULL;
+    }
+    x->state = XFER_IDLE;
+    thread_release_mutex(xfer_lock);
+}
+
+/* An endpoint starts over (CLEAR_FEATURE(HALT), a new interface or
+   configuration, a reset): nothing in flight, nothing buffered. */
+static void
+host_reset_endpoint(host_dev_t *hd, uint8_t epaddr)
+{
+    const int i = epaddr & 0x0f;
+
+    if (epaddr & 0x80) {
+        host_cancel(&hd->in[i]);
+        hd->in_len[i] = hd->in_pos[i] = hd->in_zlp[i] = 0;
+    } else {
+        host_cancel(&hd->out[i]);
+        hd->out_acc[i] = hd->out_idle[i] = 0;
+    }
 }
 
 static void
-host_wait_idle(host_dev_t *hd)
+host_reset_endpoints(host_dev_t *hd)
 {
-    uint32_t t0 = usbn_ms();
-
-    /* Cancelled transfers still call back; wait for them (the event thread
-       runs the callbacks), at most a second. */
-    for (int tries = 0; tries < 100; tries++) {
-        int busy = (hd->ctl.state == XFER_PENDING);
-        for (int e = 0; e < 16; e++)
-            busy |= (hd->in[e].state == XFER_PENDING) || (hd->out[e].state == XFER_PENDING);
-        if (!busy) {
-            if (tries)
-                usbn_trace("  waited %u ms for cancelled transfers", usbn_ms() - t0);
-            return;
-        }
-        plat_delay_ms(10);
+    for (int e = 1; e < 16; e++) {
+        host_reset_endpoint(hd, e);
+        host_reset_endpoint(hd, e | 0x80);
     }
-    usbn_trace("  gave up after %u ms waiting for cancelled transfers", usbn_ms() - t0);
 }
 
 static void
 host_cancel_all(host_dev_t *hd)
 {
     host_cancel(&hd->ctl);
-    for (int e = 0; e < 16; e++) {
-        host_cancel(&hd->in[e]);
-        host_cancel(&hd->out[e]);
-    }
-    host_wait_idle(hd);
-    hd->ctl.state = XFER_IDLE;
-    for (int e = 0; e < 16; e++) {
-        hd->in[e].state = hd->out[e].state = XFER_IDLE;
-        hd->out_acc[e] = hd->out_idle[e] = hd->in_len[e] = hd->in_pos[e] = hd->in_zlp[e] = 0;
-    }
+    host_reset_endpoints(hd);
     hd->ctl_active = 0;
+}
+
+/* Only for closing the device: what was abandoned must have come back before
+   the handle goes, at most a second. */
+static void
+host_wait_inflight(host_dev_t *hd)
+{
+    uint32_t t0 = usbn_ms();
+
+    for (int tries = 0; tries < 100; tries++) {
+        if (__atomic_load_n(&hd->inflight, __ATOMIC_ACQUIRE) <= 0)
+            return;
+        plat_delay_ms(10);
+    }
+    usbn_trace("  gave up after %u ms waiting for %d transfer(s)", usbn_ms() - t0, hd->inflight);
+}
+
+/* Submit a transfer with its own copy of what goes out. */
+static int
+host_submit_raw(host_dev_t *hd, xfer_t *x, struct libusb_transfer *t, uint8_t *data)
+{
+    sub_t *sub = malloc(sizeof(sub_t));
+
+    sub->hd      = hd;
+    sub->x       = x;
+    t->user_data = sub;
+
+    thread_wait_mutex(xfer_lock);
+    x->t        = t;
+    x->state    = XFER_PENDING;
+    x->t_submit = usbn_ms();
+    x->f_submit = usbn_frame_count;
+    hd->inflight++;
+    thread_release_mutex(xfer_lock);
+
+    if (libusb_submit_transfer(t) != 0) {
+        thread_wait_mutex(xfer_lock);
+        x->t     = NULL;
+        x->state = XFER_IDLE;
+        hd->inflight--;
+        thread_release_mutex(xfer_lock);
+        free(sub);
+        free(data);
+        libusb_free_transfer(t);
+        return 0;
+    }
+    return 1;
 }
 
 static int
 host_submit(host_dev_t *hd, xfer_t *x, uint8_t ep, int len)
 {
-    int type = hd->ep_type[(ep & 0x0f) | ((ep & 0x80) ? 16 : 0)];
+    int                     type = hd->ep_type[(ep & 0x0f) | ((ep & 0x80) ? 16 : 0)];
+    uint8_t                *data = malloc(len ? len : 1);
+    struct libusb_transfer *t    = libusb_alloc_transfer(0);
 
-    if (!x->t)
-        x->t = libusb_alloc_transfer(0);
+    if (!(ep & 0x80))
+        memcpy(data, x->buf, len);
     if (type == LIBUSB_TRANSFER_TYPE_INTERRUPT)
-        libusb_fill_interrupt_transfer(x->t, hd->h, ep, x->buf, len, host_xfer_cb, x, 0);
+        libusb_fill_interrupt_transfer(t, hd->h, ep, data, len, host_xfer_cb, NULL, 0);
     else
-        libusb_fill_bulk_transfer(x->t, hd->h, ep, x->buf, len, host_xfer_cb, x, 0);
-    x->state    = XFER_PENDING;
-    x->t_submit = usbn_ms();
-    x->f_submit = usbn_frame_count;
+        libusb_fill_bulk_transfer(t, hd->h, ep, data, len, host_xfer_cb, NULL, 0);
     if (usbn_trace_on)
         usbn_trace("  submit ep %02X: %s %d bytes", ep, (type == LIBUSB_TRANSFER_TYPE_INTERRUPT) ? "interrupt" : "bulk", len);
-    if (libusb_submit_transfer(x->t) != 0) {
+    if (!host_submit_raw(hd, x, t, data)) {
         usbn_trace("  submit ep %02X FAILED", ep);
-        x->state = XFER_IDLE;
         return 0;
     }
     return 1;
@@ -535,20 +614,15 @@ host_submit(host_dev_t *hd, xfer_t *x, uint8_t ep, int len)
 static int
 host_submit_control(host_dev_t *hd)
 {
-    xfer_t *x = &hd->ctl;
+    uint8_t                *data = malloc(8 + hd->ctl_len);
+    struct libusb_transfer *t    = libusb_alloc_transfer(0);
 
-    if (!x->t)
-        x->t = libusb_alloc_transfer(0);
-    memcpy(x->buf, hd->setup, 8);
+    memcpy(data, hd->setup, 8);
     if (!hd->ctl_in && hd->ctl_len)
-        memcpy(x->buf + 8, hd->ctl_out, hd->ctl_len);
-    libusb_fill_control_transfer(x->t, hd->h, x->buf, host_xfer_cb, x, 5000);
-    x->state    = XFER_PENDING;
-    x->t_submit = usbn_ms();
-    x->f_submit = usbn_frame_count;
-    if (libusb_submit_transfer(x->t) != 0) {
+        memcpy(data + 8, hd->ctl_out, hd->ctl_len);
+    libusb_fill_control_transfer(t, hd->h, data, host_xfer_cb, NULL, 5000);
+    if (!host_submit_raw(hd, &hd->ctl, t, data)) {
         usbn_trace("  control submit FAILED");
-        x->state = XFER_IDLE;
         return 0;
     }
     return 1;
@@ -582,6 +656,7 @@ host_local_request(host_dev_t *hd)
                make the host re-configure or re-enumerate the device -- so it
                is only done when the guest wants a different one. */
             libusb_get_configuration(hd->h, &cur);
+            host_reset_endpoints(hd);
             if (cur != (wval & 0xff)) {
                 host_release_all(hd);
                 libusb_set_configuration(hd->h, wval & 0xff);   /* may be refused on Windows; harmless */
@@ -593,6 +668,7 @@ host_local_request(host_dev_t *hd)
         }
         case REQ(0x01, LIBUSB_REQUEST_SET_INTERFACE): {
             uint32_t t0 = usbn_ms();
+            host_reset_endpoints(hd);
             host_set_alt(hd, widx, wval);
             usbn_trace("  SET_INTERFACE %d alt %d: %u ms", widx, wval, usbn_ms() - t0);
             return 1;
@@ -600,6 +676,7 @@ host_local_request(host_dev_t *hd)
         case REQ(0x02, LIBUSB_REQUEST_CLEAR_FEATURE):
             if (wval == 0) {   /* ENDPOINT_HALT */
                 uint32_t t0 = usbn_ms();
+                host_reset_endpoint(hd, widx & 0xff);
                 libusb_clear_halt(hd->h, widx & 0xff);
                 usbn_trace("  CLEAR_FEATURE(HALT) ep %02X: %u ms", widx & 0xff, usbn_ms() - t0);
                 return 1;
@@ -619,10 +696,7 @@ host_control(host_dev_t *hd, uint8_t pid, uint8_t *buf, int len)
     if (pid == USB_PID_SETUP) {
         if (len != 8)
             return USBN_STALL;
-        if (x->state == XFER_PENDING) {
-            host_cancel(x);
-            host_wait_idle(hd);
-        }
+        host_cancel(x);   /* a new request replaces one still going */
         memcpy(hd->setup, buf, 8);
         usbn_trace("%s: SETUP %02X %02X wValue %04X wIndex %04X wLength %d", hd->dev.name, buf[0], buf[1],
                    buf[2] | (buf[3] << 8), buf[4] | (buf[5] << 8), buf[6] | (buf[7] << 8));
@@ -631,9 +705,15 @@ host_control(host_dev_t *hd, uint8_t pid, uint8_t *buf, int len)
         hd->ctl_pos     = 0;
         hd->ctl_active  = 1;
         hd->ctl_patched = 0;
-        x->state       = XFER_IDLE;
-        if (hd->ctl_len > CTL_MAX)
-            return USBN_STALL;
+        /* A SETUP is always accepted.  A read longer than the buffer (Linux
+           asks some descriptors for up to 64 KB) is asked of the device as a
+           read of the buffer's size, which no descriptor exceeds; a longer
+           write fails at its data stage instead. */
+        if (hd->ctl_in && (hd->ctl_len > CTL_MAX)) {
+            hd->ctl_len  = CTL_MAX;
+            hd->setup[6] = CTL_MAX & 0xff;
+            hd->setup[7] = CTL_MAX >> 8;
+        }
         return 8;
     }
     if (!hd->ctl_active)
@@ -642,16 +722,16 @@ host_control(host_dev_t *hd, uint8_t pid, uint8_t *buf, int len)
     if (hd->ctl_in) {
         if (pid == USB_PID_OUT) {        /* status stage of an IN request */
             hd->ctl_active = 0;
-            x->state       = XFER_IDLE;
+            host_cancel(x);              /* a read the guest stopped waiting for */
             return 0;
         }
         /* data stage: fetch the whole answer once, hand it out per packet */
-        if (x->state == XFER_IDLE) {
+        if (XSTATE(x) == XFER_IDLE) {
             if (!host_submit_control(hd))
                 return USBN_STALL;
             return USBN_NAK;
         }
-        if (x->state == XFER_PENDING)
+        if (XSTATE(x) == XFER_PENDING)
             return USBN_NAK;
         if ((r = host_status_to_ret(x->status)) < 0) {
             hd->ctl_active = 0;
@@ -684,7 +764,7 @@ host_control(host_dev_t *hd, uint8_t pid, uint8_t *buf, int len)
 
     /* status stage (IN, zero length) of an OUT or no-data request: now the
        request goes to the device, or is done here. */
-    if (x->state == XFER_IDLE) {
+    if (XSTATE(x) == XFER_IDLE) {
         if (host_local_request(hd)) {
             hd->ctl_active = 0;
             return 0;
@@ -693,7 +773,7 @@ host_control(host_dev_t *hd, uint8_t pid, uint8_t *buf, int len)
             return USBN_STALL;
         return USBN_NAK;
     }
-    if (x->state == XFER_PENDING)
+    if (XSTATE(x) == XFER_PENDING)
         return USBN_NAK;
     hd->ctl_active = 0;
     x->state       = XFER_IDLE;
@@ -710,7 +790,7 @@ host_out_flush(host_dev_t *hd, uint8_t ep)
     const int i = ep & 0x0f;
     const int n = hd->out_acc[i];
 
-    if ((n == 0) || (hd->out[i].state == XFER_PENDING))
+    if ((n == 0) || (XSTATE(&hd->out[i]) == XFER_PENDING))
         return 1;
     hd->out_acc[i] = 0;
     hd->out[i].state = XFER_IDLE;
@@ -751,9 +831,9 @@ host_out_fs(host_dev_t *hd, uint8_t ep, uint8_t *buf, int len)
     const int fs   = usbn_fs_maxp(hd->ep_type[i], hs);
     int       r;
 
-    if (x->state == XFER_PENDING)
+    if (XSTATE(x) == XFER_PENDING)
         return USBN_NAK;
-    if (x->state == XFER_DONE) {
+    if (XSTATE(x) == XFER_DONE) {
         x->state = XFER_IDLE;
         if ((r = host_status_to_ret(x->status)) < 0) {
             hd->out_acc[i] = 0;
@@ -801,9 +881,9 @@ host_in_fs(host_dev_t *hd, uint8_t ep, uint8_t *buf, int len)
         return 0;
     }
 
-    if (x->state == XFER_PENDING)
+    if (XSTATE(x) == XFER_PENDING)
         return USBN_NAK;
-    if (x->state == XFER_DONE) {
+    if (XSTATE(x) == XFER_DONE) {
         x->state = XFER_IDLE;
         if ((r = host_status_to_ret(x->status)) < 0)
             return r;
@@ -847,7 +927,7 @@ host_packet(usbn_device_t *dev, uint8_t pid, uint8_t ep, uint8_t *buf, int len)
 
     x = (pid == USB_PID_IN) ? &hd->in[ep] : &hd->out[ep];
 
-    if (x->state == XFER_DONE) {
+    if (XSTATE(x) == XFER_DONE) {
         x->state = XFER_IDLE;
         if ((r = host_status_to_ret(x->status)) < 0)
             return r;
@@ -858,7 +938,7 @@ host_packet(usbn_device_t *dev, uint8_t pid, uint8_t ep, uint8_t *buf, int len)
         memcpy(buf, x->buf, x->actual);
         return x->actual;
     }
-    if (x->state == XFER_PENDING)
+    if (XSTATE(x) == XFER_PENDING)
         return USBN_NAK;
 
     if (len > DATA_MAX)
@@ -885,15 +965,8 @@ host_destroy(usbn_device_t *dev)
     host_dev_t *hd = (host_dev_t *) dev->priv;
 
     host_cancel_all(hd);
+    host_wait_inflight(hd);  /* the handle must outlive its transfers */
     host_release_all(hd);    /* the host's drivers get the device back */
-    if (hd->ctl.t)
-        libusb_free_transfer(hd->ctl.t);
-    for (int e = 0; e < 16; e++) {
-        if (hd->in[e].t)
-            libusb_free_transfer(hd->in[e].t);
-        if (hd->out[e].t)
-            libusb_free_transfer(hd->out[e].t);
-    }
     libusb_close(hd->h);
     pclog("USB: %04X:%04X given back to the host\n", hd->vid, hd->pid);
     free(hd);

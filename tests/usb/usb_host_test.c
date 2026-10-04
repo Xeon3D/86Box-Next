@@ -77,6 +77,9 @@ static uint8_t out_data[4096];
 static int     out_total;
 static uint8_t in_stream[4096];
 static int     in_left, in_off;   /* the device's current IN transfer */
+static int     hold_in;           /* IN transfers stay in flight until released */
+static struct libusb_transfer *held;
+static int     last_wlength;      /* what the device was asked for last */
 
 int  libusb_init(libusb_context **c) { *c = (libusb_context *) &ctx_tag; return 0; }
 int  libusb_set_option(libusb_context *c, enum libusb_option o, ...) { (void) c; (void) o; return LIBUSB_ERROR_NOT_FOUND; }
@@ -132,8 +135,13 @@ libusb_submit_transfer(struct libusb_transfer *t)
 {
     t->status        = LIBUSB_TRANSFER_COMPLETED;
     t->actual_length = 0;
+    if ((t->endpoint & 0x80) && hold_in) {
+        held = t;          /* completes when the test says so */
+        return 0;
+    }
     if (t->endpoint == 0) {
         struct libusb_control_setup *s = (struct libusb_control_setup *) t->buffer;
+        last_wlength = s->wLength;
         if ((s->bRequest == LIBUSB_REQUEST_GET_DESCRIPTOR) && ((s->wValue >> 8) == LIBUSB_DT_CONFIG)) {
             int n = (s->wLength < (int) sizeof(cfg_bytes)) ? s->wLength : (int) sizeof(cfg_bytes);
             memcpy(t->buffer + 8, cfg_bytes, n);
@@ -258,6 +266,74 @@ test_in_split(void)
     CHECK(xact(USB_PID_IN, 1, buf, 64) == 36, "then a short 36 ends it");
 }
 
+/* A port reset while a read is in flight must not wait for libusb, and the
+   read, when it does come back, must not land in what the guest does next. */
+static void
+test_reset_does_not_wait(void)
+{
+    uint8_t buf[64];
+
+    hold_in = 1;
+    CHECK(dev->packet(dev, USB_PID_IN, 1, buf, 64) == USBN_NAK, "a read goes out and stays in flight");
+    struct libusb_transfer *late = held;
+    CHECK(late != NULL, "the device has it");
+    dev->reset(dev);   /* returns at once: nothing here can call it back */
+    hold_in = 0;
+
+    /* The abandoned read comes back, with data, after the reset. */
+    memset(late->buffer, 0xee, 64);
+    late->status        = LIBUSB_TRANSFER_COMPLETED;
+    late->actual_length = 64;
+    late->callback(late);
+
+    for (int i = 0; i < 64; i++)
+        in_stream[i] = 0x11;
+    in_left = 64;
+    in_off  = 0;
+    int n   = xact(USB_PID_IN, 1, buf, 64);
+    CHECK(n == 64 && buf[0] == 0x11, "the next read gets the device's new data, not the abandoned read's (%d, %02X)", n, buf[0]);
+    CHECK(xact(USB_PID_IN, 1, buf, 64) == 0, "and a zero-length packet ends it (64 < 512 on a 64-byte boundary)");
+}
+
+/* CLEAR_FEATURE(ENDPOINT_HALT) starts an endpoint over: what is left of a
+   high-speed packet half handed out must not reach the guest afterwards. */
+static void
+test_clear_halt_drops_buffered(void)
+{
+    uint8_t buf[64];
+    uint8_t clear[8] = { 0x02, 0x01, 0x00, 0x00, 0x81, 0x00, 0x00, 0x00 };
+
+    for (int i = 0; i < 512; i++)
+        in_stream[i] = 0x22;
+    in_left = 512;
+    in_off  = 0;
+    CHECK(xact(USB_PID_IN, 1, buf, 64) == 64, "first 64 of a 512-byte packet");
+
+    CHECK(dev->packet(dev, USB_PID_SETUP, 0, clear, 8) == 8, "CLEAR_FEATURE(HALT) on 81");
+    CHECK(xact(USB_PID_IN, 0, buf, 0) == 0, "its status stage");
+
+    for (int i = 0; i < 64; i++)
+        in_stream[i] = 0x33;
+    in_left = 64;
+    in_off  = 0;
+    int n   = xact(USB_PID_IN, 1, buf, 64);
+    CHECK(n == 64 && buf[0] == 0x33, "after it, new data -- not the 448 bytes left over (%d, %02X)", n, buf[0]);
+}
+
+/* A SETUP is never refused: a read longer than the buffer is capped. */
+static void
+test_long_control_read(void)
+{
+    uint8_t setup[8] = { 0x80, 6, 0, 2, 0, 0, 0xff, 0xff };
+    uint8_t buf[64];
+
+    CHECK(dev->packet(dev, USB_PID_SETUP, 0, setup, 8) == 8, "SETUP with wLength 65535 accepted");
+    int n = xact(USB_PID_IN, 0, buf, 64);
+    CHECK(n == 39, "the descriptor comes back (%d)", n);
+    CHECK(last_wlength == 4096, "the device was asked for 4096 (%d)", last_wlength);
+    CHECK(xact(USB_PID_OUT, 0, buf, 0) == 0, "status stage");
+}
+
 static void
 test_native_speed(void)
 {
@@ -284,6 +360,9 @@ main(void)
     test_descriptor();
     test_out_regroup();
     test_in_split();
+    test_reset_does_not_wait();
+    test_clear_halt_drops_buffered();
+    test_long_control_read();
     test_native_speed();
     dev->destroy(dev);
 

@@ -530,8 +530,8 @@ uhci_writew(uint16_t addr, uint16_t val, void *priv)
             }
             dev->portsc[p] &= ~(val & PORT_RWC);
             dev->portsc[p] = (dev->portsc[p] & ~PORT_RW) | (val & PORT_RW);
-            if (!(dev->portsc[p] & PORT_CCS))
-                dev->portsc[p] &= ~PORT_PED;   /* nothing to enable */
+            if (!(dev->portsc[p] & PORT_CCS) || (dev->portsc[p] & PORT_PR))
+                dev->portsc[p] &= ~PORT_PED;   /* nothing to enable, or being reset */
             break;
         default:
             break;

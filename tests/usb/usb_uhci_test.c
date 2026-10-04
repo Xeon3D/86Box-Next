@@ -93,7 +93,9 @@ test_connect_and_enable(void)
     CHECK(!(p & 0x0100), "full speed: no low-speed bit");
     wrw(0x10, 0x0002);
     CHECK(!(rdw(0x10) & 0x0002), "CSC is write-1-to-clear");
-    wrw(0x10, 0x0200);
+    wrw(0x10, 0x0004);
+    wrw(0x10, 0x0204);
+    CHECK(!(rdw(0x10) & 0x0004), "a port being reset is not enabled");
     wrw(0x10, 0x0000);
     CHECK(fake.resets == 1, "port reset reaches the device");
     wrw(0x10, 0x0004);
