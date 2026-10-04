@@ -186,6 +186,22 @@ fake_packet(usbn_device_t *d, uint8_t pid, uint8_t ep, uint8_t *buf, int len)
     return USBN_NAK;
 }
 
+/* Isochronous: IN delivers 1 2 3 4, OUT is recorded. */
+static int
+fake_iso(usbn_device_t *d, uint8_t pid, uint8_t ep, uint8_t *buf, int len)
+{
+    fake_dev_t *f = (fake_dev_t *) d;
+    (void) ep;
+    if (pid == USB_PID_IN) {
+        for (int i = 0; i < 4 && i < len; i++)
+            buf[i] = (uint8_t) (i + 1);
+        return (len < 4) ? len : 4;
+    }
+    f->iso_out_len   = len;
+    f->iso_out_first = len ? buf[0] : -1;
+    return len;
+}
+
 static void fake_reset(usbn_device_t *d) { ((fake_dev_t *) d)->resets++; }
 static void fake_destroy(usbn_device_t *d) { ((fake_dev_t *) d)->destroyed++; }
 
@@ -197,6 +213,7 @@ fake_dev_init(fake_dev_t *f, const char *name, int speed)
     f->dev.speed   = speed;
     f->dev.priv    = f;
     f->dev.packet  = fake_packet;
+    f->dev.iso     = fake_iso;
     f->dev.reset   = fake_reset;
     f->dev.destroy = fake_destroy;
 }

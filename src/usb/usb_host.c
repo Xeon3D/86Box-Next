@@ -142,6 +142,7 @@ typedef struct host_dev_t {
     xfer_t  ctl;
 
     xfer_t in[16], out[16];
+    struct iso_stream_t *iso[32];  /* isochronous streams, [ep | (in ? 16 : 0)] */
     int    inflight;           /* libusb transfers not yet called back, abandoned ones too */
 
     /* A high-speed device shown at full speed (dev.fs_view): the guest's
@@ -525,9 +526,280 @@ host_reset_endpoint(host_dev_t *hd, uint8_t epaddr)
     }
 }
 
+/* ------------------------------------------------------- isochronous --- */
+
+/* Isochronous endpoints (USB audio, for a start) stream: a packet every 1 ms
+   frame, on time, never retried.  The guest's frames run on the emulated
+   clock and the device's on the real one, so each endpoint gets a queue of
+   whole packets between the two:
+
+   - IN (a microphone): ISO_XFERS transfers of ISO_PKTS packets are kept on
+     the device all the time, each resubmitted as soon as it comes back; its
+     packets are queued, and the guest takes one per frame.  An empty queue
+     gives the guest an empty packet (silence); past ISO_QUEUE packets the
+     oldest go, which bounds the latency when the clocks drift apart.
+   - OUT (speakers): the guest's packets are queued, and sent ISO_PKTS at a
+     time once two transfers' worth are waiting, with up to ISO_XFERS on the
+     device.  Running dry starts that cushion over; past ISO_QUEUE the
+     oldest go.
+
+   A stream starts with its first packet and stops (its transfers abandoned
+   the way bulk ones are, so nothing waits) on a port reset, SET_INTERFACE,
+   SET_CONFIGURATION or unplugging -- an audio device starts and stops
+   streaming by selecting an interface's alternate setting. */
+
+#define ISO_XFERS 4    /* transfers on the device per stream */
+#define ISO_PKTS  8    /* 1 ms packets per transfer */
+#define ISO_QUEUE 32   /* packets queued at most: 32 ms */
+
+typedef struct iso_stream_t {
+    uint8_t                 ep;         /* endpoint address, direction included */
+    int                     maxp;
+    int                     active;
+    int                     primed;     /* OUT: enough queued to be sending */
+    int                     inflight;   /* this stream's transfers on the device */
+    struct libusb_transfer *slot[ISO_XFERS];
+    uint16_t                len[ISO_QUEUE];
+    uint8_t                *data;       /* ISO_QUEUE packets of maxp bytes */
+    int                     head, count;
+    uint32_t                dropped, starved, packets;
+} iso_stream_t;
+
+typedef struct iso_sub_t {
+    struct host_dev_t *hd;
+    iso_stream_t      *s;               /* NULL: abandoned */
+    int                slot;
+} iso_sub_t;
+
+/* The queue; xfer_lock held. */
+static void
+iso_push(iso_stream_t *s, const uint8_t *p, int n)
+{
+    if (n > s->maxp)
+        n = s->maxp;
+    if (s->count == ISO_QUEUE) {
+        s->head = (s->head + 1) % ISO_QUEUE;
+        s->count--;
+        s->dropped++;
+    }
+    int i = (s->head + s->count) % ISO_QUEUE;
+    if (n > 0)
+        memcpy(s->data + i * s->maxp, p, n);
+    s->len[i] = n;
+    s->count++;
+}
+
+static int
+iso_pop(iso_stream_t *s, uint8_t *p, int max)
+{
+    if (s->count == 0)
+        return -1;
+    int i = s->head;
+    int n = (s->len[i] < max) ? s->len[i] : max;
+    if (n > 0)
+        memcpy(p, s->data + i * s->maxp, n);
+    s->head = (s->head + 1) % ISO_QUEUE;
+    s->count--;
+    return n;
+}
+
+static void LIBUSB_CALL iso_cb(struct libusb_transfer *t);
+
+/* Put a transfer on the device for stream s; xfer_lock held.  OUT: the next
+   ISO_PKTS queued packets go in it. */
+static int
+iso_submit(host_dev_t *hd, iso_stream_t *s)
+{
+    int slot = -1;
+    for (int i = 0; i < ISO_XFERS; i++)
+        if (!s->slot[i]) {
+            slot = i;
+            break;
+        }
+    if (slot < 0)
+        return 0;
+
+    struct libusb_transfer *t   = libusb_alloc_transfer(ISO_PKTS);
+    uint8_t                *buf = malloc(ISO_PKTS * s->maxp);
+    iso_sub_t              *sub = malloc(sizeof(iso_sub_t));
+    int                     total = ISO_PKTS * s->maxp;
+
+    sub->hd   = hd;
+    sub->s    = s;
+    sub->slot = slot;
+    libusb_fill_iso_transfer(t, hd->h, s->ep, buf, total, ISO_PKTS, iso_cb, sub, 0);
+    libusb_set_iso_packet_lengths(t, s->maxp);
+    if (!(s->ep & 0x80)) {
+        total = 0;
+        for (int i = 0; i < ISO_PKTS; i++) {
+            int n = iso_pop(s, buf + total, s->maxp);
+            t->iso_packet_desc[i].length = (n > 0) ? n : 0;
+            total += t->iso_packet_desc[i].length;
+        }
+        t->length = total;
+    }
+
+    s->slot[slot] = t;
+    s->inflight++;
+    hd->inflight++;
+    if (libusb_submit_transfer(t) != 0) {
+        s->slot[slot] = NULL;
+        s->inflight--;
+        hd->inflight--;
+        free(buf);
+        free(sub);
+        libusb_free_transfer(t);
+        usbn_trace("  iso ep %02X: submit FAILED", s->ep);
+        return 0;
+    }
+    return 1;
+}
+
+/* OUT: send what is queued, in whole transfers; xfer_lock held. */
+static void
+iso_out_pump(host_dev_t *hd, iso_stream_t *s)
+{
+    if (!s->primed && (s->count >= 2 * ISO_PKTS))
+        s->primed = 1;
+    while (s->primed && (s->inflight < ISO_XFERS) && (s->count >= ISO_PKTS))
+        if (!iso_submit(hd, s))
+            break;
+    if (s->primed && !s->inflight && (s->count < ISO_PKTS)) {
+        s->primed = 0;     /* ran dry: build the cushion again */
+        s->starved++;
+    }
+}
+
+static void LIBUSB_CALL
+iso_cb(struct libusb_transfer *t)
+{
+    iso_sub_t *sub = (iso_sub_t *) t->user_data;
+
+    thread_wait_mutex(xfer_lock);
+    iso_stream_t *s = sub->s;
+    if (s && (s->ep & 0x80) && s->active && (t->status == LIBUSB_TRANSFER_COMPLETED)) {
+        for (int i = 0; i < t->num_iso_packets; i++) {
+            const struct libusb_iso_packet_descriptor *d = &t->iso_packet_desc[i];
+            iso_push(s, libusb_get_iso_packet_buffer_simple(t, i),
+                     (d->status == LIBUSB_TRANSFER_COMPLETED) ? (int) d->actual_length : 0);
+            s->packets++;
+        }
+        /* Straight back on the device: an IN stream never has a gap. */
+        if (libusb_submit_transfer(t) == 0) {
+            thread_release_mutex(xfer_lock);
+            return;
+        }
+    }
+    if (s) {
+        s->slot[sub->slot] = NULL;
+        s->inflight--;
+        if (!(s->ep & 0x80)) {
+            s->packets += t->num_iso_packets;
+            if (s->active)
+                iso_out_pump(sub->hd, s);
+        }
+    }
+    sub->hd->inflight--;
+    thread_release_mutex(xfer_lock);
+
+    free(t->buffer);
+    free(sub);
+    libusb_free_transfer(t);
+}
+
+static iso_stream_t *
+iso_stream(host_dev_t *hd, uint8_t epaddr)
+{
+    const int i = (epaddr & 0x0f) | ((epaddr & 0x80) ? 16 : 0);
+
+    if (!hd->iso[i]) {
+        const int maxp = hd->ep_maxp[i];
+        if (maxp <= 0)
+            return NULL;
+        iso_stream_t *s = calloc(1, sizeof(iso_stream_t));
+        s->ep   = epaddr;
+        s->maxp = maxp;
+        s->data = malloc(ISO_QUEUE * maxp);
+        hd->iso[i] = s;
+    }
+    return hd->iso[i];
+}
+
+/* Stop a stream: its transfers abandoned, the stream freed (the next one
+   is made for whatever the endpoint's packet size is then). */
+static void
+iso_stop(host_dev_t *hd, int i)
+{
+    thread_wait_mutex(xfer_lock);
+    iso_stream_t *s = hd->iso[i];
+    if (s) {
+        for (int k = 0; k < ISO_XFERS; k++)
+            if (s->slot[k]) {
+                ((iso_sub_t *) s->slot[k]->user_data)->s = NULL;
+                libusb_cancel_transfer(s->slot[k]);
+            }
+        if (s->active)
+            usbn_trace("  iso ep %02X: stopped after %u packets, %u dropped, %u starved", s->ep, s->packets, s->dropped,
+                       s->starved);
+        hd->iso[i] = NULL;
+    }
+    thread_release_mutex(xfer_lock);
+    if (s) {
+        free(s->data);
+        free(s);
+    }
+}
+
+static void
+iso_stop_all(host_dev_t *hd)
+{
+    for (int i = 0; i < 32; i++)
+        iso_stop(hd, i);
+}
+
+static int
+host_iso(usbn_device_t *dev, uint8_t pid, uint8_t ep, uint8_t *buf, int len)
+{
+    host_dev_t   *hd = (host_dev_t *) dev->priv;
+    iso_stream_t *s;
+    int           n;
+
+    /* A high-speed device's isochronous packets do not fit full-speed ones;
+       that needs the device on a USB 2.0 controller. */
+    if (dev->fs_view)
+        return 0;
+    if (!(s = iso_stream(hd, (pid == USB_PID_IN) ? (ep | 0x80) : ep)))
+        return 0;
+
+    thread_wait_mutex(xfer_lock);
+    if (!s->active) {
+        s->active = 1;
+        usbn_trace("  iso ep %02X: stream starts, %d-byte packets", s->ep, s->maxp);
+    }
+    /* IN: keep ISO_XFERS on the device -- at the start, and again after one
+       failed and was not resubmitted. */
+    if (pid == USB_PID_IN)
+        while ((s->inflight < ISO_XFERS) && iso_submit(hd, s))
+            ;
+    if (pid == USB_PID_IN) {
+        n = iso_pop(s, buf, len);
+        if (n < 0) {
+            n = 0;
+            s->starved++;
+        }
+    } else {
+        iso_push(s, buf, len);
+        iso_out_pump(hd, s);
+        n = len;
+    }
+    thread_release_mutex(xfer_lock);
+    return n;
+}
+
 static void
 host_reset_endpoints(host_dev_t *hd)
 {
+    iso_stop_all(hd);
     for (int e = 1; e < 16; e++) {
         host_reset_endpoint(hd, e);
         host_reset_endpoint(hd, e | 0x80);
@@ -1027,6 +1299,7 @@ usbn_host_open(uint16_t vid, uint16_t pid, char *err, int errlen)
     hd->dev.packet  = host_packet;
     hd->dev.reset   = host_reset;
     hd->dev.frame   = host_frame;
+    hd->dev.iso     = host_iso;
     hd->dev.destroy = host_destroy;
     {
         libusb_device                  *ud = libusb_get_device(hd->h);

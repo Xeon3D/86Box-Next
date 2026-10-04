@@ -250,17 +250,39 @@ uhci_process_td(uhci_t *dev, uint32_t td)
     if (!(ctrl & TD_ACTIVE))
         return TD_RETRY;
 
-    if (ctrl & TD_ISO) {
-        /* Isochronous transfers are not passed through; complete them empty
-           so a driver polling one does not hang. */
-        ctrl &= ~(TD_ACTIVE | TD_ACTLEN);
-        ctrl |= 0x7ff;
-        wr32(td + 4, ctrl);
-        return TD_DONE;
-    }
-
     if (maxlen > (int) sizeof(buf))
         maxlen = sizeof(buf);
+
+    /* Isochronous: one transaction in this TD's frame, whatever happens --
+       no handshake, no NAK, no retry.  A device that does not stream
+       (no iso entry) completes it empty, so a driver polling it does not
+       hang. */
+    if (ctrl & TD_ISO) {
+        usbn_device_t *idev = uhci_find_device(dev, addr);
+        int            n    = 0;
+
+        if (idev && idev->iso) {
+            if (pid == USB_PID_OUT) {
+                if (maxlen)
+                    dma_bm_read(bufp, buf, maxlen, 1);
+                n = idev->iso(idev, pid, ep, buf, maxlen);
+            } else if (pid == USB_PID_IN) {
+                n = idev->iso(idev, pid, ep, buf, maxlen);
+                if (n > maxlen)
+                    n = maxlen;
+                if (n > 0)
+                    dma_bm_write(bufp, buf, n, 1);
+            }
+            if (n < 0)
+                n = 0;
+        }
+        ctrl &= ~(TD_ACTIVE | TD_ACTLEN);
+        ctrl |= (n - 1) & 0x7ff;    /* 0x7ff: nothing moved */
+        wr32(td + 4, ctrl);
+        if (ctrl & TD_IOC)
+            dev->pending_sts |= STS_USBINT;
+        return TD_DONE;
+    }
 
     d = uhci_find_device(dev, addr);
     if (d == NULL) {

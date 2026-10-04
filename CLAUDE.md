@@ -20,10 +20,14 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   peripherals): funworld Photo Play (PeepeeBox `funworld_io.c`) and Merit
   Megatouch XL/MAXX (MegaPPBox `merit_io.c`, `merit_pcic.c`). UI controls in
   `src/qt/qt_ioboard_controls.cpp`.
-- USB (`src/usb/`, Settings > Other peripherals, PCI): a UHCI USB 1.1 card and a
-  VT6202-style USB 2.0 card (EHCI + UHCI companion), ports in `usb_bus.c`, host
-  passthrough via libusb (UsbDk on Windows when installed) in `usb_host.c`, the
-  VMware-style connect prompt and USB menu in `src/qt/qt_usb_manager.cpp`.
+- USB (`src/usb/`, Settings > Other peripherals, PCI): UHCI USB 1.1 cards (VIA
+  VT83C572, Intel PIIX4) and USB 2.0 cards (EHCI + UHCI companion: VIA VT6202, Intel
+  ICH4 layout with EHCI at function 7), ports in `usb_bus.c`, host passthrough via
+  libusb (UsbDk on Windows when installed) in `usb_host.c` -- bulk/interrupt/control,
+  isochronous streams (USB audio; full speed via the UHCI side only, no EHCI iTDs),
+  high-speed devices shown at full speed on USB 1.1 ports (`usb_speed.c`) -- the
+  VMware-style connect prompt and USB menu in `src/qt/qt_usb_manager.cpp`, and an
+  activity trace (USB menu / BOX86NEXT_USB_TRACE=1) to usb_trace.txt.
   Tests: `tests/usb/` (plain C, no framework). Upstream's `src/usb.c` is the
   southbridge stub and is untouched.
 - Upstream's CI workflows and Dependabot are disabled/removed in this repo; only

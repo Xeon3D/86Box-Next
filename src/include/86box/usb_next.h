@@ -44,6 +44,10 @@ typedef struct usbn_device_t {
 
     /* One USB transaction.  Called from the emulation thread. */
     int  (*packet)(struct usbn_device_t *dev, uint8_t pid, uint8_t ep, uint8_t *buf, int len);
+    /* One isochronous transaction (optional): once per frame, never NAKed
+       or retried.  IN returns the bytes delivered (0 when there are none),
+       OUT the bytes taken. */
+    int  (*iso)(struct usbn_device_t *dev, uint8_t pid, uint8_t ep, uint8_t *buf, int len);
     void (*reset)(struct usbn_device_t *dev);    /* port reset */
     void (*frame)(struct usbn_device_t *dev);    /* once per 1 ms frame (optional) */
     void (*destroy)(struct usbn_device_t *dev);  /* unplugged */

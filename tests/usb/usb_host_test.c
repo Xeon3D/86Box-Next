@@ -49,12 +49,15 @@ uint32_t   usbn_ms(void) { return 0; }
 
 /* ------------------------------------------------------- the fake device */
 
-static const struct libusb_endpoint_descriptor eps[3] = {
+static const struct libusb_endpoint_descriptor eps[5] = {
     { .bLength = 7, .bDescriptorType = 5, .bEndpointAddress = 0x81, .bmAttributes = 2, .wMaxPacketSize = 512 },
     { .bLength = 7, .bDescriptorType = 5, .bEndpointAddress = 0x02, .bmAttributes = 2, .wMaxPacketSize = 512 },
     { .bLength = 7, .bDescriptorType = 5, .bEndpointAddress = 0x83, .bmAttributes = 3, .wMaxPacketSize = 1024, .bInterval = 4 },
+    /* USB audio: 48 kHz 16-bit stereo, 192 bytes a millisecond each way */
+    { .bLength = 9, .bDescriptorType = 5, .bEndpointAddress = 0x84, .bmAttributes = 1, .wMaxPacketSize = 192, .bInterval = 1 },
+    { .bLength = 9, .bDescriptorType = 5, .bEndpointAddress = 0x05, .bmAttributes = 1, .wMaxPacketSize = 192, .bInterval = 1 },
 };
-static const struct libusb_interface_descriptor alt0 = { .bLength = 9, .bDescriptorType = 4, .bNumEndpoints = 3, .endpoint = eps };
+static const struct libusb_interface_descriptor alt0 = { .bLength = 9, .bDescriptorType = 4, .bNumEndpoints = 5, .endpoint = eps };
 static const struct libusb_interface            itf0 = { .altsetting = &alt0, .num_altsetting = 1 };
 static struct libusb_config_descriptor          cfg  = { .bLength = 9, .bDescriptorType = 2, .bNumInterfaces = 1, .interface = &itf0 };
 
@@ -125,7 +128,60 @@ int            libusb_get_string_descriptor_ascii(libusb_device_handle *h, uint8
 int            libusb_get_active_config_descriptor(libusb_device *d, struct libusb_config_descriptor **c) { (void) d; *c = &cfg; return 0; }
 void           libusb_free_config_descriptor(struct libusb_config_descriptor *c) { (void) c; }
 
-struct libusb_transfer *libusb_alloc_transfer(int n) { (void) n; return calloc(1, sizeof(struct libusb_transfer)); }
+struct libusb_transfer *
+libusb_alloc_transfer(int n)
+{
+    return calloc(1, sizeof(struct libusb_transfer) + n * sizeof(struct libusb_iso_packet_descriptor));
+}
+
+/* Isochronous transfers stay on the "device" until fake_iso_round() says a
+   round of frames has passed, as on real hardware. */
+static struct libusb_transfer *iso_pending[64];
+static int                     n_iso_pending;
+static int                     iso_in_size = 188, iso_seq;
+static int                     iso_out_pkts[256], iso_out_first[256], n_iso_out;
+
+static void
+fake_iso_round(void)
+{
+    struct libusb_transfer *round[64];
+    int                     n = n_iso_pending;
+
+    memcpy(round, iso_pending, n * sizeof(round[0]));
+    n_iso_pending = 0;
+    for (int k = 0; k < n; k++) {
+        struct libusb_transfer *t = round[k];
+        for (int i = 0; i < t->num_iso_packets; i++) {
+            struct libusb_iso_packet_descriptor *d = &t->iso_packet_desc[i];
+            d->status = LIBUSB_TRANSFER_COMPLETED;
+            if (t->endpoint & 0x80) {
+                memset(libusb_get_iso_packet_buffer_simple(t, i), iso_seq++ & 0xff, iso_in_size);
+                d->actual_length = iso_in_size;
+            } else {
+                iso_out_pkts[n_iso_out]  = d->length;
+                iso_out_first[n_iso_out] = d->length ? libusb_get_iso_packet_buffer_simple(t, i)[0] : -1;
+                n_iso_out++;
+                d->actual_length = d->length;
+            }
+        }
+        t->status = LIBUSB_TRANSFER_COMPLETED;
+        t->callback(t);
+    }
+}
+
+static void
+fake_iso_abandon_round(void)   /* what the device does with cancelled ones */
+{
+    struct libusb_transfer *round[64];
+    int                     n = n_iso_pending;
+
+    memcpy(round, iso_pending, n * sizeof(round[0]));
+    n_iso_pending = 0;
+    for (int k = 0; k < n; k++) {
+        round[k]->status = LIBUSB_TRANSFER_CANCELLED;
+        round[k]->callback(round[k]);
+    }
+}
 void                    libusb_free_transfer(struct libusb_transfer *t) { free(t); }
 int                     libusb_cancel_transfer(struct libusb_transfer *t) { (void) t; return 0; }
 
@@ -133,6 +189,10 @@ int                     libusb_cancel_transfer(struct libusb_transfer *t) { (voi
 int
 libusb_submit_transfer(struct libusb_transfer *t)
 {
+    if (t->type == LIBUSB_TRANSFER_TYPE_ISOCHRONOUS) {
+        iso_pending[n_iso_pending++] = t;
+        return 0;
+    }
     t->status        = LIBUSB_TRANSFER_COMPLETED;
     t->actual_length = 0;
     if ((t->endpoint & 0x80) && hold_in) {
@@ -345,6 +405,74 @@ test_native_speed(void)
     CHECK(xact(USB_PID_IN, 1, buf, 512) == 512, "at high speed a 512-byte packet passes as it is");
 }
 
+/* USB audio: a microphone (iso IN 84) and speakers (iso OUT 05). */
+static void
+test_iso_in(void)
+{
+    uint8_t buf[192];
+    int     ok = 1;
+
+    CHECK(dev->iso != NULL, "the passthrough streams isochronous endpoints");
+    CHECK(dev->iso(dev, USB_PID_IN, 4, buf, 192) == 0, "first frame: nothing yet (silence)");
+    CHECK(n_iso_pending == 4, "the stream put four transfers on the device (%d)", n_iso_pending);
+
+    iso_seq = 0;
+    fake_iso_round();   /* 4 transfers x 8 packets of 188 bytes */
+    CHECK(n_iso_pending == 4, "and each went straight back (%d)", n_iso_pending);
+    for (int i = 0; i < 32; i++) {
+        int n = dev->iso(dev, USB_PID_IN, 4, buf, 192);
+        ok &= (n == 188) && (buf[0] == i) && (buf[187] == i);
+    }
+    CHECK(ok, "32 packets of 188 bytes, one per frame, in order");
+    CHECK(dev->iso(dev, USB_PID_IN, 4, buf, 192) == 0, "queue empty: an empty packet, not a stall");
+
+    /* The device runs ahead (the emulation is slow): the latency is bounded
+       by dropping the oldest. */
+    fake_iso_round();
+    fake_iso_round();   /* 64 packets, 32 fit */
+    int n = dev->iso(dev, USB_PID_IN, 4, buf, 192);
+    CHECK(n == 188 && buf[0] == 64, "after 64 packets unread the oldest kept is #64 (%d)", buf[0]);
+}
+
+static void
+test_iso_out(void)
+{
+    uint8_t buf[192];
+
+    n_iso_out = 0;
+    for (int i = 0; i < 15; i++) {
+        memset(buf, 0x40 + i, 176);
+        CHECK(dev->iso(dev, USB_PID_OUT, 5, buf, 176) == 176, "OUT packet %d taken", i);
+    }
+    int before = n_iso_pending;
+    memset(buf, 0x40 + 15, 176);
+    dev->iso(dev, USB_PID_OUT, 5, buf, 176);
+    CHECK(n_iso_pending - before == 2, "a 16-packet cushion goes out as two transfers (%d)", n_iso_pending - before);
+
+    fake_iso_round();   /* also runs the IN stream's round */
+    int ok = (n_iso_out == 16);
+    for (int i = 0; i < n_iso_out && i < 16; i++)
+        ok &= (iso_out_pkts[i] == 176) && (iso_out_first[i] == 0x40 + i);
+    CHECK(ok, "the device played 16 packets of 176 bytes, in order (%d)", n_iso_out);
+}
+
+static void
+test_iso_stops_on_set_interface(void)
+{
+    uint8_t buf[192];
+    uint8_t setif[8] = { 0x01, 0x0b, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00 };   /* alt 0: stop streaming */
+
+    CHECK(n_iso_pending > 0, "streams running");
+    CHECK(dev->packet(dev, USB_PID_SETUP, 0, setif, 8) == 8, "SET_INTERFACE 1 alt 0");
+    CHECK(xact(USB_PID_IN, 0, buf, 0) == 0, "its status stage");
+    fake_iso_abandon_round();   /* the cancelled transfers come back */
+    CHECK(n_iso_pending == 0, "nothing resubmitted after the stop");
+
+    CHECK(dev->iso(dev, USB_PID_IN, 4, buf, 192) == 0, "a new stream starts empty");
+    CHECK(n_iso_pending == 4, "with its own four transfers");
+    fake_iso_abandon_round();
+}
+
 int
 main(void)
 {
@@ -364,6 +492,9 @@ main(void)
     test_clear_halt_drops_buffered();
     test_long_control_read();
     test_native_speed();
+    test_iso_in();
+    test_iso_out();
+    test_iso_stops_on_set_interface();
     dev->destroy(dev);
 
     printf("host: %d checks, %d failed\n", checks, failures);

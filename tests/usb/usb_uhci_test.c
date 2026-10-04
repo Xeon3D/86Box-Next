@@ -183,6 +183,41 @@ test_short_packet(void)
     wrw(0x02, 0x0003);
 }
 
+/* Isochronous TDs in the frame list: one transaction each, in their frame,
+   never NAKed -- and a device that does not stream completes them empty. */
+static void
+test_iso(void)
+{
+    /* Every frame list entry: an IN and an OUT isochronous TD, then the QH. */
+    for (int i = 0; i < 1024; i++)
+        wr32m(FL + i * 4, TD0 + 0x40);
+    wr32m(QH, 1);
+    wr32m(QH + 4, 1);
+    td(TD0 + 0x40, TD0 + 0x60, 0x02000000 | 0x01000000, USB_PID_IN, 3, 4, 192, BUF + 0x300);    /* ISO, IOC */
+    td(TD0 + 0x60, QH | 2, 0x02000000, USB_PID_OUT, 3, 5, 16, BUF + 0x400);
+    memset(ram + BUF + 0x300, 0, 8);
+    ram[BUF + 0x400] = 0x5a;
+    fake_frames(1);
+
+    uint32_t c = rd32m(TD0 + 0x44);
+    CHECK(!(c & 0x00800000) && ((c & 0x7ff) == 3), "iso IN done in its frame, 4 bytes (%08X)", c);
+    CHECK(ram[BUF + 0x300] == 1 && ram[BUF + 0x303] == 4, "iso IN data in memory");
+    c = rd32m(TD0 + 0x64);
+    CHECK(!(c & 0x00800000) && ((c & 0x7ff) == 15), "iso OUT done, 16 bytes (%08X)", c);
+    CHECK(fake.iso_out_len == 16 && fake.iso_out_first == 0x5a, "the device got the 16 bytes");
+    CHECK(rdw(0x02) & 0x0001, "IOC on an iso TD raises USBINT");
+    wrw(0x02, 0x0003);
+
+    /* A device without isochronous support: completed empty, not hung. */
+    fake.dev.iso = NULL;
+    td(TD0 + 0x40, TD0 + 0x60, 0x02000000, USB_PID_IN, 3, 4, 192, BUF + 0x300);
+    td(TD0 + 0x60, QH | 2, 0x02000000, USB_PID_OUT, 3, 5, 16, BUF + 0x400);
+    fake_frames(1);
+    c = rd32m(TD0 + 0x44);
+    CHECK(!(c & 0x00800000) && ((c & 0x7ff) == 0x7ff), "no iso support: completed with nothing (%08X)", c);
+    schedule(TD0);
+}
+
 static void
 test_no_device(void)
 {
@@ -224,6 +259,7 @@ main(void)
     test_control_transfer();
     test_stall();
     test_short_packet();
+    test_iso();
     test_no_device();
     test_disconnect();
     test_global_reset();
