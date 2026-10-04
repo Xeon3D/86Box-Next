@@ -219,7 +219,7 @@ int      sound_muted                            = 0;              /* (C) Is soun
 int      jumpered_internal_ecp_dma              = 0;              /* (C) Jumpered internal EPC DMA */
 int      inhibit_multimedia_keys;                                 /* (G) Inhibit multimedia keys on Windows. */
 int      force_10ms;                                              /* (C) Force 10ms CPU frame intervals. */
-int      vmm_disabled                           = 0;              /* (G) disable built-in manager */
+int      vmm_disabled                           = 1;              /* (G) disable built-in manager */
 char     vmm_path_cfg[1024]                     = { '\0' };       /* (G) VMs path (unless -E is used)*/
 
 int      other_ide_present = 0;                                   /* IDE controllers from non-IDE cards are
@@ -1333,10 +1333,12 @@ usage:
     }
 
 #ifndef USE_SDL_UI
-    if (strlen(vmm_path) != 0) {
+    if ((strlen(vmm_path) != 0) && !vmm_disabled) {
         /* -E specified on the command line. */
         start_vmm = 1;
     } else {
+        if (strlen(vmm_path) != 0)
+            pclog("# VM Manager is disabled in Preferences, ignoring --vmmpath\n");
         strncpy(vmm_path, vmm_path_cfg, sizeof(vmm_path) - 1);
         vmm_path[sizeof(vmm_path) - 1] = '\0';
     }

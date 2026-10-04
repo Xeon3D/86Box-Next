@@ -153,7 +153,7 @@ load_global_emulator(void)
     confirm_save  = ini_section_get_int(cat, "confirm_save", 1);
     color_scheme  = ini_section_get_int(cat, "color_scheme", 0);
 
-    vmm_disabled = ini_section_get_int(cat, "vmm_disabled", 0);
+    vmm_disabled = ini_section_get_int(cat, "vmm_disabled", 1);
 
     chd_precache_level = ini_section_get_int(cat, "chd_precache_level", 0);
 
@@ -245,7 +245,7 @@ load_global_legacy(void)
     else if (mouse_sensitivity > 2.0)
         mouse_sensitivity = 2.0;
 
-    vmm_disabled = ini_section_get_int(cat, "vmm_disabled", 0);
+    vmm_disabled = ini_section_get_int(cat, "vmm_disabled", 1);
 
     p = ini_section_get_string(cat, "vmm_path", NULL);
     if (p != NULL) {
@@ -3068,7 +3068,7 @@ save_global_emulator(void)
     else
         ini_section_delete_var(cat, "chd_precache_level");
 
-    if (vmm_disabled != 0)
+    if (vmm_disabled != 1)
         ini_section_set_int(cat, "vmm_disabled", vmm_disabled);
     else
         ini_section_delete_var(cat, "vmm_disabled");

@@ -70,6 +70,7 @@ PreferencesEmulator::PreferencesEmulator(QWidget *parent)
     ui->checkBoxConfirmSave->setChecked(confirm_save);
     ui->checkBoxConfirmHardReset->setChecked(confirm_reset);
     ui->checkBoxCHDPrecache->setChecked(chd_precache_level > 0);
+    ui->checkBoxDisableVMM->setChecked(vmm_disabled != 0);
 
     ui->radioButtonSystem->setChecked(color_scheme == 0);
     ui->radioButtonLight->setChecked(color_scheme == 1);
@@ -106,6 +107,7 @@ PreferencesEmulator::save()
     confirm_save            = ui->checkBoxConfirmSave->isChecked() ? 1 : 0;
     confirm_reset           = ui->checkBoxConfirmHardReset->isChecked() ? 1 : 0;
     chd_precache_level      = ui->checkBoxCHDPrecache->isChecked() ? 1 : 0;
+    vmm_disabled            = ui->checkBoxDisableVMM->isChecked() ? 1 : 0;
 
     color_scheme       = (ui->radioButtonSystem->isChecked()) ? 0 : (ui->radioButtonLight->isChecked() ? 1 : 2);
 
