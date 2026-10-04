@@ -35,3 +35,6 @@ CMakeLists.txt text
 *.png binary
 *.jpg binary
 *.dat
+
+# 86Box-Next tools must stay runnable in Git Bash
+tools/*.sh text eol=lf
