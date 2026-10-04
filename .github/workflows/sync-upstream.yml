@@ -1,0 +1,112 @@
+name: Sync with upstream
+
+# Merges 86Box/86Box master into this fork's master once a day.
+# Never opens pull requests -- here or upstream.  On a conflict or a failed
+# push it opens (or updates) an issue in this repository instead.
+#
+# Pushing a merge that touches upstream's .github/workflows needs a token with
+# the "workflows" permission, which the built-in GITHUB_TOKEN cannot have.  Add
+# a personal access token (Contents + Workflows: read/write on this repo) as the
+# SYNC_TOKEN secret; without it those syncs fail and report why.
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_URL: https://github.com/86Box/86Box.git
+  UPSTREAM_BRANCH: master
+  FORK_BRANCH: master
+  ISSUE_TITLE: Upstream sync failed
+
+jobs:
+  sync:
+    if: github.repository == 'Xeon3D/86Box-Next'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FORK_BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Merge upstream
+        id: merge
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch --no-tags upstream "$UPSTREAM_BRANCH"
+
+          if git merge-base --is-ancestor "upstream/$UPSTREAM_BRANCH" HEAD; then
+            echo "Already up to date with upstream."
+            echo "result=uptodate" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          sha=$(git rev-parse --short "upstream/$UPSTREAM_BRANCH")
+          if git merge --no-edit -m "Merge upstream 86Box/86Box@$sha" "upstream/$UPSTREAM_BRANCH"; then
+            echo "result=merged" >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "conflicts<<EOF"
+              git diff --name-only --diff-filter=U
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            git merge --abort
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Push
+        if: steps.merge.outputs.result == 'merged'
+        run: |
+          if ! git push origin "HEAD:$FORK_BRANCH" 2> push.log; then
+            cat push.log
+            exit 1
+          fi
+
+      - name: Report failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONFLICTS: ${{ steps.merge.outputs.conflicts }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "The daily merge of \`86Box/86Box@$UPSTREAM_BRANCH\` into \`$FORK_BRANCH\` failed on $(date -u +%Y-%m-%d)."
+            echo
+            echo "Run: $RUN_URL"
+            if [ -n "$CONFLICTS" ]; then
+              echo
+              echo "Conflicting files:"
+              echo "$CONFLICTS" | sed 's/^/- `/; s/$/`/'
+              echo
+              echo "Resolve locally: \`git fetch upstream && git merge upstream/$UPSTREAM_BRANCH\`, fix, push."
+            elif [ -f push.log ]; then
+              echo
+              echo '```'
+              cat push.log
+              echo '```'
+              if grep -q "workflow" push.log; then
+                echo
+                echo "The merge changes upstream workflow files; add a \`SYNC_TOKEN\` secret with Workflows write access."
+              fi
+            fi
+          } > body.md
+
+          num=$(gh issue list --state open --search "in:title \"$ISSUE_TITLE\"" --json number --jq '.[0].number')
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --body-file body.md
+          else
+            gh issue create --title "$ISSUE_TITLE" --body-file body.md
+          fi
