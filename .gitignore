@@ -75,3 +75,7 @@ CMakeLists.txt.user
 
 # 86Box-Next staged rig
 /Latest
+
+# 86Box-Next local build trees
+/build-*
+/build*.log

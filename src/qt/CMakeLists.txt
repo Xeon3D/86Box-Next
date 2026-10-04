@@ -494,7 +494,21 @@ endif()
 if(WIN32)
     if(STATIC_BUILD)
         # needed for static builds
-        qt_import_plugins(plat INCLUDE Qt${QT_MAJOR}::QWindowsIntegrationPlugin Qt${QT_MAJOR}::QICOPlugin Qt${QT_MAJOR}::QWindowsVistaStylePlugin)
+        if(TARGET Qt${QT_MAJOR}::QModernWindowsStylePlugin)
+            # Qt 6.7 renamed the Vista style plugin.
+            qt_import_plugins(plat INCLUDE Qt${QT_MAJOR}::QWindowsIntegrationPlugin Qt${QT_MAJOR}::QICOPlugin Qt${QT_MAJOR}::QModernWindowsStylePlugin)
+        else()
+            qt_import_plugins(plat INCLUDE Qt${QT_MAJOR}::QWindowsIntegrationPlugin Qt${QT_MAJOR}::QICOPlugin Qt${QT_MAJOR}::QWindowsVistaStylePlugin)
+        endif()
+        # 86Box-Next: a static Qt 6 from MSYS2 brings its TIFF and WebP image
+        # plugins, whose own static dependencies are not on Qt's link line.
+        if(MINGW AND USE_QT6)
+            find_package(PkgConfig REQUIRED)
+            pkg_check_modules(QT_STATIC_IMAGE_LIBS QUIET libtiff-4 libwebpdemux libwebpmux libwebp)
+            if(QT_STATIC_IMAGE_LIBS_FOUND)
+                target_link_libraries(86Box ${QT_STATIC_IMAGE_LIBS_STATIC_LDFLAGS})
+            endif()
+        endif()
     else()
         if(USE_QT6)
             install(CODE "

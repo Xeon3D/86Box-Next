@@ -1,11 +1,15 @@
 #!/bin/sh
-# Stage a runnable 86Box-Next rig in ./Latest: the built exe, every DLL and
-# Qt plugin it needs from MSYS2 UCRT64, and the 86Box ROM set.  Replaces
-# whatever was there, so Latest only ever holds the newest build.
+# Stage a runnable 86Box-Next rig in ./Latest: the built exe and the 86Box
+# ROM set (plus MegaPPBox's Megatouch ROMs).  Replaces whatever was there, so
+# Latest only ever holds the newest build.
+#
+# The default is the static build (build-static: one self-contained exe).  A
+# dynamic build directory also works; then every DLL and Qt plugin it needs
+# from MSYS2 UCRT64 is copied next to it.
 #
 # Usage: tools/stage-rig.sh [build-dir]   (run from the repo root, Git Bash)
 set -e
-BUILD=${1:-build}
+BUILD=${1:-build-static}
 OUT=Latest
 UCRT=/c/msys64/ucrt64
 EXE="$BUILD/src/86Box-Next.exe"
@@ -36,7 +40,11 @@ rm -rf "$OUT/roms/megatouch"
 cp -r "$MEGA/roms/megatouch" "$OUT/roms/megatouch"
 rm -rf "$OUT/.megappbox"
 
-cp "$EXE" "$OUT/"
+strip -o "$OUT/86Box-Next.exe" "$EXE"
+if ! ldd "$EXE" | grep -qi '/ucrt64/'; then
+    echo "Staged $(git describe --always --dirty) in $OUT (static)"
+    exit 0
+fi
 windeployqt6 --no-translations --no-compiler-runtime --no-system-d3d-compiler \
     --no-opengl-sw --dir "$OUT" "$OUT/86Box-Next.exe" >/dev/null
 
