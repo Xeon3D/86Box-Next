@@ -32,6 +32,7 @@ jobs:
   sync:
     if: github.repository == 'Xeon3D/86Box-Next'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
