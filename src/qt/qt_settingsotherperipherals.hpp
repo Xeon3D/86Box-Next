@@ -25,6 +25,8 @@ public slots:
 private slots:
     void on_comboBoxRTC_currentIndexChanged(int index);
     void on_pushButtonConfigureRTC_clicked();
+    void on_comboBoxIOBoard_currentIndexChanged(int index);
+    void on_pushButtonConfigureIOBoard_clicked();
 
     void on_comboBoxMemExpCard1_currentIndexChanged(int index);
     void on_pushButtonConfigureMemExpCard1_clicked();
@@ -66,6 +68,7 @@ private:
     bool                          softpower_card_enabled     = false;
 
     SettingsCompleter            *scRTC;
+    int                           io_board_cfg_changed = 0;
 
     SettingsCompleter            *scMemExpCard[4];
     SettingsCompleter            *scIsaRomCard[4];

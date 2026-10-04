@@ -71,6 +71,7 @@
 #include <86box/isamem.h>
 #include <86box/isarom.h>
 #include <86box/isartc.h>
+#include <86box/io_board.h>
 #include <86box/lpt.h>
 #include <86box/serial.h>
 #include <86box/keyboard.h>
@@ -338,6 +339,7 @@ struct accelKey def_acc_keys[NUM_ACCELS] = {
 
 char vmm_path[1024] = { '\0' }; /* VM manager path to scan for VMs */
 int  start_vmm = 1;
+int  board_reset_pending = 0; /* 86Box-Next: RESET line (chipset, devices, CPU), see merit_io.c */
 
 /* Statistics. */
 extern int mmuflush;
@@ -1882,6 +1884,9 @@ pc_reset_hard_init(void)
     /* Reset any ISA RTC cards. */
     isartc_reset();
 
+    /* 86Box-Next: the arcade I/O board, if one is fitted. */
+    io_board_reset();
+
     /* Initialize the Voodoo cards here inorder to minimize
        the chances of the SCSI controller ending up on the bridge. */
     video_voodoo_init();
@@ -2055,6 +2060,10 @@ pc_run(void)
         ibm5140_power_hard_off();
         pc_reset_hard_close();
         pc_reset_hard_init();
+    }
+    if (board_reset_pending) {
+        board_reset_pending = 0;
+        hardresetx86();
     }
 
     /* Update the guest-CPU independent timer for devices with independent clock speed */

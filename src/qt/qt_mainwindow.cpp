@@ -21,6 +21,7 @@
 #include <QDebug>
 
 #include "qt_mainwindow.hpp"
+#include "qt_ioboard_controls.hpp"
 #include "ui_qt_mainwindow.h"
 
 #include "qt_specifydimensions.h"
@@ -322,6 +323,9 @@ MainWindow::MainWindow(QWidget *parent)
     toolbar_label_widget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 
     ui->toolBar->addWidget(toolbar_label_widget);
+
+    /* 86Box-Next: the arcade I/O board's cabinet controls. */
+    ioBoard = new IOBoardControls(this, ui->menubar, ui->menuAbout->menuAction(), ui->toolBar, ui->toolBar->actions().last());
 
     this->setWindowFlag(Qt::CustomizeWindowHint, true);
     this->setWindowFlag(Qt::MSWindowsFixedSizeDialogHint, vid_resize != 1);
@@ -1847,6 +1851,8 @@ MainWindow::refreshMediaMenu()
     status->setDynarecMenu(dynarecMenu);
     status->refresh(ui->statusbar);
     ui->actionMCA_devices->setVisible(machine_has_bus(machine, MACHINE_BUS_MCA));
+    if (ioBoard)
+        ioBoard->refresh();
     const bool has_power_button = device_has_power_button();
     if (acpi_enabled || has_power_button) {
         ui->actionACPI_Shutdown->setText(tr("Power &off (soft)"));

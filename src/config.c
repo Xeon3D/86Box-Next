@@ -56,6 +56,7 @@
 #include <86box/isamem.h>
 #include <86box/isarom.h>
 #include <86box/isartc.h>
+#include <86box/io_board.h>
 #include <86box/lpt.h>
 #include <86box/serial.h>
 #include <86box/hdd.h>
@@ -2717,6 +2718,10 @@ load_other_peripherals(void)
     p           = ini_section_get_string(cat, "isartc_type", "none");
     isartc_type = config_known(isartc_get_from_internal_name(p), STRING_UNSUPPORTED_RTC, p);
 
+    /* 86Box-Next: the arcade I/O board, one per machine. */
+    p             = ini_section_get_string(cat, "io_board", "none");
+    io_board_type = io_board_get_from_internal_name(p);
+
     if (!strcmp(p, "none"))
         ini_section_delete_var(cat, temp);
 }
@@ -2948,6 +2953,7 @@ config_load(void)
         cdrom[0].sound_on = 1;
         mem_size          = 64;
         isartc_type       = 0;
+        io_board_type     = IO_BOARD_NONE;
         for (i = 0; i < ISAROM_MAX; i++)
             isarom_type[i] = 0;
         for (i = 0; i < ISAMEM_MAX; i++)
@@ -4186,6 +4192,12 @@ save_other_peripherals(void)
     else
         ini_section_set_string(cat, "isartc_type",
                                isartc_get_internal_name(isartc_type));
+
+    if (io_board_type == IO_BOARD_NONE)
+        ini_section_delete_var(cat, "io_board");
+    else
+        ini_section_set_string(cat, "io_board",
+                               io_board_get_internal_name(io_board_type));
 
     ini_delete_section_if_empty(config, cat);
 }

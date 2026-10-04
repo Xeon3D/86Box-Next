@@ -53,6 +53,10 @@ add_library(dev OBJECT
     lpt_bpck.c
     lpt_ditto.c
     lpt_epat.c
+    io_board.c
+    funworld_io.c
+    merit_io.c
+    merit_pcic.c
     mouse.c
     mouse_bus.c
     mouse_elo_touchscreen.c

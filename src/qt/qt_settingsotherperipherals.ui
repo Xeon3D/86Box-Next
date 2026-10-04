@@ -89,6 +89,37 @@
             </item>
            </layout>
           </item>
+          <item row="5">
+           <layout class="QHBoxLayout" name="horizontalLayoutIOBoard">
+            <item>
+             <widget class="QLabel" name="labelIOBoard">
+              <property name="toolTip">
+               <string>The ISA card a coin-operated cabinet carries its coin mechanisms and operator buttons on. A machine has at most one. When fitted, its controls appear in the toolbar and the I/O Board menu.</string>
+              </property>
+              <property name="text">
+               <string>Arcade I/O board:</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QComboBox" name="comboBoxIOBoard">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="MinimumExpanding" vsizetype="Fixed">
+                <horstretch>0</horstretch>
+                <verstretch>0</verstretch>
+               </sizepolicy>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="pushButtonConfigureIOBoard">
+              <property name="text">
+               <string>Configure</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
           <item row="1">
            <layout class="QHBoxLayout" name="horizontalLayoutIBPC">
             <item>
@@ -544,6 +575,8 @@
  <tabstops>
   <tabstop>comboBoxRTC</tabstop>
   <tabstop>pushButtonConfigureRTC</tabstop>
+  <tabstop>comboBoxIOBoard</tabstop>
+  <tabstop>pushButtonConfigureIOBoard</tabstop>
   <tabstop>checkBoxISABugger</tabstop>
   <tabstop>checkBoxPOSTCard</tabstop>
   <tabstop>checkBoxUnitTester</tabstop>

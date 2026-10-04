@@ -26,6 +26,7 @@ extern "C" {
 #include <86box/isamem.h>
 #include <86box/isarom.h>
 #include <86box/isartc.h>
+#include <86box/io_board.h>
 #include <86box/unittester.h>
 #include <86box/softpower.h>
 #include <86box/novell_cardkey.h>
@@ -148,6 +149,21 @@ SettingsOtherPeripherals::onCurrentMachineChanged(int machineId)
     ui->comboBoxRTC->setCurrentIndex(selectedRow);
     ui->pushButtonConfigureRTC->setEnabled((isartc_type != 0) && isartc_has_config(isartc_type) && machineHasIsaOrSidecar);
 
+    // Arcade I/O board: one per machine, so a single selection.
+    ui->comboBoxIOBoard->clear();
+    int ioRow = 0;
+    for (int i = 0; i < IO_BOARD_COUNT; i++) {
+        const device_t *dev = io_board_get_device(i);
+        if ((i != IO_BOARD_NONE) && !device_is_valid(dev, machineId))
+            continue;
+        ui->comboBoxIOBoard->addItem((i == IO_BOARD_NONE) ? tr("None") : DeviceConfig::DeviceName(dev, io_board_get_internal_name(i), 0), i);
+        if (i == io_board_type)
+            ioRow = ui->comboBoxIOBoard->count() - 1;
+    }
+    ui->comboBoxIOBoard->setCurrentIndex(ioRow);
+    ui->comboBoxIOBoard->setEnabled(machineHasIsaOrSidecar);
+    ui->pushButtonConfigureIOBoard->setEnabled((io_board_type != IO_BOARD_NONE) && io_board_has_config(io_board_type) && machineHasIsaOrSidecar);
+
     // Memory Expansion Cards (shared UI: ISA or MCA boards depending on
     // the machine bus).  The isamem/mcamem databases and their config
     // globals remain separate; only the four dropdown slots are shared.
@@ -240,6 +256,8 @@ SettingsOtherPeripherals::changed()
 
     has_changed |= (isartc_type            != ui->comboBoxRTC->currentData().toInt());
     has_changed |= isartc_cfg_changed;
+    has_changed |= (io_board_type          != ui->comboBoxIOBoard->currentData().toInt());
+    has_changed |= io_board_cfg_changed;
     has_changed |= (bugger_enabled         != (ui->checkBoxISABugger->isChecked() ? 1 : 0));
     has_changed |= (postcard_enabled       != (ui->checkBoxPOSTCard->isChecked() ? 1 : 0));
     has_changed |= (unittester_enabled     != (ui->checkBoxUnitTester->isChecked() ? 1 : 0));
@@ -286,6 +304,7 @@ SettingsOtherPeripherals::save(int soft)
 
     /* Other peripherals category */
     isartc_type            = ui->comboBoxRTC->currentData().toInt();
+    io_board_type          = hasIsaOrSidecarBus(machineId) ? ui->comboBoxIOBoard->currentData().toInt() : IO_BOARD_NONE;
     bugger_enabled         = ui->checkBoxISABugger->isChecked() ? 1 : 0;
     postcard_enabled       = ui->checkBoxPOSTCard->isChecked() ? 1 : 0;
     unittester_enabled     = ui->checkBoxUnitTester->isChecked() ? 1 : 0;
@@ -331,6 +350,22 @@ void
 SettingsOtherPeripherals::on_pushButtonConfigureRTC_clicked()
 {
     isartc_cfg_changed |= DeviceConfig::ConfigureDevice(isartc_get_device(ui->comboBoxRTC->currentData().toInt()));
+}
+
+void
+SettingsOtherPeripherals::on_comboBoxIOBoard_currentIndexChanged(int index)
+{
+    if (index < 0)
+        return;
+
+    const int board = ui->comboBoxIOBoard->currentData().toInt();
+    ui->pushButtonConfigureIOBoard->setEnabled((board != IO_BOARD_NONE) && io_board_has_config(board) && hasIsaOrSidecarBus(machineId));
+}
+
+void
+SettingsOtherPeripherals::on_pushButtonConfigureIOBoard_clicked()
+{
+    io_board_cfg_changed |= DeviceConfig::ConfigureDevice(io_board_get_device(ui->comboBoxIOBoard->currentData().toInt()));
 }
 
 /* Shared memory-expansion slot helpers: resolve the board device and its

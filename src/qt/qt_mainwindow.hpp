@@ -181,6 +181,7 @@ private:
     std::unique_ptr<MachineStatus> status;
     std::shared_ptr<MediaMenu>     mm;
     QMenu                         *dynarecMenu = nullptr;
+    class IOBoardControls         *ioBoard     = nullptr; /* 86Box-Next */
 
     void updateShortcuts();
     void refreshDisplayRatioActions();

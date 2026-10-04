@@ -41,6 +41,7 @@
 #include <86box/timer.h>
 #include <86box/video.h>
 #include <86box/vid_svga.h>
+#include <86box/merit_io.h>
 
 /* The opcode of the instruction currently being executed. */
 uint8_t opcode;
@@ -404,6 +405,10 @@ void
 softresetx86(void)
 {
     if (soft_reset_mask)
+        return;
+
+    /* 86Box-Next: the Merit MAXX board turns a guest reboot into a board reset. */
+    if (merit_io_reboot_as_hard_reset())
         return;
 
     reset_common(0);

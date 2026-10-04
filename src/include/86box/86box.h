@@ -263,6 +263,7 @@ extern int  open_dir_usr_path;     /* default file open dialog directory of usr_
 extern char uuid[MAX_UUID_LEN];    /* UUID or machine identifier */
 extern char vmm_path[1024];        /* VM Manager path to scan */
 extern int  start_vmm;             /* the current execution will start the manager */
+extern int  board_reset_pending;   /* 86Box-Next: pull the board RESET line at the next frame */
 extern int  portable_mode;         /* we are running in portable mode 
                                       (global dirs = exe path) */
 extern int global_cfg_overridden;  /* global config file was overriden on command line */

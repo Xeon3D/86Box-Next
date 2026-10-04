@@ -23,6 +23,19 @@ else
     git clone -q --depth 1 https://github.com/86Box/roms.git "$OUT/roms"
 fi
 
+# The Merit Megatouch boards' ROMs (board ROM, key password tables, CMOS
+# images) live in MegaPPBox's repository, not in the 86Box ROM set.
+MEGA=../MegaPPBox-src
+if [ ! -d "$MEGA/roms/megatouch" ]; then
+    rm -rf "$OUT/.megappbox"
+    git clone -q --depth 1 --filter=blob:none --sparse https://github.com/Xeon3D/MegaPPBox.git "$OUT/.megappbox"
+    git -C "$OUT/.megappbox" sparse-checkout set roms/megatouch
+    MEGA="$OUT/.megappbox"
+fi
+rm -rf "$OUT/roms/megatouch"
+cp -r "$MEGA/roms/megatouch" "$OUT/roms/megatouch"
+rm -rf "$OUT/.megappbox"
+
 cp "$EXE" "$OUT/"
 windeployqt6 --no-translations --no-compiler-runtime --no-system-d3d-compiler \
     --no-opengl-sw --dir "$OUT" "$OUT/86Box-Next.exe" >/dev/null
