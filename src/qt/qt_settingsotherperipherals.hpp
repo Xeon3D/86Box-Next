@@ -28,6 +28,7 @@ private slots:
     void on_comboBoxIOBoard_currentIndexChanged(int index);
     void on_pushButtonConfigureIOBoard_clicked();
     void updateIOBoardHint();
+    QString ioBoardDescription(int board);
 
     void on_comboBoxMemExpCard1_currentIndexChanged(int index);
     void on_pushButtonConfigureMemExpCard1_clicked();

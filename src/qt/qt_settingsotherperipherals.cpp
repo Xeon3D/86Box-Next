@@ -157,6 +157,7 @@ SettingsOtherPeripherals::onCurrentMachineChanged(int machineId)
         if ((i != IO_BOARD_NONE) && !device_is_valid(dev, machineId))
             continue;
         ui->comboBoxIOBoard->addItem((i == IO_BOARD_NONE) ? tr("None") : DeviceConfig::DeviceName(dev, io_board_get_internal_name(i), 0), i);
+        ui->comboBoxIOBoard->setItemData(ui->comboBoxIOBoard->count() - 1, ioBoardDescription(i), Qt::ToolTipRole);
         if (i == io_board_type)
             ioRow = ui->comboBoxIOBoard->count() - 1;
     }
@@ -364,6 +365,22 @@ SettingsOtherPeripherals::on_comboBoxIOBoard_currentIndexChanged(int index)
     updateIOBoardHint();
 }
 
+/* What each board is, for its dropdown entry and the Configure button. */
+QString
+SettingsOtherPeripherals::ioBoardDescription(int board)
+{
+    switch (board) {
+        case IO_BOARD_FUNWORLD:
+            return tr("funworld Photo Play / I.G.O. I/O card (8255): six coins, four notes and the two door buttons. Configure sets its I/O address.");
+        case IO_BOARD_MERIT_XL:
+            return tr("Merit Megatouch XL I/O board (CRT-500 Zeus): four coins, Operator Setup, Calibrate, the security key, the CS4231A codec and the U12 ROM window. Configure picks the key dump, board ROM, battery RAM and DIP switches.");
+        case IO_BOARD_MERIT_MAXX:
+            return tr("Merit Megatouch MAXX I/O board (Millennium): four coins, Operator Setup, Calibrate, the security key and the PC Card slots. Configure picks the key dump and DIP switches.");
+        default:
+            return tr("No arcade I/O board.");
+    }
+}
+
 /* Whatever of the I/O board row is greyed out, say why and what to do. */
 void
 SettingsOtherPeripherals::updateIOBoardHint()
@@ -380,6 +397,12 @@ SettingsOtherPeripherals::updateIOBoardHint()
     } else if (!io_board_has_config(ui->comboBoxIOBoard->currentData().toInt())) {
         why = tr("This board has no settings to configure.");
     }
+
+    const int board = ui->comboBoxIOBoard->currentData().toInt();
+    const QString tip = why.isEmpty() ? tr("Configure the %1.").arg(ui->comboBoxIOBoard->currentText()) + "\n\n" + ioBoardDescription(board)
+                                      : (fix.isEmpty() ? why : why + "\n" + fix);
+    ui->pushButtonConfigureIOBoard->setToolTip(tip);
+    ui->comboBoxIOBoard->setToolTip(hasIsaOrSidecarBus(machineId) ? ioBoardDescription(board) : why + "\n" + fix);
 
     ui->labelIOBoardHint->setVisible(!why.isEmpty());
     if (!why.isEmpty())
