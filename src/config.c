@@ -58,6 +58,7 @@
 #include <86box/isartc.h>
 #include <86box/io_board.h>
 #include <86box/usb_next.h>
+#include <86box/pcmcia.h>
 #include <86box/lpt.h>
 #include <86box/serial.h>
 #include <86box/hdd.h>
@@ -2733,6 +2734,22 @@ load_other_peripherals(void)
         snprintf(usbn_port_cfg[u], sizeof(usbn_port_cfg[u]), "%s", p ? p : "");
     }
 
+    /* 86Box-Next: the PC Card controller and the card in each socket. */
+    {
+        ini_section_t pc = ini_find_section(config, "PCMCIA");
+        pcmcia_enabled   = !!ini_section_get_int(pc, "controller", 0);
+        for (int s = 0; s < PCMCIA_SOCKETS; s++) {
+            char key[32];
+            sprintf(key, "socket_%c", 'a' + s);
+            pcmcia_card_type[s] = pcmcia_card_get_from_internal_name(ini_section_get_string(pc, key, "none"));
+            sprintf(key, "socket_%c_net_type", 'a' + s);
+            const char *t      = ini_section_get_string(pc, key, "slirp");
+            pcmcia_net_type[s] = !strcmp(t, "pcap") ? NET_TYPE_PCAP : (!strcmp(t, "none") ? NET_TYPE_NONE : NET_TYPE_SLIRP);
+            sprintf(key, "socket_%c_net_host", 'a' + s);
+            snprintf(pcmcia_net_host[s], sizeof(pcmcia_net_host[s]), "%s", ini_section_get_string(pc, key, ""));
+        }
+    }
+
     if (!strcmp(p, "none"))
         ini_section_delete_var(cat, temp);
 }
@@ -4226,6 +4243,35 @@ save_other_peripherals(void)
                 ini_section_delete_var(usb, key);
         }
         ini_delete_section_if_empty(config, usb);
+    }
+    {
+        ini_section_t pc = ini_find_or_create_section(config, "PCMCIA");
+        if (pcmcia_enabled)
+            ini_section_set_int(pc, "controller", 1);
+        else
+            ini_section_delete_var(pc, "controller");
+        for (int s = 0; s < PCMCIA_SOCKETS; s++) {
+            char key[32], key_type[32], key_host[32];
+            sprintf(key, "socket_%c", 'a' + s);
+            sprintf(key_type, "socket_%c_net_type", 'a' + s);
+            sprintf(key_host, "socket_%c_net_host", 'a' + s);
+            if (pcmcia_card_type[s] > 0)
+                ini_section_set_string(pc, key, (char *) pcmcia_card_get_internal_name(pcmcia_card_type[s]));
+            else
+                ini_section_delete_var(pc, key);
+            if (pcmcia_card_is_network(pcmcia_card_type[s])) {
+                ini_section_set_string(pc, key_type, (pcmcia_net_type[s] == NET_TYPE_PCAP) ? "pcap" :
+                                                     ((pcmcia_net_type[s] == NET_TYPE_NONE) ? "none" : "slirp"));
+                if ((pcmcia_net_type[s] == NET_TYPE_PCAP) && pcmcia_net_host[s][0])
+                    ini_section_set_string(pc, key_host, pcmcia_net_host[s]);
+                else
+                    ini_section_delete_var(pc, key_host);
+            } else {
+                ini_section_delete_var(pc, key_type);
+                ini_section_delete_var(pc, key_host);
+            }
+        }
+        ini_delete_section_if_empty(config, pc);
     }
 
     ini_delete_section_if_empty(config, cat);

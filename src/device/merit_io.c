@@ -61,6 +61,7 @@
 #include <86box/path.h>
 #include <86box/ini.h>
 #include <86box/config.h>
+#include <86box/pcmcia.h>
 #include "cpu.h"
 
 #ifdef ENABLE_MERIT_IO_LOG
@@ -179,8 +180,6 @@ typedef struct merit_io_t {
 } merit_io_t;
 
 /* ---- cabinet controls ------------------------------------------------- */
-
-extern const device_t merit_pcic_device;
 
 static merit_io_t      *mio_inst;
 static volatile uint32_t line_until[MERIT_LINES]; /* host ms; 0 = released */
@@ -1358,9 +1357,10 @@ merit_io_init(const device_t *info)
         ad1848_speed_changed(&dev->codec);
     }
 
-    /* The MAXX cards carry the PC Card slots (merit_pcic.c). */
+    /* The MAXX cards carry the PC Card slots: the same controller the PCMCIA
+       settings fit (src/pcmcia), and only one of it. */
     if (dev->drive_mask == 0x20)
-        device_add(&merit_pcic_device);
+        pcmcia_controller_add();
     return dev;
 }
 

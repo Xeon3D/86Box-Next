@@ -18,8 +18,15 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
 - VM Manager is optional and off by default (Preferences > Emulator).
 - Arcade I/O boards (`src/device/io_board.c`, one per machine, Settings > Other
   peripherals): funworld Photo Play (PeepeeBox `funworld_io.c`) and Merit
-  Megatouch XL/MAXX (MegaPPBox `merit_io.c`, `merit_pcic.c`). UI controls in
-  `src/qt/qt_ioboard_controls.cpp`.
+  Megatouch XL/MAXX (MegaPPBox `merit_io.c`; the MAXX's PC Card slots are the
+  `src/pcmcia` controller). UI controls in `src/qt/qt_ioboard_controls.cpp`.
+- PCMCIA (`src/pcmcia/`, Settings > PCMCIA, ISA): MegaPPBox's Cirrus CL-PD6722 PC Card
+  controller (`pcic_pd6722.c`, 0x3E0, two sockets, one per machine, shared with the
+  MAXX I/O board) and the cards for its sockets (`pcmcia.c`'s list: TRENDnet
+  TE100-PC16, `net_te100pc16.c`). Config in `[PCMCIA]`; a card's own settings are
+  device instance #1/#2 (socket A/B); a PC network card links through
+  `net_cards_conf[NET_CARD_MAX + socket]` (`NET_CONF_MAX`), not one of the four
+  Network-page adapters. Test: `tests/pcmcia/`.
 - USB (`src/usb/`, Settings > Other peripherals, PCI): UHCI USB 1.1 cards (VIA
   VT83C572, Intel PIIX4) and USB 2.0 cards (EHCI + UHCI companion: VIA VT6202, Intel
   ICH4 layout with EHCI at function 7), ports in `usb_bus.c`, host passthrough via

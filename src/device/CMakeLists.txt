@@ -61,7 +61,9 @@ add_library(dev OBJECT
     ../usb/usb_host.c
     funworld_io.c
     merit_io.c
-    merit_pcic.c
+    ../pcmcia/pcmcia.c
+    ../pcmcia/pcic_pd6722.c
+    ../pcmcia/net_te100pc16.c
     mouse.c
     mouse_bus.c
     mouse_elo_touchscreen.c

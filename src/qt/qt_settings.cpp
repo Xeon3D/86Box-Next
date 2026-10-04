@@ -63,6 +63,7 @@ extern "C" {
 #include "qt_settingsfloppycdrom.hpp"
 #include "qt_settingsotherremovable.hpp"
 #include "qt_settingsotherperipherals.hpp"
+#include "qt_settingspcmcia.hpp"
 
 #include "qt_preferences.hpp"
 
@@ -109,6 +110,7 @@ private:
         "Floppy & CD-ROM drives",
         "Other removable devices",
         "Other peripherals",
+        "PCMCIA",
     };
     QStringList page_icons = {
         "machine",
@@ -122,6 +124,7 @@ private:
         "floppy_and_cdrom_drives",
         "other_removable_devices",
         "other_peripherals",
+        "pcmcia",
     };
     int fontHeight;
 };
@@ -178,6 +181,7 @@ Settings::Settings(QWidget *parent)
     floppyCdrom        = nullptr;
     otherRemovable     = nullptr;
     otherPeripherals   = nullptr;
+    pcmcia             = nullptr;
 
     ui->stackedWidget->addWidget(machine);
     for (int i = PAGE_DISPLAY; i < PAGE_COUNT; i++)
@@ -347,6 +351,17 @@ Settings::ensurePage(int index)
             }
             break;
 
+        case PAGE_PCMCIA:
+            if (pcmcia == nullptr) {
+                pcmcia = new SettingsPcmcia(this);
+                placePage(PAGE_PCMCIA, pcmcia);
+                connect(machine, &SettingsMachine::currentMachineChanged, pcmcia,
+                        &SettingsPcmcia::onCurrentMachineChanged);
+                if (machineId != ::machine)
+                    pcmcia->onCurrentMachineChanged(machineId);
+            }
+            break;
+
         default:
             break;
     }
@@ -414,6 +429,7 @@ Settings::save(int soft)
     floppyCdrom->save(soft);
     otherRemovable->save(soft);
     otherPeripherals->save(soft);
+    pcmcia->save(soft);
 }
 
 void
@@ -455,6 +471,7 @@ Settings::accept()
     changed |= floppyCdrom->changed();
     changed |= otherRemovable->changed();
     changed |= otherPeripherals->changed();
+    changed |= pcmcia->changed();
 
     if ((changed & SETTINGS_REQUIRE_HARD_RESET) && confirm_save && !settings_only) {
         QMessageBox questionbox(QMessageBox::Icon::Question, EMU_DISPLAY_NAME,

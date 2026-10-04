@@ -18,6 +18,7 @@ class SettingsHarddisks;
 class SettingsFloppyCDROM;
 class SettingsOtherRemovable;
 class SettingsOtherPeripherals;
+class SettingsPcmcia;
 
 class Settings : public QDialog {
     Q_OBJECT
@@ -52,6 +53,7 @@ private:
         PAGE_FLOPPYCDROM,
         PAGE_REMOVABLE,
         PAGE_OTHER,
+        PAGE_PCMCIA,
         PAGE_COUNT
     };
 
@@ -71,6 +73,7 @@ private:
     SettingsFloppyCDROM        *floppyCdrom;
     SettingsOtherRemovable     *otherRemovable;
     SettingsOtherPeripherals   *otherPeripherals;
+    SettingsPcmcia             *pcmcia;
 
     friend class SettingsMachine;
     friend class SettingsDisplay;

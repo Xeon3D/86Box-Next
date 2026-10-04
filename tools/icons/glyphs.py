@@ -282,6 +282,19 @@ def other_peripherals(c):
     expansion_card(c)
 
 
+def pcmcia(c):
+    """A PC Card, connector end down: the metal shell, its label, and the
+    68-pin socket edge."""
+    shell = P["silver"]
+    c.shadow(lambda s: s.rect(6, 2.5, 20, 27, 1.6, fill=shell, outline=None))
+    c.rect(6, 2.5, 20, 27, 1.6, fill=(shell, shade(shell, -0.3)), width=0.7)
+    c.rect(8.5, 5, 15, 15, 1, fill=(P["blue"], shade(P["blue"], -0.3)), width=0.5)
+    c.text(16, 12.6, "PC", 5.2, W, BOLD)
+    c.rect(7.5, 24.5, 17, 3.5, 0.5, fill=(hexc("#334155"), hexc("#0F172A")), outline=None)
+    for i in range(7):
+        c.rect(8.6 + i * 2.25, 25.5, 1.2, 1.5, 0.2, fill=(P["gold"], P["gold_d"]), outline=None)
+
+
 def isa_memory(c):
     pcb = P["pcb"]
     c.shadow(lambda s: s.rect(2, 9, 28, 13, 1.2, fill=pcb, outline=None))

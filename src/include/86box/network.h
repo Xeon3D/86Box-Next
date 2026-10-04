@@ -59,6 +59,9 @@
 #define NET_QUEUE_LEN_MASK (NET_QUEUE_LEN - 1)
 #define NET_QUEUE_COUNT    4
 #define NET_CARD_MAX       4
+/* 86Box-Next: after the four adapters of the Network settings, a link for
+   each PC Card socket (pcmcia.c), so a PC network card has its own. */
+#define NET_CONF_MAX       (NET_CARD_MAX + 2)
 #define NET_HOST_INTF_MAX  64
 
 #define NET_PERIOD_10M     0.8
@@ -101,7 +104,7 @@ typedef struct netcard_conf_t {
     char     nrs_hostname[128];
 } netcard_conf_t;
 
-extern netcard_conf_t net_cards_conf[NET_CARD_MAX];
+extern netcard_conf_t net_cards_conf[NET_CONF_MAX];
 extern uint16_t       net_card_current;
 extern int            slirp_card_num;
 

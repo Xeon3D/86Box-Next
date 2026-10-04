@@ -160,7 +160,7 @@ net_cards_migrate[] = {
   // clang-format on
 };
 
-netcard_conf_t net_cards_conf[NET_CARD_MAX];
+netcard_conf_t net_cards_conf[NET_CONF_MAX];
 uint16_t       net_card_current = 0;
 
 /* Global variables. */
