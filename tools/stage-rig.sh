@@ -1,61 +1,77 @@
 #!/bin/sh
-# Stage a runnable 86Box-Next rig in ./Latest: the built exe and the 86Box
-# ROM set (plus MegaPPBox's Megatouch ROMs).  Replaces whatever was there, so
-# Latest only ever holds the newest build.
+# Stage the newest 86Box-Next build in ../Latest (next to the repository):
+# the built exe, the 86Box ROM set and MegaPPBox's Megatouch ROMs.
+#
+# Latest is also where the machine being tested lives, so this only ever
+# replaces the exe (and, for a dynamic build, its DLLs and Qt plugins) and
+# never deletes anything: 86box.cfg, nvr/, disk images and whatever else is
+# there are left alone.  roms/ is left alone too: it is only created when it
+# is missing (and roms/megatouch only added when missing), unless
+# --update-roms asks for both to be refreshed.
 #
 # The default is the static build (build-static: one self-contained exe).  A
 # dynamic build directory also works; then every DLL and Qt plugin it needs
 # from MSYS2 UCRT64 is copied next to it.
 #
-# Usage: tools/stage-rig.sh [build-dir]   (run from the repo root, Git Bash)
+# Usage: tools/stage-rig.sh [--update-roms] [build-dir]
+#        (run from the repo root, Git Bash)
 set -e
+UPDATE_ROMS=0
+if [ "$1" = "--update-roms" ]; then
+    UPDATE_ROMS=1
+    shift
+fi
 BUILD=${1:-build-static}
-OUT=Latest
+OUT=../Latest
 UCRT=/c/msys64/ucrt64
 EXE="$BUILD/src/86Box-Next.exe"
 export PATH="$UCRT/bin:/c/msys64/usr/bin:$PATH"
 
 [ -f "$EXE" ] || { echo "no $EXE - build first" >&2; exit 1; }
+if tasklist //FI "IMAGENAME eq 86Box-Next.exe" 2>/dev/null | grep -qi "86Box-Next.exe"; then
+    echo "86Box-Next is running; close it and stage again" >&2
+    exit 2
+fi
+mkdir -p "$OUT"
 
-# Keep the ROM clone across restages; it is large and rarely changes.
-if [ -d "$OUT/roms/.git" ]; then
-    git -C "$OUT/roms" pull -q --ff-only || true
-    find "$OUT" -mindepth 1 -maxdepth 1 ! -name roms -exec rm -rf {} +
-else
-    rm -rf "$OUT"
-    mkdir -p "$OUT"
+# The 86Box ROM set: cloned only if there is none; pulled only when asked.
+if [ ! -d "$OUT/roms" ]; then
     git clone -q --depth 1 https://github.com/86Box/roms.git "$OUT/roms"
+elif [ "$UPDATE_ROMS" = 1 ] && [ -d "$OUT/roms/.git" ]; then
+    git -C "$OUT/roms" pull -q --ff-only || true
 fi
 
 # The Merit Megatouch boards' ROMs (board ROM, key password tables, CMOS
-# images) live in MegaPPBox's repository, not in the 86Box ROM set.
-MEGA=../MegaPPBox-src
-if [ ! -d "$MEGA/roms/megatouch" ]; then
-    rm -rf "$OUT/.megappbox"
-    git clone -q --depth 1 --filter=blob:none --sparse https://github.com/Xeon3D/MegaPPBox.git "$OUT/.megappbox"
-    git -C "$OUT/.megappbox" sparse-checkout set roms/megatouch
-    MEGA="$OUT/.megappbox"
+# images) live in MegaPPBox's repository, not in the 86Box ROM set: added
+# only if missing, refreshed only when asked.
+if [ ! -d "$OUT/roms/megatouch" ] || [ "$UPDATE_ROMS" = 1 ]; then
+    MEGA=../../MegaPPBox-src
+    TMP=""
+    if [ ! -d "$MEGA/roms/megatouch" ]; then
+        TMP=$(mktemp -d)
+        git clone -q --depth 1 --filter=blob:none --sparse https://github.com/Xeon3D/MegaPPBox.git "$TMP/m"
+        git -C "$TMP/m" sparse-checkout set roms/megatouch
+        MEGA="$TMP/m"
+    fi
+    mkdir -p "$OUT/roms/megatouch"
+    cp -r "$MEGA/roms/megatouch/." "$OUT/roms/megatouch/"
+    [ -n "$TMP" ] && rm -rf "$TMP"
 fi
-rm -rf "$OUT/roms/megatouch"
-cp -r "$MEGA/roms/megatouch" "$OUT/roms/megatouch"
-rm -rf "$OUT/.megappbox"
 
 strip -o "$OUT/86Box-Next.exe" "$EXE"
 if ! ldd "$EXE" | grep -qi '/ucrt64/'; then
     echo "Staged $(git describe --always --dirty) in $OUT (static)"
     exit 0
 fi
+
+# A dynamic build: its Qt plugins and every UCRT64 DLL it pulls in.
 windeployqt6 --no-translations --no-compiler-runtime --no-system-d3d-compiler \
     --no-opengl-sw --dir "$OUT" "$OUT/86Box-Next.exe" >/dev/null
-
-# Copy every UCRT64 DLL the exe and the deployed Qt plugins pull in.
 for i in 1 2 3; do
-    find "$OUT" -name '*.exe' -o -name '*.dll' | grep -v "^$OUT/roms" |
+    find "$OUT" -maxdepth 2 \( -name '*.exe' -o -name '*.dll' \) |
         xargs ldd 2>/dev/null | awk '{print $3}' | grep -i '^/ucrt64/' | sort -u |
         while read -r dll; do
-            name=$(basename "$dll")
-            [ -f "$OUT/$name" ] || cp "$UCRT/bin/$name" "$OUT/"
+            cp -u "$UCRT/bin/$(basename "$dll")" "$OUT/"
         done
 done
-
-echo "Staged $(git describe --always --dirty) in $OUT"
+echo "Staged $(git describe --always --dirty) in $OUT (dynamic)"

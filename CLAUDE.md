@@ -20,10 +20,23 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   peripherals): funworld Photo Play (PeepeeBox `funworld_io.c`) and Merit
   Megatouch XL/MAXX (MegaPPBox `merit_io.c`, `merit_pcic.c`). UI controls in
   `src/qt/qt_ioboard_controls.cpp`.
+- USB (`src/usb/`, Settings > Other peripherals, PCI): a UHCI USB 1.1 card and a
+  VT6202-style USB 2.0 card (EHCI + UHCI companion), ports in `usb_bus.c`, host
+  passthrough via libusb (UsbDk on Windows when installed) in `usb_host.c`, the
+  VMware-style connect prompt and USB menu in `src/qt/qt_usb_manager.cpp`.
+  Tests: `tests/usb/` (plain C, no framework). Upstream's `src/usb.c` is the
+  southbridge stub and is untouched.
+- Upstream's CI workflows and Dependabot are disabled/removed in this repo; only
+  `sync-upstream.yml` runs.
 
-## Staged rig
-`tools/stage-rig.sh` rebuilds `Latest/` (git-ignored): exe, DLLs, 86Box ROM set,
-plus MegaPPBox's `roms/megatouch`. Restage after every change.
+## Layout and the staged rig
+`F:\Claude\86Box-Next\86box` is this repository; `F:\Claude\86Box-Next\Latest` (outside
+it) is the newest build, where the owner also keeps the machine they test with.
+`tools/stage-rig.sh` replaces only the exe (plus DLLs for a dynamic build) there;
+`roms/` is only created when missing (86Box ROM set + MegaPPBox's `roms/megatouch`) and
+only refreshed with `--update-roms` -- leave the ROMs alone unless strictly necessary. **Never delete
+anything else in Latest** -- `86box.cfg`, `nvr/` and disk images are theirs.
+Restage after every change; it refuses while 86Box-Next is running.
 
 ## Building (Windows)
 Static (the default, and what gets staged): MSYS2 UCRT64 with `qt6-static`, `libtiff`,
