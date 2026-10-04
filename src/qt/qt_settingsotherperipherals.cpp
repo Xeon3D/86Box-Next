@@ -389,7 +389,7 @@ SettingsOtherPeripherals::updateUSBHint()
 
     ui->labelUSBHint->setVisible(!text.isEmpty());
     ui->labelUSBHint->setText(QString("<small>&#9432; %1</small>").arg(text.toHtmlEscaped()));
-    const QString tip = text.isEmpty() ? tr("A USB 1.1 (UHCI) controller with two ports. Host USB devices can be connected to it from the USB menu; a device connected to the virtual machine is disconnected from the host.") : text;
+    const QString tip = text.isEmpty() ? tr("The USB 1.1 card (UHCI) takes full- and low-speed devices; the USB 2.0 card (EHCI with a UHCI companion) takes any. Both have two ports. Host USB devices are connected from the USB menu; a device connected to the virtual machine is disconnected from the host.") : text;
     ui->comboBoxUSB->setToolTip(tip);
     ui->labelUSB->setToolTip(tip);
 }

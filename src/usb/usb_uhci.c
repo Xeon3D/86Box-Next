@@ -128,6 +128,8 @@ enum {
 typedef struct uhci_t {
     uint8_t  pci_conf[256];
     uint8_t  pci_slot;
+    uint8_t *slotp;          /* the card's slot: our own, or the EHCI card's */
+    int      companion;      /* function 0 of an EHCI card                   */
     uint8_t  irq_state;
     uint16_t io_base;
     int      io_mapped;
@@ -137,21 +139,13 @@ typedef struct uhci_t {
     uint8_t  sofmod;
     uint16_t portsc[USBN_PORTS];
 
-    usbn_device_t *dev[USBN_PORTS];
-
-    /* Plug/unplug requests from the UI thread, applied by the frame timer. */
-    mutex_t       *lock;
-    usbn_device_t *plug[USBN_PORTS];
-    int            unplug[USBN_PORTS];
+    usbn_device_t *dev[USBN_PORTS];   /* what this controller sees on each port */
 
     pc_timer_t frame_timer;
     uint8_t    pending_sts;   /* status bits raised during this frame */
 } uhci_t;
 
-static uhci_t *uhci_inst;
-
-int  usb_card_type = 0;
-char usbn_port_cfg[USBN_PORTS][16];
+int usb_card_type = 0;
 
 /* ------------------------------------------------------------- the IRQ --- */
 
@@ -170,9 +164,9 @@ uhci_update_irq(uhci_t *dev)
         level = 1;
 
     if (level)
-        pci_set_irq(dev->pci_slot, PCI_INTA, &dev->irq_state);
+        pci_set_irq(*dev->slotp, PCI_INTA, &dev->irq_state);
     else
-        pci_clear_irq(dev->pci_slot, PCI_INTA, &dev->irq_state);
+        pci_clear_irq(*dev->slotp, PCI_INTA, &dev->irq_state);
 }
 
 /* --------------------------------------------------------------- ports --- */
@@ -188,7 +182,6 @@ uhci_port_connect(uhci_t *dev, int p, usbn_device_t *d)
         dev->portsc[p] |= PORT_LS_J;
     if (dev->cmd & CMD_EGSM)
         dev->sts |= STS_RD;
-    pclog("USB: %s plugged into port %d\n", d->name, p + 1);
 }
 
 static void
@@ -198,30 +191,10 @@ uhci_port_disconnect(uhci_t *dev, int p)
 
     if (d == NULL)
         return;
-    pclog("USB: %s unplugged from port %d\n", d->name, p + 1);
     dev->dev[p] = NULL;
     if (dev->portsc[p] & PORT_PED)
         dev->portsc[p] |= PORT_PEDC;
     dev->portsc[p] = (dev->portsc[p] & ~(PORT_CCS | PORT_PED | PORT_LSDA | PORT_LS_J | PORT_LS_K)) | PORT_CSC;
-    if (d->destroy)
-        d->destroy(d);
-}
-
-static void
-uhci_apply_plugs(uhci_t *dev)
-{
-    thread_wait_mutex(dev->lock);
-    for (int p = 0; p < USBN_PORTS; p++) {
-        if (dev->unplug[p]) {
-            dev->unplug[p] = 0;
-            uhci_port_disconnect(dev, p);
-        }
-        if (dev->plug[p] && (dev->dev[p] == NULL)) {
-            uhci_port_connect(dev, p, dev->plug[p]);
-            dev->plug[p] = NULL;
-        }
-    }
-    thread_release_mutex(dev->lock);
 }
 
 static usbn_device_t *
@@ -378,7 +351,8 @@ uhci_frame(void *priv)
     uint32_t link;
 
     timer_on_auto(&dev->frame_timer, 1000.0);
-    uhci_apply_plugs(dev);
+    if (!dev->companion)
+        usbn_apply();   /* an EHCI card does this for its companion */
 
     if (!(dev->cmd & CMD_RS))
         return;
@@ -599,8 +573,8 @@ uhci_remap(uhci_t *dev)
 
 /* ------------------------------------------------------------------ PCI --- */
 
-static uint8_t
-uhci_pci_read(UNUSED(int func), int addr, UNUSED(int len), void *priv)
+uint8_t
+uhci_pci_read(int func, int addr, UNUSED(int len), void *priv)
 {
     const uhci_t *dev = (uhci_t *) priv;
 
@@ -609,8 +583,8 @@ uhci_pci_read(UNUSED(int func), int addr, UNUSED(int len), void *priv)
     return dev->pci_conf[addr & 0xff];
 }
 
-static void
-uhci_pci_write(UNUSED(int func), int addr, UNUSED(int len), uint8_t val, void *priv)
+void
+uhci_pci_write(int func, int addr, UNUSED(int len), uint8_t val, void *priv)
 {
     uhci_t *dev = (uhci_t *) priv;
 
@@ -678,19 +652,40 @@ uhci_pci_init_conf(uhci_t *dev)
 
 /* --------------------------------------------------------- the device --- */
 
-static void *
-uhci_init(UNUSED(const device_t *info))
+static void
+uhci_root_connect(void *priv, int port, usbn_device_t *d)
+{
+    uhci_port_connect((uhci_t *) priv, port, d);
+}
+
+static void
+uhci_root_disconnect(void *priv, int port)
+{
+    uhci_port_disconnect((uhci_t *) priv, port);
+}
+
+static const usbn_root_ops_t uhci_root_ops = { uhci_root_connect, uhci_root_disconnect };
+
+static uhci_t *
+uhci_core_create(void)
 {
     uhci_t *dev = calloc(1, sizeof(uhci_t));
 
     uhci_pci_init_conf(dev);
-    dev->lock = thread_create_mutex();
+    dev->slotp = &dev->pci_slot;
     uhci_reset_regs(dev);
-    pci_add_card(PCI_ADD_NORMAL, uhci_pci_read, uhci_pci_write, dev, &dev->pci_slot);
     timer_add(&dev->frame_timer, uhci_frame, dev, 0);
     timer_on_auto(&dev->frame_timer, 1000.0);
+    return dev;
+}
 
-    uhci_inst = dev;
+static void *
+uhci_init(UNUSED(const device_t *info))
+{
+    uhci_t *dev = uhci_core_create();
+
+    pci_add_card(PCI_ADD_NORMAL, uhci_pci_read, uhci_pci_write, dev, &dev->pci_slot);
+    usbn_set_root(&uhci_root_ops, dev, 0);
     usbn_restore_ports();
     return dev;
 }
@@ -698,24 +693,14 @@ uhci_init(UNUSED(const device_t *info))
 static void
 uhci_close(void *priv)
 {
-    uhci_t *dev = (uhci_t *) priv;
-
-    uhci_inst = NULL;
-    for (int p = 0; p < USBN_PORTS; p++) {
-        uhci_port_disconnect(dev, p);
-        if (dev->plug[p] && dev->plug[p]->destroy)
-            dev->plug[p]->destroy(dev->plug[p]);
-    }
-    thread_close_mutex(dev->lock);
-    free(dev);
+    usbn_set_root(NULL, NULL, 0);
+    free(priv);
 }
 
 static void
 uhci_reset(void *priv)
 {
-    uhci_t *dev = (uhci_t *) priv;
-
-    uhci_reset_regs(dev);
+    uhci_reset_regs((uhci_t *) priv);
 }
 
 const device_t usb_uhci_via_device = {
@@ -732,11 +717,51 @@ const device_t usb_uhci_via_device = {
     .config        = NULL
 };
 
-/* ------------------------------------------------- card list / plugging --- */
+/* ------------------------------------------------- as an EHCI companion --- */
+
+uhci_t *
+uhci_companion_create(uint8_t *card_slot)
+{
+    uhci_t *dev = uhci_core_create();
+
+    dev->companion      = 1;
+    dev->slotp          = card_slot;
+    dev->pci_conf[0x0e] = 0x80;   /* function 0 of a multi-function card */
+    return dev;
+}
+
+void
+uhci_companion_close(uhci_t *dev)
+{
+    free(dev);
+}
+
+void
+uhci_companion_reset(uhci_t *dev)
+{
+    uhci_reset_regs(dev);
+}
+
+/* The EHCI card gives a port to us (d) or takes it back (NULL). */
+void
+uhci_route_port(uhci_t *dev, int port, usbn_device_t *d)
+{
+    if (dev->dev[port] == d)
+        return;
+    if (dev->dev[port])
+        uhci_port_disconnect(dev, port);
+    if (d)
+        uhci_port_connect(dev, port, d);
+}
+
+/* -------------------------------------------------------- the card list --- */
+
+extern const device_t usb_ehci_via_device;
 
 static const device_t *usb_cards[] = {
     &device_none,
     &usb_uhci_via_device,
+    &usb_ehci_via_device,
     NULL
 };
 
@@ -775,90 +800,4 @@ usb_card_get_from_internal_name(const char *s)
         if (!strcmp(usb_cards[c]->internal_name, s))
             return c;
     return 0;
-}
-
-int
-usbn_present(void)
-{
-    return uhci_inst != NULL;
-}
-
-int
-usbn_port_busy(int port)
-{
-    uhci_t *dev = uhci_inst;
-    int     busy;
-
-    if (!dev || (port < 0) || (port >= USBN_PORTS))
-        return 1;
-    thread_wait_mutex(dev->lock);
-    busy = (dev->dev[port] != NULL && !dev->unplug[port]) || (dev->plug[port] != NULL);
-    thread_release_mutex(dev->lock);
-    return busy;
-}
-
-const char *
-usbn_port_name(int port, char *buf, int len)
-{
-    uhci_t *dev = uhci_inst;
-
-    buf[0] = '\0';
-    if (!dev || (port < 0) || (port >= USBN_PORTS))
-        return buf;
-    thread_wait_mutex(dev->lock);
-    if (dev->plug[port])
-        snprintf(buf, len, "%s", dev->plug[port]->name);
-    else if (dev->dev[port] && !dev->unplug[port])
-        snprintf(buf, len, "%s", dev->dev[port]->name);
-    thread_release_mutex(dev->lock);
-    return buf;
-}
-
-int
-usbn_attach(int port, usbn_device_t *d)
-{
-    uhci_t *dev = uhci_inst;
-
-    if (!dev || !d || (port < 0) || (port >= USBN_PORTS) || usbn_port_busy(port))
-        return 0;
-    thread_wait_mutex(dev->lock);
-    dev->plug[port] = d;
-    thread_release_mutex(dev->lock);
-    return 1;
-}
-
-void
-usbn_detach(int port)
-{
-    uhci_t *dev = uhci_inst;
-
-    if (!dev || (port < 0) || (port >= USBN_PORTS))
-        return;
-    thread_wait_mutex(dev->lock);
-    if (dev->plug[port]) {
-        if (dev->plug[port]->destroy)
-            dev->plug[port]->destroy(dev->plug[port]);
-        dev->plug[port] = NULL;
-    } else if (dev->dev[port])
-        dev->unplug[port] = 1;
-    thread_release_mutex(dev->lock);
-    usbn_port_cfg[port][0] = '\0';
-}
-
-/* Plug back in what the config says was plugged in. */
-void
-usbn_restore_ports(void)
-{
-    for (int p = 0; p < USBN_PORTS; p++) {
-        unsigned vid, pid;
-        char     err[256];
-
-        if (sscanf(usbn_port_cfg[p], "%x:%x", &vid, &pid) != 2)
-            continue;
-        usbn_device_t *d = usbn_host_open((uint16_t) vid, (uint16_t) pid, err, sizeof(err));
-        if (d)
-            usbn_attach(p, d);
-        else
-            pclog("USB: port %d: %04X:%04X not reattached: %s\n", p + 1, vid, pid, err);
-    }
 }

@@ -16,8 +16,14 @@
  *             and SET_INTERFACE (claim / alternate setting) and
  *             CLEAR_FEATURE(ENDPOINT_HALT).
  *
- *             On Windows, libusb can only open a device that uses the WinUSB
- *             (or libusbK) driver; Zadig installs it for a chosen device.
+ *             On Windows there are two ways in.  With UsbDk installed (a
+ *             signed filter driver, installed once -- the same idea as
+ *             VirtualBox's and VMware's USB monitor), any device is captured
+ *             on demand and given back when released.  Without it, libusb can
+ *             only open devices that use the WinUSB (or libusbK) driver,
+ *             which Zadig installs per device.  Device names come from
+ *             Windows' own device database, so listing never opens (and,
+ *             under UsbDk, never captures) a device.
  *
  *             Released under the GNU General Public License version 2 or
  *             later.  See COPYING for more information.
@@ -44,6 +50,12 @@ usbn_host_available(void)
 
 int
 usbn_host_list(UNUSED(usbn_host_info_t *out), UNUSED(int max))
+{
+    return 0;
+}
+
+int
+usbn_host_uses_usbdk(void)
 {
     return 0;
 }
@@ -84,13 +96,14 @@ host_log(const char *fmt, ...)
 #define XFER_DONE    2
 
 #define CTL_MAX      4096
+#define DATA_MAX     20480    /* an EHCI qTD: five 4 KB pages */
 
 typedef struct xfer_t {
     struct libusb_transfer *t;
     volatile int            state;
     int                     status;
     int                     actual;
-    uint8_t                 buf[CTL_MAX + 8];
+    uint8_t                 buf[DATA_MAX + 8];
 } xfer_t;
 
 typedef struct host_dev_t {
@@ -115,6 +128,7 @@ typedef struct host_dev_t {
 } host_dev_t;
 
 static libusb_context *ctx;
+static int             use_usbdk;
 static thread_t       *event_thread;
 static volatile int    event_run;
 static int             open_count;
@@ -140,7 +154,18 @@ host_ctx_init(void)
         ctx = NULL;
         return 0;
     }
+#ifdef _WIN32
+    /* Must come straight after init; fails when UsbDk is not installed. */
+    use_usbdk = (libusb_set_option(ctx, LIBUSB_OPTION_USE_USBDK) == LIBUSB_SUCCESS);
+    pclog("USB: host passthrough through %s\n", use_usbdk ? "UsbDk" : "WinUSB");
+#endif
     return 1;
+}
+
+int
+usbn_host_uses_usbdk(void)
+{
+    return host_ctx_init() && use_usbdk;
 }
 
 static void
@@ -200,6 +225,48 @@ static struct {
 } name_cache[64];
 static int name_cache_n;
 
+#ifdef _WIN32
+#    include <windows.h>
+#    include <setupapi.h>
+#    include <initguid.h>  /* define, not just declare, the DEVPKEY below */
+#    include <devpkey.h>
+
+/* The name Windows shows for the device: what the device itself reports
+   (its product string, which Windows keeps as the "bus reported device
+   description"), else the driver's description. */
+static int
+win_device_name(uint16_t vid, uint16_t pid, char *out, int len)
+{
+    char            want[32];
+    int             found = 0;
+    SP_DEVINFO_DATA di    = { .cbSize = sizeof(SP_DEVINFO_DATA) };
+    HDEVINFO        set   = SetupDiGetClassDevsA(NULL, "USB", NULL, DIGCF_ALLCLASSES | DIGCF_PRESENT);
+
+    if (set == INVALID_HANDLE_VALUE)
+        return 0;
+    snprintf(want, sizeof(want), "VID_%04X&PID_%04X", vid, pid);
+    for (DWORD i = 0; !found && SetupDiEnumDeviceInfo(set, i, &di); i++) {
+        char  ids[1024];
+        DWORD type;
+
+        if (!SetupDiGetDeviceRegistryPropertyA(set, &di, SPDRP_HARDWAREID, &type, (BYTE *) ids, sizeof(ids), NULL))
+            continue;
+        if (!strstr(ids, want))
+            continue;
+        WCHAR      wname[256];
+        DEVPROPTYPE pt;
+        if (SetupDiGetDevicePropertyW(set, &di, &DEVPKEY_Device_BusReportedDeviceDesc, &pt, (BYTE *) wname, sizeof(wname), NULL, 0)
+            && wname[0]) {
+            WideCharToMultiByte(CP_UTF8, 0, wname, -1, out, len, NULL, NULL);
+            found = 1;
+        } else if (SetupDiGetDeviceRegistryPropertyA(set, &di, SPDRP_DEVICEDESC, &type, (BYTE *) out, len, NULL))
+            found = 1;
+    }
+    SetupDiDestroyDeviceInfoList(set);
+    return found;
+}
+#endif
+
 static const char *
 cached_name(libusb_device *d, const struct libusb_device_descriptor *dd, uint8_t bus, const uint8_t *path, int depth)
 {
@@ -213,6 +280,11 @@ cached_name(libusb_device *d, const struct libusb_device_descriptor *dd, uint8_t
     char  man[64] = "", prod[64] = "";
     libusb_device_handle *h;
 
+#ifdef _WIN32
+    (void) h;
+    (void) d;
+    win_device_name(dd->idVendor, dd->idProduct, prod, sizeof(prod));
+#else
     if (libusb_open(d, &h) == 0) {
         if (dd->iManufacturer)
             libusb_get_string_descriptor_ascii(h, dd->iManufacturer, (unsigned char *) man, sizeof(man));
@@ -220,6 +292,7 @@ cached_name(libusb_device *d, const struct libusb_device_descriptor *dd, uint8_t
             libusb_get_string_descriptor_ascii(h, dd->iProduct, (unsigned char *) prod, sizeof(prod));
         libusb_close(h);
     }
+#endif
     name_cache[slot].bus   = bus;
     name_cache[slot].depth = depth;
     memcpy(name_cache[slot].path, path, depth);
@@ -580,8 +653,8 @@ host_packet(usbn_device_t *dev, uint8_t pid, uint8_t ep, uint8_t *buf, int len)
     if (x->state == XFER_PENDING)
         return USBN_NAK;
 
-    if (len > CTL_MAX)
-        len = CTL_MAX;
+    if (len > DATA_MAX)
+        len = DATA_MAX;
     if (pid == USB_PID_OUT)
         memcpy(x->buf, buf, len);
     if (!host_submit(hd, x, (pid == USB_PID_IN) ? (ep | 0x80) : ep, len))
@@ -646,9 +719,9 @@ usbn_host_open(uint16_t vid, uint16_t pid, char *err, int errlen)
     }
 
     int speed = map_speed(libusb_get_device_speed(found));
-    if (speed == USBN_SPEED_HIGH) {
+    if ((speed == USBN_SPEED_HIGH) && !usbn_bus_high_speed()) {
         libusb_unref_device(found);
-        snprintf(err, errlen, "it is a high-speed (USB 2.0 or later) device, and the emulated controller is USB 1.1");
+        snprintf(err, errlen, "it is a high-speed (USB 2.0 or later) device, and the emulated controller is USB 1.1; fit the USB 2.0 controller instead");
         return NULL;
     }
 
@@ -657,7 +730,11 @@ usbn_host_open(uint16_t vid, uint16_t pid, char *err, int errlen)
     libusb_unref_device(found);
     if (r != 0) {
 #ifdef _WIN32
-        snprintf(err, errlen, "it could not be opened (%s). On Windows the device needs the WinUSB driver; Zadig (zadig.akeo.ie) installs it", libusb_error_name(r));
+        if (use_usbdk)
+            snprintf(err, errlen, "UsbDk could not capture it (%s)", libusb_error_name(r));
+        else
+            snprintf(err, errlen, "it could not be opened (%s). Install UsbDk (github.com/daynix/UsbDk) once to pass any device through, "
+                                  "or give this device the WinUSB driver with Zadig (zadig.akeo.ie)", libusb_error_name(r));
 #else
         snprintf(err, errlen, "it could not be opened (%s); check the permissions on its device node", libusb_error_name(r));
 #endif

@@ -54,7 +54,9 @@ add_library(dev OBJECT
     lpt_ditto.c
     lpt_epat.c
     io_board.c
+    ../usb/usb_bus.c
     ../usb/usb_uhci.c
+    ../usb/usb_ehci.c
     ../usb/usb_host.c
     funworld_io.c
     merit_io.c

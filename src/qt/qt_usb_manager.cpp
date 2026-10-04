@@ -153,7 +153,7 @@ UsbManager::poll()
     if (!usbn_present())
         return;
     for (const auto &d : arrived) {
-        if (d.speed == USBN_SPEED_HIGH)
+        if ((d.speed == USBN_SPEED_HIGH) && !usbn_bus_high_speed())
             continue;   /* cannot go on a USB 1.1 controller; the menu says so */
         const QString choice = remembered(rememberKey(d.vid, d.pid));
         if (choice == "vm")
@@ -260,9 +260,9 @@ UsbManager::buildMenu()
         auto *a = menu->addAction(label(d));
         a->setCheckable(true);
         a->setChecked(portOf(d.vid, d.pid) >= 0);
-        if (d.speed == USBN_SPEED_HIGH) {
+        if ((d.speed == USBN_SPEED_HIGH) && !usbn_bus_high_speed()) {
             a->setEnabled(false);
-            a->setToolTip(tr("A high-speed (USB 2.0) device: the emulated controller is USB 1.1."));
+            a->setToolTip(tr("A high-speed (USB 2.0) device: the emulated controller is USB 1.1. Fit the USB 2.0 controller in Settings > Other peripherals."));
         }
         const usbn_host_info_t info = d;
         connect(a, &QAction::triggered, this, [this, info](bool on) {
@@ -273,6 +273,22 @@ UsbManager::buildMenu()
         });
     }
     menu->setToolTipsVisible(true);
+
+#ifdef _WIN32
+    menu->addSeparator();
+    if (usbn_host_uses_usbdk())
+        menu->addAction(tr("Capturing devices through UsbDk"))->setEnabled(false);
+    else {
+        auto *hint = menu->addAction(tr("Only devices with the WinUSB driver can be connected. Install UsbDk to connect any device..."));
+        connect(hint, &QAction::triggered, this, [this]() {
+            QMessageBox::information(parentWidget, tr("USB passthrough"),
+                                     tr("To connect any USB device to the virtual machine the way VirtualBox and VMware do, install UsbDk "
+                                        "(a signed driver from Red Hat / Daynix) once, then restart 86Box-Next:\n\n"
+                                        "https://github.com/daynix/UsbDk/releases\n\n"
+                                        "Without it, only devices given the WinUSB driver (for example with Zadig) can be connected."));
+        });
+    }
+#endif
 
     menu->addSeparator();
     auto *askAct = menu->addAction(tr("&Ask when a device is plugged into the host"));

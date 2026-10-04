@@ -47,7 +47,21 @@ typedef struct usbn_device_t {
     void (*destroy)(struct usbn_device_t *dev);  /* unplugged */
 } usbn_device_t;
 
-/* ---- the host controller (usb_uhci.c) ---- */
+/* ---- the ports (usb_bus.c) ---- */
+/* The controller the ports are wired to.  connect() / disconnect() run on the
+   emulation thread; the bus owns the device and destroys it after
+   disconnect(). */
+typedef struct usbn_root_ops_t {
+    void (*connect)(void *priv, int port, usbn_device_t *dev);
+    void (*disconnect)(void *priv, int port);
+} usbn_root_ops_t;
+
+extern void           usbn_set_root(const usbn_root_ops_t *ops, void *priv, int high_speed);
+extern void           usbn_apply(void);             /* once per frame, from the root */
+extern int            usbn_bus_high_speed(void);    /* the root takes USB 2.0 devices */
+extern usbn_device_t *usbn_port_device(int port);
+
+/* ---- the host controller cards (usb_uhci.c, usb_ehci.c) ---- */
 extern int usb_card_type;                   /* (C) USB controller card, 0 = none */
 
 extern void        usb_card_reset(void);
@@ -65,6 +79,17 @@ extern void usbn_detach(int port);
 extern int  usbn_port_busy(int port);
 extern const char *usbn_port_name(int port, char *buf, int len);
 
+/* A UHCI controller as the companion of an EHCI one: it is function 0 of the
+   EHCI card, raises INTA on the card's slot, and is told which of the shared
+   ports it currently owns. */
+typedef struct uhci_t uhci_t;
+extern uhci_t *uhci_companion_create(uint8_t *card_slot);
+extern void    uhci_companion_close(uhci_t *dev);
+extern void    uhci_companion_reset(uhci_t *dev);
+extern void    uhci_route_port(uhci_t *dev, int port, usbn_device_t *d);   /* NULL: not ours now */
+extern uint8_t uhci_pci_read(int func, int addr, int len, void *priv);
+extern void    uhci_pci_write(int func, int addr, int len, uint8_t val, void *priv);
+
 /* ---- host passthrough (usb_host.c) ---- */
 typedef struct usbn_host_info_t {
     uint16_t vid, pid;
@@ -74,6 +99,7 @@ typedef struct usbn_host_info_t {
 } usbn_host_info_t;
 
 extern int            usbn_host_available(void);   /* built with libusb */
+extern int            usbn_host_uses_usbdk(void);  /* Windows: capture any device through UsbDk */
 extern int            usbn_host_list(usbn_host_info_t *out, int max);
 extern usbn_device_t *usbn_host_open(uint16_t vid, uint16_t pid, char *err, int errlen);
 
