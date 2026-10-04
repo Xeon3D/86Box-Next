@@ -20,13 +20,19 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   peripherals): funworld Photo Play (PeepeeBox `funworld_io.c`) and Merit
   Megatouch XL/MAXX (MegaPPBox `merit_io.c`; the MAXX's PC Card slots are the
   `src/pcmcia` controller). UI controls in `src/qt/qt_ioboard_controls.cpp`.
-- PCMCIA (`src/pcmcia/`, Settings > Other peripherals > PCMCIA tab, ISA): MegaPPBox's Cirrus CL-PD6722 PC Card
-  controller (`pcic_pd6722.c`, 0x3E0, two sockets, one per machine, shared with the
-  MAXX I/O board) and the cards for its sockets (`pcmcia.c`'s list: TRENDnet
-  TE100-PC16, `net_te100pc16.c`). Config in `[PCMCIA]`; a card's own settings are
+- PCMCIA (`src/pcmcia/`, Settings > Other peripherals > PCMCIA tab, ISA): MegaPPBox's Cirrus
+  CL-PD6722 controller (`pcic_pd6722.c`, 0x3E0, two sockets, one per machine, shared with the
+  MAXX I/O board): attribute and common memory windows, per-socket status changes and IRQs
+  (every IRQ line worked out from all sources), card-detect events when a card is ejected or
+  put back (PC Card menu, `src/qt/qt_pccard_menu.cpp`, applied by the controller's poll).
+  Cards (`pcmcia.c`'s list): 3Com 3C589D (`net_3c509b.c`'s PC Card mode), TRENDnet TE100-PC16
+  (`net_te100pc16.c`), SRAM memory card (`sram_card.c`, contents in nvr/). CIS in
+  `pccard_cis.c`: built there, with NO_LINK, and a 2-byte CONFIG filler subtuple solved at
+  build time so Windows 9x's ID matches the INF's (its checksum: ARC by nibble tables with one
+  wrong entry, from PCCARD.VXD/CONFIGMG.VXD). Config in `[PCMCIA]`; a card's own settings are
   device instance #1/#2 (socket A/B); a PC network card links through
-  `net_cards_conf[NET_CARD_MAX + socket]` (`NET_CONF_MAX`), not one of the four
-  Network-page adapters. Test: `tests/pcmcia/`.
+  `net_cards_conf[NET_CARD_MAX + socket]` (`NET_CONF_MAX`). Tests: `tests/pcmcia/` (controller;
+  CIS parsed by pcmcia-cs cistpl.c's rules, Windows IDs pinned to ones Windows 98 produced).
 - USB (`src/usb/`, Settings > Other peripherals, PCI): UHCI USB 1.1 cards (VIA
   VT83C572, Intel PIIX4) and USB 2.0 cards (EHCI + UHCI companion: VIA VT6202, Intel
   ICH4 layout with EHCI at function 7), ports in `usb_bus.c`, host passthrough via

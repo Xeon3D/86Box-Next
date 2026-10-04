@@ -183,6 +183,7 @@ private:
     QMenu                         *dynarecMenu = nullptr;
     class IOBoardControls         *ioBoard     = nullptr; /* 86Box-Next */
     class UsbManager              *usbManager  = nullptr; /* 86Box-Next */
+    class PcCardMenu              *pcCardMenu  = nullptr; /* 86Box-Next */
 
     void updateShortcuts();
     void refreshDisplayRatioActions();

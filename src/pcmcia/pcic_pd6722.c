@@ -4,8 +4,9 @@
  *             The PC Card controller: a Cirrus Logic CL-PD6722 (Intel
  *             82365SL compatible) on ISA at 0x3E0, two sockets.  From
  *             MegaPPBox, where it is the PC Card slots of the Merit MAXX I/O
- *             board; here it is also a card of its own (Settings > PCMCIA),
- *             with the cards in pcmcia.c's list in its sockets.
+ *             board; here it is also a card of its own (Settings > Other
+ *             peripherals > PCMCIA), with the cards in pcmcia.c's list in
+ *             its sockets.
  *
  * ---------------------------------------------------------------------------
  *
@@ -23,35 +24,48 @@
  *     errors; /sbin/modemdetect.sh then takes the path meant for the later
  *     Force cabinets ("Detecting Force modem") instead of the MAXX one.
  *
- * The cards are pcmcia.c's (the TRENDnet TE100-PC16 network card,
- * net_te100pc16.c, for a start); a socket may also be empty.  What a driver
- * *identifies* the chip by is emulated:
+ * What a driver *identifies* the chip by is emulated:
  *
- *   0x00  revision, 0x83 (82365SL step B, which the PD67xx reports)
+ *   0x00  revision, 0x83 (82365SL step B, which the PD67xx reports; Linux
+ *         wants bits 6:4 clear before it believes an interrupt is ours)
  *   0x1F  chip information: bits 7:6 read 11 then 00 alternately (the Cirrus
  *         signature; a write restarts it), bit 5 set = two sockets
  *   0x2E  extended index, read back (Linux tells a PD67xx from a VIA VT83C469
  *         by it); 0x2F extended data behind it
- *   0x16  bit 5, software interrupt: raises the status-change interrupt on
- *         the IRQ in 0x05 bits 7:4 once, as Linux's i82365 IRQ scan expects;
- *         reading the status-change register (0x04) clears it
  *
- * and, for a socket holding a card, what drives it:
+ * and, for each socket, what drives a card:
  *
  *   0x01  status: card detect, battery good, power, ready
  *   0x02  power: VCC on (bit 4) and outputs enabled (bit 7) power the card
  *   0x03  bits 3:0 the IRQ the card's IREQ is steered to, bit 5 I/O card,
  *         bit 6 clear = card held in RESET
+ *   0x04  card status change: bit 3 card detect changed (a card went in or
+ *         came out), bit 2 ready changed, bits 1:0 battery; reading it clears
+ *         it
+ *   0x05  status change interrupt: bits 7:4 the IRQ, bits 3:0 which changes
+ *         raise it (the same bits as 0x04)
  *   0x06  window enables: memory windows 0-4 (bits 0-4), I/O 0-1 (bits 6-7)
  *   0x08  I/O windows: start and stop, 16 bits each (0x08-0x0F)
  *   0x10  memory windows, eight registers apart: start, stop (4 KB units,
  *         ISA's 16 MB) and the offset to the card address, whose bit 14
- *         selects attribute memory and bit 15 write-protects the window
+ *         selects attribute memory -- clear, the card's common memory -- and
+ *         bit 15 write-protects the window
+ *   0x16  bit 5, software interrupt: a card detect change on the socket's
+ *         status change IRQ, whatever 0x05's enables say, until 0x04 is read
+ *         (Linux's i82365 IRQ scan)
  *
- * Everything else a driver writes is kept and read back.
+ * Everything else a driver writes is kept and read back.  Each socket has
+ * its own status changes and its own status change IRQ; the two sockets and
+ * their cards may share an IRQ, so every IRQ line is worked out from all of
+ * them together (pcic_irq_refresh()).
  *
  * Index 0x00-0x3F is socket A, 0x40-0x7F socket B; there is no socket C or D,
  * and those indexes read 0xFF, which is how the drivers tell.
+ *
+ * Taking a card out and putting it back (the PC Card menu) comes from the UI
+ * thread as a request; the controller's poll applies it on the emulation
+ * thread: the socket's card detect goes, a card detect change is latched,
+ * and the card's windows stop answering -- then the same the other way.
  *
  *             Released under the GNU General Public License version 2 or
  *             later.  See COPYING for more information.
@@ -68,6 +82,7 @@
 #include <86box/io.h>
 #include <86box/mem.h>
 #include <86box/pic.h>
+#include <86box/timer.h>
 #include <86box/pcmcia.h>
 #include <86box/plat_unused.h>
 
@@ -102,10 +117,16 @@
 #define INTCTL_IOCARD 0x20
 #define INTCTL_NRESET 0x40
 
+#define CSC_DETECT    0x08
+#define CSC_READY     0x04
+#define CSC_EVENTS    0x0f
+
 #define MISC1_SW_IRQ  0x20
 
 #define PD6722_IDENT  0x83
 #define PD6722_INFO   0x20 /* dual socket, revision 0 */
+
+#define POLL_US       10000.0   /* eject and insert requests, every 10 ms */
 
 struct pcic_t;
 
@@ -116,10 +137,10 @@ typedef struct {
 } pcic_win_t;
 
 typedef struct {
-    const pccard_t *card;
-    int             live;    /* powered, outputs on and out of RESET */
-    int             ireq;    /* the card's interrupt request line    */
-    int             irq_out; /* the ISA IRQ it is raising, or 0      */
+    const pccard_t *card;    /* what the socket holds now                  */
+    int             live;    /* powered, outputs on and out of RESET       */
+    int             ireq;    /* the card's interrupt request line          */
+    int             sw_irq;  /* a software interrupt is pending            */
     uint16_t        io_base[PCIC_IOWIN];
     uint32_t        io_len[PCIC_IOWIN]; /* 0 = no handler installed  */
     mem_mapping_t   mem[PCIC_MEMWIN];
@@ -131,13 +152,19 @@ typedef struct pcic_t {
     uint8_t       reg[PCIC_SOCKETS][0x40];
     uint8_t       ext[PCIC_SOCKETS][0x40];
     uint8_t       info_toggle;
-    int           irq_raised; /* the IRQ the software interrupt is holding, or 0 */
+    uint16_t      irq_lines;  /* the ISA IRQs the controller is raising */
+    int           running;    /* past power-on: cards coming and going are
+                                 changes the guest is told about */
     pcic_socket_t sock[PCIC_SOCKETS];
+    pc_timer_t    poll_timer;
 } pcic_t;
 
-/* One controller per machine; cards plugged in before it exists wait here. */
+/* One controller per machine.  The cards fitted, whether the controller
+   exists yet or not, and the user's ejections: the socket holds
+   fitted && !ejected. */
 static pcic_t         *pcic_inst;
-static const pccard_t *pcic_pending[PCIC_SOCKETS];
+static const pccard_t *pcic_fitted[PCIC_SOCKETS];
+static volatile int    pcic_ejected[PCIC_SOCKETS];
 
 #ifdef ENABLE_PCIC_LOG
 int pcic_do_log = ENABLE_PCIC_LOG;
@@ -157,38 +184,57 @@ pcic_log(const char *fmt, ...)
 #    define pcic_log(fmt, ...)
 #endif
 
-static void
-pcic_irq_clear(pcic_t *dev)
+/* --- Interrupts ----------------------------------------------------------- */
+
+static int
+pcic_irq_valid(int irq)
 {
-    if (dev->irq_raised) {
-        picintc(1 << dev->irq_raised);
-        dev->irq_raised = 0;
-    }
+    return (irq > 2) && (irq < 16);
 }
 
-/* The card's IREQ goes out on the IRQ in 0x03 once the card is an I/O card. */
+/* Every IRQ line from everything that may drive one: each socket's status
+   changes on its status change IRQ, each card's IREQ on the IRQ it is
+   steered to.  Only the lines that change are told to the PIC. */
 static void
-pcic_card_irq_update(pcic_t *dev, int s)
+pcic_irq_refresh(pcic_t *dev)
 {
-    pcic_socket_t *sock = &dev->sock[s];
-    const uint8_t  ctl  = dev->reg[s][REG_INTCTL];
-    int            irq  = 0;
+    uint16_t want = 0;
 
-    if (sock->card && sock->live && (ctl & INTCTL_IOCARD) && ((ctl & INTCTL_IRQ) > 2))
-        irq = ctl & INTCTL_IRQ;
+    for (int s = 0; s < PCIC_SOCKETS; s++) {
+        const pcic_socket_t *sock = &dev->sock[s];
+        const uint8_t        ctl  = dev->reg[s][REG_INTCTL];
+        const int            cirq = dev->reg[s][REG_CSCINT] >> 4;
 
-    if (sock->irq_out && ((sock->irq_out != irq) || !sock->ireq)) {
-        picintc(1 << sock->irq_out);
-        sock->irq_out = 0;
+        if (pcic_irq_valid(cirq) && (sock->sw_irq || (dev->reg[s][REG_CSC] & dev->reg[s][REG_CSCINT] & CSC_EVENTS)))
+            want |= 1 << cirq;
+        if (sock->card && sock->live && sock->ireq && (ctl & INTCTL_IOCARD) && pcic_irq_valid(ctl & INTCTL_IRQ))
+            want |= 1 << (ctl & INTCTL_IRQ);
     }
-    if (irq && sock->ireq) {
-        sock->irq_out = irq;
-        picint(1 << irq);
+
+    for (int irq = 0; irq < 16; irq++) {
+        const uint16_t bit = 1 << irq;
+        if ((want ^ dev->irq_lines) & bit) {
+            if (want & bit)
+                picint(bit);
+            else
+                picintc(bit);
+        }
     }
+    dev->irq_lines = want;
+}
+
+/* A status change on a socket: latched in 0x04, an interrupt if 0x05
+   enables it. */
+static void
+pcic_status_change(pcic_t *dev, int s, uint8_t bits)
+{
+    dev->reg[s][REG_CSC] |= bits;
+    pcic_irq_refresh(dev);
 }
 
 /* The card is live when powered, its outputs enabled and RESET released;
-   going live or dropping out of it resets the card. */
+   going live or dropping out of it resets the card.  Live, its READY comes
+   up: a ready change. */
 static void
 pcic_card_power_update(pcic_t *dev, int s)
 {
@@ -201,8 +247,10 @@ pcic_card_power_update(pcic_t *dev, int s)
         sock->live = live;
         if (sock->card && sock->card->reset)
             sock->card->reset(sock->card->priv);
+        if (live && !(dev->reg[s][REG_INTCTL] & INTCTL_IOCARD))
+            dev->reg[s][REG_CSC] |= CSC_READY;
     }
-    pcic_card_irq_update(dev, s);
+    pcic_irq_refresh(dev);
 }
 
 /* --- I/O windows ---------------------------------------------------------- */
@@ -213,7 +261,7 @@ pcic_io_socket(void *priv)
     pcic_socket_t *sock = (pcic_socket_t *) priv;
     const int      s    = (sock == &pcic_inst->sock[1]);
 
-    if (!sock->card || !sock->live || !(pcic_inst->reg[s][REG_INTCTL] & INTCTL_IOCARD))
+    if (!sock->card || !sock->live || !(pcic_inst->reg[s][REG_INTCTL] & INTCTL_IOCARD) || !sock->card->io_read)
         return NULL;
     return sock;
 }
@@ -243,7 +291,7 @@ pcic_io_writeb(uint16_t port, uint8_t val, void *priv)
 {
     const pcic_socket_t *sock = pcic_io_socket(priv);
 
-    if (sock)
+    if (sock && sock->card->io_write)
         sock->card->io_write(port, val, sock->card->priv);
 }
 
@@ -252,7 +300,7 @@ pcic_io_writew(uint16_t port, uint16_t val, void *priv)
 {
     const pcic_socket_t *sock = pcic_io_socket(priv);
 
-    if (!sock)
+    if (!sock || !sock->card->io_write)
         return;
     if (sock->card->io_writew)
         sock->card->io_writew(port, val, sock->card->priv);
@@ -309,11 +357,16 @@ pcic_mem_readb(uint32_t addr, void *priv)
     const pccard_t   *card;
     uint32_t          caddr;
 
-    /* Only attribute memory: no card here has common memory. */
-    if (pcic_mem_card_addr(win, addr, &caddr) != 1)
-        return 0xff;
-    card = win->pcic->sock[win->socket].card;
-    return card->attr_read(caddr, card->priv);
+    switch (pcic_mem_card_addr(win, addr, &caddr)) {
+        case 1:
+            card = win->pcic->sock[win->socket].card;
+            return card->attr_read ? card->attr_read(caddr, card->priv) : 0xff;
+        case 0:
+            card = win->pcic->sock[win->socket].card;
+            return card->common_read ? card->common_read(caddr, card->priv) : 0xff;
+        default:
+            return 0xff;
+    }
 }
 
 static uint16_t
@@ -332,10 +385,20 @@ pcic_mem_writeb(uint32_t addr, uint8_t val, void *priv)
 
     if (r[5] & 0x80) /* write-protected window */
         return;
-    if (pcic_mem_card_addr(win, addr, &caddr) != 1)
-        return;
-    card = win->pcic->sock[win->socket].card;
-    card->attr_write(caddr, val, card->priv);
+    switch (pcic_mem_card_addr(win, addr, &caddr)) {
+        case 1:
+            card = win->pcic->sock[win->socket].card;
+            if (card->attr_write)
+                card->attr_write(caddr, val, card->priv);
+            break;
+        case 0:
+            card = win->pcic->sock[win->socket].card;
+            if (card->common_write)
+                card->common_write(caddr, val, card->priv);
+            break;
+        default:
+            break;
+    }
 }
 
 static void
@@ -356,7 +419,7 @@ pcic_mem_remap(pcic_t *dev, int s, int w)
     if (sock->card && (dev->reg[s][REG_WINEN] & (1 << w)) && (stop > start)) {
         mem_mapping_set_addr(&sock->mem[w], start, stop - start + 1);
         pcic_log("PCIC: socket %c memory window %d = %06X-%06X, %s memory\n", 'A' + s, w, start, stop,
-                       (r[5] & 0x40) ? "attribute" : "common");
+                 (r[5] & 0x40) ? "attribute" : "common");
     } else
         mem_mapping_disable(&sock->mem[w]);
 }
@@ -394,9 +457,10 @@ pcic_reg_read(pcic_t *dev, int s, int r)
             return ret;
 
         case REG_CSC:
-            ret            = dev->reg[s][REG_CSC];
-            dev->reg[s][r] = 0x00;
-            pcic_irq_clear(dev);
+            ret                       = dev->reg[s][r];
+            dev->reg[s][r]            = 0x00;
+            dev->sock[s].sw_irq       = 0;
+            pcic_irq_refresh(dev);
             return ret;
 
         case REG_CHIP_INFO:
@@ -433,24 +497,18 @@ pcic_reg_write(pcic_t *dev, int s, int r, uint8_t val)
             /* The software interrupt fires once per write that sets it; the
                bit does not stay set, so the next probe can fire it again. */
             if (val & MISC1_SW_IRQ) {
-                const int irq = dev->reg[s][REG_CSCINT] >> 4;
-
                 val &= ~MISC1_SW_IRQ;
-                if ((irq > 0) && (irq != 2)) {
-                    pcic_irq_clear(dev);
-                    dev->reg[s][REG_CSC] |= 0x08; /* card detect change */
-                    dev->irq_raised = irq;
-                    picint(1 << irq);
-                    pcic_log("PCIC: socket %c software interrupt on IRQ %d\n", 'A' + s, irq);
-                }
+                dev->reg[s][REG_CSC] |= CSC_DETECT;
+                dev->sock[s].sw_irq = 1;
+                pcic_log("PCIC: socket %c software interrupt on IRQ %d\n", 'A' + s, dev->reg[s][REG_CSCINT] >> 4);
             }
             dev->reg[s][r] = val;
+            pcic_irq_refresh(dev);
             break;
 
         case REG_CSCINT:
             dev->reg[s][r] = val;
-            if (!(val >> 4))
-                pcic_irq_clear(dev);
+            pcic_irq_refresh(dev);
             break;
 
         case REG_POWER:
@@ -501,22 +559,36 @@ pcic_write(uint16_t port, uint8_t val, void *priv)
 
 /* --- Cards ---------------------------------------------------------------- */
 
+/* Put what socket s should hold into it.  A different card from before --
+   one in, one out, or one for another -- is a card detect change. */
+static void
+pcic_socket_set(pcic_t *dev, int s)
+{
+    pcic_socket_t  *sock = &dev->sock[s];
+    const pccard_t *card = pcic_ejected[s] ? NULL : pcic_fitted[s];
+
+    if (sock->card == card)
+        return;
+    pcic_log("PCIC: socket %c %s\n", 'A' + s, card ? "card inserted" : "card removed");
+    if (sock->live && sock->card && sock->card->reset)
+        sock->card->reset(sock->card->priv);   /* power gone from the old one */
+    sock->card = card;
+    sock->live = 0;
+    sock->ireq = 0;
+    pcic_remap_all(dev, s);
+    pcic_card_power_update(dev, s);
+    if (dev->running)
+        pcic_status_change(dev, s, CSC_DETECT);
+}
+
 void
 pcmcia_insert(int socket, const pccard_t *card)
 {
-    pcic_t *dev = pcic_inst;
-
     if ((socket < 0) || (socket >= PCIC_SOCKETS))
         return;
-
-    pcic_pending[socket] = card;
-    if (dev) {
-        dev->sock[socket].card = card;
-        dev->sock[socket].live = 0;
-        dev->sock[socket].ireq = 0;
-        pcic_remap_all(dev, socket);
-        pcic_card_power_update(dev, socket);
-    }
+    pcic_fitted[socket] = card;
+    if (pcic_inst)
+        pcic_socket_set(pcic_inst, socket);
 }
 
 void
@@ -526,30 +598,69 @@ pcmcia_card_irq(int socket, int level)
 
     if (!dev || (socket < 0) || (socket >= PCIC_SOCKETS))
         return;
-
     dev->sock[socket].ireq = !!level;
-    pcic_card_irq_update(dev, socket);
+    pcic_irq_refresh(dev);
+}
+
+void
+pcmcia_eject(int socket, int ejected)
+{
+    if ((socket >= 0) && (socket < PCIC_SOCKETS))
+        pcic_ejected[socket] = !!ejected;
+}
+
+int
+pcmcia_ejected(int socket)
+{
+    return (socket >= 0) && (socket < PCIC_SOCKETS) && pcic_ejected[socket];
+}
+
+const char *
+pcmcia_socket_card_name(int socket)
+{
+    if ((socket < 0) || (socket >= PCIC_SOCKETS) || !pcic_fitted[socket])
+        return NULL;
+    return pcic_fitted[socket]->name ? pcic_fitted[socket]->name : "PC Card";
+}
+
+int
+pcmcia_controller_present(void)
+{
+    return pcic_inst != NULL;
 }
 
 /* --- Device --------------------------------------------------------------- */
+
+/* The UI's eject and insert requests, on the emulation thread. */
+static void
+pcic_poll(void *priv)
+{
+    pcic_t *dev = (pcic_t *) priv;
+
+    timer_on_auto(&dev->poll_timer, POLL_US);
+    dev->running = 1;
+    for (int s = 0; s < PCIC_SOCKETS; s++)
+        pcic_socket_set(dev, s);
+}
 
 static void
 pcic_reset(void *priv)
 {
     pcic_t *dev = (pcic_t *) priv;
 
-    pcic_irq_clear(dev);
     memset(dev->reg, 0, sizeof(dev->reg));
     memset(dev->ext, 0, sizeof(dev->ext));
     dev->index       = 0;
     dev->info_toggle = 0;
 
-    /* Power off, RESET asserted, every window closed. */
+    /* Power off, RESET asserted, every window closed, nothing pending. */
     for (int s = 0; s < PCIC_SOCKETS; s++) {
-        dev->sock[s].ireq = 0;
+        dev->sock[s].ireq   = 0;
+        dev->sock[s].sw_irq = 0;
         pcic_remap_all(dev, s);
         pcic_card_power_update(dev, s);
     }
+    pcic_irq_refresh(dev);
 }
 
 static void *
@@ -558,7 +669,8 @@ pcic_init(UNUSED(const device_t *info))
     pcic_t *dev = (pcic_t *) calloc(1, sizeof(pcic_t));
 
     for (int s = 0; s < PCIC_SOCKETS; s++) {
-        dev->sock[s].card = pcic_pending[s];
+        /* A card fitted at power-on is simply there: no change to report. */
+        dev->sock[s].card = pcic_ejected[s] ? NULL : pcic_fitted[s];
         for (int w = 0; w < PCIC_MEMWIN; w++) {
             dev->sock[s].mem_win[w] = (pcic_win_t) { .pcic = dev, .socket = s, .win = w };
             mem_mapping_add(&dev->sock[s].mem[w], 0, 0,
@@ -572,6 +684,8 @@ pcic_init(UNUSED(const device_t *info))
     }
 
     io_sethandler(PCIC_BASE, 2, pcic_read, NULL, NULL, pcic_write, NULL, NULL, dev);
+    timer_add(&dev->poll_timer, pcic_poll, dev, 1);
+    timer_on_auto(&dev->poll_timer, POLL_US);
     pcic_inst = dev;
     return dev;
 }
@@ -581,14 +695,15 @@ pcic_close(void *priv)
 {
     pcic_t *dev = (pcic_t *) priv;
 
-    pcic_irq_clear(dev);
+    timer_stop(&dev->poll_timer);
     for (int s = 0; s < PCIC_SOCKETS; s++) {
-        if (dev->sock[s].irq_out)
-            picintc(1 << dev->sock[s].irq_out);
         /* Close the windows before the card goes away. */
-        dev->sock[s].card = NULL;
+        dev->sock[s].card   = NULL;
+        dev->sock[s].sw_irq = 0;
+        dev->reg[s][REG_CSC] = 0;
         pcic_remap_all(dev, s);
     }
+    pcic_irq_refresh(dev);   /* every line down */
     pcic_inst = NULL;
     free(dev);
 }

@@ -18,6 +18,7 @@
 #include <86box/io.h>
 #include <86box/mem.h>
 #include <86box/pic.h>
+#include <86box/timer.h>
 #include <86box/pcmcia.h>
 #include <86box/plat_unused.h>
 
@@ -157,6 +158,26 @@ picint_common(uint16_t num, UNUSED(int level), int set, UNUSED(uint8_t *st))
             irq_up[i] = set;
 }
 
+/* The controller's poll timer: run by hand. */
+static void (*poll_cb)(void *);
+static void *poll_priv;
+
+void
+timer_add(pc_timer_t *t, void (*cb)(void *), void *priv, UNUSED(int start))
+{
+    (void) t;
+    poll_cb   = cb;
+    poll_priv = priv;
+}
+void timer_on_auto(UNUSED(pc_timer_t *t), UNUSED(double period)) { }
+void timer_stop(UNUSED(pc_timer_t *t)) { }
+
+static void
+poll(void)
+{
+    poll_cb(poll_priv);
+}
+
 /* ---- the card -------------------------------------------------------- */
 
 static int     card_resets;
@@ -170,8 +191,16 @@ static uint8_t card_io_read(uint16_t p, UNUSED(void *x)) { card_io_port = p; ret
 static void    card_io_write(uint16_t p, uint8_t v, UNUSED(void *x)) { card_io_port = p; card_io_last = v; }
 static void    card_reset(UNUSED(void *p)) { card_resets++; }
 
+/* Common memory: 8 KB, as on a memory card. */
+static uint8_t card_common[0x2000];
+static uint8_t card_common_read(uint32_t a, UNUSED(void *p)) { return (a < sizeof(card_common)) ? card_common[a] : 0xff; }
+static void    card_common_write(uint32_t a, uint8_t v, UNUSED(void *p)) { if (a < sizeof(card_common)) card_common[a] = v; }
+
 static const pccard_t card = {
-    .attr_read  = card_attr_read,
+    .name        = "test card",
+    .attr_read   = card_attr_read,
+    .common_read  = card_common_read,
+    .common_write = card_common_write,
     .attr_write = card_attr_write,
     .io_read    = card_io_read,
     .io_write   = card_io_write,
@@ -292,6 +321,7 @@ test_irq_probe(void)
     CHECK(irq_up[3], "the software interrupt raises IRQ 3");
     CHECK(reg(0, 0x04) & 0x08, "as a card detect change");
     CHECK(!irq_up[3] && reg(0, 0x04) == 0, "reading the change clears it");
+    setreg(0, 0x05, 0x00);
 }
 
 static void
@@ -302,6 +332,88 @@ test_power_off(void)
     setreg(0, 0x02, 0x00);
     CHECK(card_resets == before + 1, "power-off resets the card");
     CHECK(memrb(0xd0000) == 0xff && inb(0x310) == 0xff, "an unpowered card does not answer");
+}
+
+static void
+test_common_memory(void)
+{
+    /* Window 1: host D2000-D3FFF onto common memory from card address 0. */
+    const uint16_t off = (0x4000000 - 0xd2000) >> 12;
+
+    setreg(0, 0x18, 0xd2);
+    setreg(0, 0x19, 0x00);
+    setreg(0, 0x1a, 0xd3);
+    setreg(0, 0x1b, 0x00);
+    setreg(0, 0x1c, off & 0xff);
+    setreg(0, 0x1d, (off >> 8) & 0x3f);   /* REG clear: common memory */
+    setreg(0, 0x06, 0x43);
+    card_common[0x10] = 0x77;
+    CHECK(memrb(0xd2010) == 0x77, "common memory through a window (%02X)", memrb(0xd2010));
+    memwb(0xd3abc, 0x42);
+    CHECK(card_common[0x1abc] == 0x42, "a write reaches the card's common memory");
+    CHECK(card_attr[0x1abc] != 0x42, "and not its attribute memory");
+    CHECK(memrb(0xd0000) == card_attr[0], "the attribute window beside it still reads the CIS");
+    setreg(0, 0x1d, ((off >> 8) & 0x3f) | 0x80);
+    memwb(0xd2010, 0x00);
+    CHECK(card_common[0x10] == 0x77, "a write-protected common window does not write");
+}
+
+/* Card detect changes: a card taken out and put back (the PC Card menu),
+   each socket with its own status changes, the two sharing an IRQ. */
+static int     b_resets;
+static uint8_t b_attr_read(UNUSED(uint32_t a), UNUSED(void *p)) { return 0x01; }
+static void    b_reset(UNUSED(void *p)) { b_resets++; }
+static const pccard_t card_b = { .name = "card B", .attr_read = b_attr_read, .reset = b_reset };
+
+static void
+test_card_events(void)
+{
+    poll();   /* the controller is running: changes are reported from now on */
+    setreg(0, 0x05, 0xb8);   /* socket A: card detect changes on IRQ 11 */
+    setreg(1, 0x05, 0xb8);   /* socket B: the same IRQ */
+    CHECK(!irq_up[11], "no change, no interrupt");
+
+    pcmcia_eject(0, 1);
+    CHECK((reg(0, 0x01) & 0x0c) == 0x0c, "an eject request waits for the controller's poll");
+    poll();
+    CHECK(!(reg(0, 0x01) & 0x0c), "ejected: socket A's card detect goes");
+    CHECK(memrb(0xd2010) == 0xff, "and its windows stop answering");
+    CHECK(irq_up[11], "a card detect change interrupt");
+
+    pcmcia_insert(1, &card_b);   /* a card into socket B as well */
+    CHECK((reg(1, 0x01) & 0x0c) == 0x0c, "socket B holds a card");
+    CHECK(reg(0, 0x04) == 0x08, "socket A: card detect changed");
+    CHECK(irq_up[11], "socket B's change still holds the shared IRQ after A's is read");
+    CHECK(reg(0, 0x04) == 0x00, "reading A's status change cleared only A's");
+    CHECK(reg(1, 0x04) == 0x08, "socket B: card detect changed");
+    CHECK(!irq_up[11], "both read: the IRQ drops");
+
+    pcmcia_eject(0, 0);
+    poll();
+    CHECK((reg(0, 0x01) & 0x0c) == 0x0c, "put back: socket A's card detect returns");
+    CHECK(irq_up[11] && (reg(0, 0x04) == 0x08), "with a card detect change");
+    CHECK(!irq_up[11], "read: down again");
+
+    setreg(0, 0x05, 0xb0);   /* A: IRQ 11, no changes enabled */
+    pcmcia_eject(0, 1);
+    poll();
+    CHECK(!irq_up[11] && (reg(0, 0x04) == 0x08), "a change not enabled is latched without an interrupt");
+    pcmcia_eject(0, 0);
+    poll();
+    reg(0, 0x04);
+
+    /* Software interrupts are per socket too. */
+    setreg(0, 0x05, 0x50);
+    setreg(1, 0x05, 0x70);
+    setreg(1, 0x16, 0x20);
+    CHECK(irq_up[7] && !irq_up[5], "socket B's software interrupt on B's IRQ, 7");
+    CHECK(reg(0, 0x04) == 0x00, "and nothing on socket A");
+    reg(1, 0x04);
+    CHECK(!irq_up[7], "B's cleared by reading B's status change");
+    setreg(0, 0x05, 0x00);
+    setreg(1, 0x05, 0x00);
+    pcmcia_insert(1, NULL);
+    reg(1, 0x04);
 }
 
 static void
@@ -329,7 +441,9 @@ main(void)
     test_io_window();
     test_card_irq();
     test_irq_probe();
+    test_common_memory();
     test_power_off();
+    test_card_events();
     test_unplug();
 
     printf("%d checks, %d failures\n", checks, failures);

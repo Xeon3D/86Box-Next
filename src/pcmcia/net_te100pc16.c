@@ -88,7 +88,7 @@ typedef struct {
     pccard_t  pccard;
     int       socket; /* 0 = A, 1 = B: the device instance less one */
 
-    uint8_t   cis[128];
+    uint8_t   cis[256];
     int       cis_len;
     uint8_t   cor;
     uint8_t   ccsr;
@@ -147,87 +147,11 @@ te100_interrupt(void *priv, int set)
 
 /* --- CIS ------------------------------------------------------------------ */
 
+/* pccard_cis.c's TE100-PC16 CIS, with this card's station address. */
 static void
 te100_cis_build(te100_t *dev)
 {
-    static const char *vers[] = { "Fast Ethernet", "16-bit PC Card", "", "AX88190" };
-    uint8_t           *p      = dev->cis;
-    uint8_t           *len;
-
-    /* CISTPL_DEVICE: no common memory. */
-    *p++ = 0x01;
-    *p++ = 0x03;
-    *p++ = 0x00;
-    *p++ = 0x00;
-    *p++ = 0xff;
-
-    /* CISTPL_VERS_1, PC Card 2.1 (4.1). */
-    *p++ = 0x15;
-    len  = p++;
-    *p++ = 0x04;
-    *p++ = 0x01;
-    for (int i = 0; i < 4; i++) {
-        strcpy((char *) p, vers[i]);
-        p += strlen(vers[i]) + 1;
-    }
-    *p++ = 0xff;
-    *len = p - len - 1;
-
-    /* CISTPL_MANFID. */
-    *p++ = 0x20;
-    *p++ = 0x04;
-    *p++ = 0x49;
-    *p++ = 0x01;
-    *p++ = 0xab;
-    *p++ = 0xc1;
-
-    /* CISTPL_FUNCID: network adapter. */
-    *p++ = 0x21;
-    *p++ = 0x02;
-    *p++ = 0x06;
-    *p++ = 0x00;
-
-    /* CISTPL_FUNCE: LAN node ID. */
-    *p++ = 0x22;
-    *p++ = 0x08;
-    *p++ = 0x04;
-    *p++ = 0x06;
-    for (int i = 0; i < 6; i++)
-        *p++ = dev->maclocal[i];
-
-    /* CISTPL_CONFIG: two-byte base 0x03C0, last index 1, COR and CCSR. */
-    *p++ = 0x1a;
-    *p++ = 0x05;
-    *p++ = 0x01;
-    *p++ = 0x01;
-    *p++ = TE100_CONFIG & 0xff;
-    *p++ = TE100_CONFIG >> 8;
-    *p++ = 0x03;
-
-    /* CISTPL_CFTABLE_ENTRY: index 1 (default), I/O interface, 5 V, 32 ports
-       at 0x300 on five address lines (8 and 16 bit), IRQs 3-5, 7, 9-12,
-       14-15, level. */
-    *p++ = 0x1b;
-    len  = p++;
-    *p++ = 0xc1;
-    *p++ = 0x01;
-    *p++ = 0x19;
-    *p++ = 0x01;
-    *p++ = 0x55;
-    *p++ = 0xe5;
-    *p++ = 0x60;
-    *p++ = 0x00;
-    *p++ = 0x03;
-    *p++ = 0x1f;
-    *p++ = 0x30;
-    *p++ = 0xb8;
-    *p++ = 0xde;
-    *len = p - len - 1;
-
-    /* CISTPL_END. */
-    *p++ = 0xff;
-
-    dev->cis_len = p - dev->cis;
+    dev->cis_len = pccard_cis_te100pc16(dev->cis, dev->maclocal);
 }
 
 static uint8_t
@@ -615,6 +539,7 @@ te100_init(UNUSED(const device_t *info))
     dev->dp8390->card->byte_period = NET_PERIOD_100M;
 
     dev->pccard = (pccard_t) {
+        .name       = "TRENDnet TE100-PC16",
         .attr_read  = te100_attr_read,
         .attr_write = te100_attr_write,
         .io_read    = te100_io_read,
