@@ -505,7 +505,7 @@ static const MenuItem menu_items[] = {
     { nullptr, ACT_NONE, VIEW_MENU }, /* separator */
     { "Hard Reset",                ACT_HARDRESET,    VIEW_MENU, [] () -> bool { return true; }  },
     { "Toggle Fullscreen",         ACT_FULLSCREEN,   VIEW_MENU, [] () -> bool { return true; }  },
-    { "Exit 86Box",                ACT_EXIT,         VIEW_MENU, [] () -> bool { return true; }  },
+    { "Exit 86Box-Next",                ACT_EXIT,         VIEW_MENU, [] () -> bool { return true; }  },
     { nullptr, ACT_NONE, VIEW_MENU }, /* separator */
     { "Close OSD",                 ACT_CLOSE_OSD,    VIEW_MENU, [] () -> bool { return true; }  },
 };
@@ -648,7 +648,7 @@ static bool draw_menu(void)
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(osd_core_scaled(320.0f), osd_core_scaled(0.0f)), ImGuiCond_Always);
 
-    ImGui::Begin("86Box OSD", nullptr,
+    ImGui::Begin("86Box-Next OSD", nullptr,
                  ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
                  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
                  ImGuiWindowFlags_NoNav);

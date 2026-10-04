@@ -373,7 +373,7 @@ main(int argc, char **argv)
     if (ret == 0)
         return 0;
     if (!pc_init_roms()) {
-        ui_msgbox_header(MBX_FATAL, "No ROMs found.", EMU_NAME " could not find any usable ROM images.\n\nPlease download a ROM set and extract it into the \"roms\" directory.");
+        ui_msgbox_header(MBX_FATAL, "No ROMs found.", EMU_DISPLAY_NAME " could not find any usable ROM images.\n\nPlease download a ROM set and extract it into the \"roms\" directory.");
         SDL_Quit();
         return 6;
     }

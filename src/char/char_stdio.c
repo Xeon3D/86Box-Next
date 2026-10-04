@@ -393,7 +393,7 @@ char_stdio_init(const device_t *info)
                                                           "<\"$PTY\"&"        /* ...from pty in the background */
                                                           "clear;"            /* suppress background task indicator (zsh prints it to stdout) */
 #    ifdef __APPLE__
-                                                          "ARGV0='" EMU_NAME "' " /* override title bar command on macOS Terminal + zsh */
+                                                          "ARGV0='" EMU_DISPLAY_NAME "' " /* override title bar command on macOS Terminal + zsh */
 #    endif
                                                           "cat>\"$PTY\";"     /* pipe from stdin to pty */
                                                           "exec kill $!";     /* stop script once the write connection is broken */
@@ -427,7 +427,7 @@ char_stdio_init(const device_t *info)
                                 msg[0] = '\0';
 
                             /* Execute command. */
-                            if (!plat_run_command(cmd, (const char *[]) { pipe_cmd, env[0], env[1], env[2], "ARGV0=" EMU_NAME, NULL }, msg[0] ? msg : NULL))
+                            if (!plat_run_command(cmd, (const char *[]) { pipe_cmd, env[0], env[1], env[2], "ARGV0=" EMU_DISPLAY_NAME, NULL }, msg[0] ? msg : NULL))
                                 char_stdio_log(dev->log, "plat_run_command(%s) failed\n", cmd);
                         }
                     } else {

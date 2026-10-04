@@ -66,7 +66,7 @@ IntroPage::
 
     setPixmap(QWizard::WatermarkPixmap, QPixmap(":assets/addvm-watermark.png"));
 
-    topLabel = new QLabel(tr("This will help you add a new system to 86Box."));
+    topLabel = new QLabel(tr("This will help you add a new system to 86Box-Next."));
     // topLabel = new QLabel(tr("This will help you add a new system to 86Box.\n\n Choose \"New configuration\" if you'd like to create a new machine.\n\nChoose \"Use existing configuration\" if you'd like to paste in an existing configuration from elsewhere."));
     topLabel->setWordWrap(true);
 

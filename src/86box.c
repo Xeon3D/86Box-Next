@@ -1298,7 +1298,7 @@ usage:
         strcpy(temp, "unknown");
 
     pclog("#\n# %s v%s logfile, created %s\n#\n",
-          EMU_NAME, EMU_VERSION_FULL, temp);
+          EMU_DISPLAY_NAME, EMU_VERSION_FULL, temp);
 
     if (portable_mode) {
         pclog("# Portable mode enabled.\n");
@@ -1326,7 +1326,7 @@ usage:
         start_vmm = 0;
 #ifdef __APPLE__
         if (!strncmp(exe_path, "/private/var/folders/", 21)) {
-            ui_msgbox_header(MBX_ERROR | MBX_FATAL, "App Translocation", EMU_NAME " cannot determine the emulated machine's location due to a macOS security feature. Please move the " EMU_NAME " app to another folder (not /Applications), or make a copy of it and open that copy instead.");
+            ui_msgbox_header(MBX_ERROR | MBX_FATAL, "App Translocation", EMU_DISPLAY_NAME " cannot determine the emulated machine's location due to a macOS security feature. Please move the " EMU_NAME " app to another folder (not /Applications), or make a copy of it and open that copy instead.");
             return 0;
         }
 #endif

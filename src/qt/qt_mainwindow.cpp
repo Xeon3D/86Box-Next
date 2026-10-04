@@ -331,7 +331,7 @@ MainWindow::MainWindow(QWidget *parent)
     QString vmname(vm_name);
     if (vmname.at(vmname.size() - 1) == '"' || vmname.at(vmname.size() - 1) == '\'')
         vmname.truncate(vmname.size() - 1);
-    this->setWindowTitle(QString("%1 - %2 %3").arg(vmname, EMU_NAME, EMU_VERSION_FULL));
+    this->setWindowTitle(QString("%1 - %2 %3").arg(vmname, EMU_DISPLAY_NAME, EMU_VERSION_FULL));
 
     connect(this, &MainWindow::forceInterpretationCompleted, this, [this]() {
         const auto fi_icon      = cpu_force_interpreter ? QIcon(":/menuicons/qt/icons/recompiler.ico") : QIcon(":/menuicons/qt/icons/interpreter.ico");
@@ -1006,7 +1006,7 @@ MainWindow::closeEvent(QCloseEvent *event)
     skip_exit_confirmation       = false;
 
     if (!skip_confirmation && confirm_exit && confirm_exit_cmdl && cpu_thread_run) {
-        QMessageBox questionbox(QMessageBox::Icon::Question, "86Box", tr("Are you sure you want to exit 86Box?"), QMessageBox::Yes | QMessageBox::No, this);
+        QMessageBox questionbox(QMessageBox::Icon::Question, EMU_DISPLAY_NAME, tr("Are you sure you want to exit 86Box-Next?"), QMessageBox::Yes | QMessageBox::No, this);
         auto        chkbox = new QCheckBox(tr("Don't show this message again"));
         questionbox.setCheckBox(chkbox);
         chkbox->setChecked(!confirm_exit);
@@ -1210,7 +1210,7 @@ MainWindow::initRendererMonitorSlot(int monitor_index)
             this->renderers[monitor_index]->show();
         });
         secondaryRenderer->setWindowFlags(Qt::CustomizeWindowHint | Qt::WindowTitleHint | Qt::WindowCloseButtonHint);
-        secondaryRenderer->setWindowTitle(QObject::tr("86Box Monitor #%1").arg(monitor_index + 1));
+        secondaryRenderer->setWindowTitle(QObject::tr("86Box-Next Monitor #%1").arg(monitor_index + 1));
         secondaryRenderer->setContextMenuPolicy(Qt::PreventContextMenu);
 
         for (int i = 0; i < this->actions().size(); i++) {
@@ -1320,7 +1320,7 @@ void
 MainWindow::on_actionHard_Reset_triggered()
 {
     if (confirm_reset) {
-        QMessageBox questionbox(QMessageBox::Icon::Question, EMU_NAME, tr("Are you sure you want to hard reset the emulated machine?"), QMessageBox::Yes | QMessageBox::No, this);
+        QMessageBox questionbox(QMessageBox::Icon::Question, EMU_DISPLAY_NAME, tr("Are you sure you want to hard reset the emulated machine?"), QMessageBox::Yes | QMessageBox::No, this);
         const auto  chkbox = new QCheckBox(tr("Don't show this message again"));
         questionbox.setCheckBox(chkbox);
         chkbox->setChecked(!confirm_reset);
@@ -1927,7 +1927,7 @@ MainWindow::showMessage_(int flags, const QString &header, const QString &messag
         if (flags & (MBX_ERROR | MBX_FATAL))
             defaultheader = (flags & MBX_FATAL) ? tr("Fatal error") : tr("Error");
         else
-            defaultheader = EMU_NAME;
+            defaultheader = EMU_DISPLAY_NAME;
     }
     QMessageBox box(QMessageBox::Information, (defaultheader.isEmpty() ? header : defaultheader), message, QMessageBox::Ok, this);
 
@@ -2781,7 +2781,7 @@ MainWindow::on_actionACPI_Shutdown_triggered()
     /* Without a soft-power method the only way to power the machine off is to
      * stop the emulator: a hard power off is equivalent to exiting 86Box. */
     if (confirm_exit && confirm_exit_cmdl) {
-        QMessageBox questionbox(QMessageBox::Icon::Warning, EMU_NAME, tr("Powering off the emulated machine may cause data loss. Are you sure you want to continue?"), QMessageBox::Yes | QMessageBox::No, this);
+        QMessageBox questionbox(QMessageBox::Icon::Warning, EMU_DISPLAY_NAME, tr("Powering off the emulated machine may cause data loss. Are you sure you want to continue?"), QMessageBox::Yes | QMessageBox::No, this);
         questionbox.setDefaultButton(QMessageBox::No);
         questionbox.exec();
         if (questionbox.result() != QMessageBox::Yes)

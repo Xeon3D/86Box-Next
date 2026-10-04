@@ -555,7 +555,7 @@ macro(install_bundle_library _library_path _installed_name _runtime_plugins_var 
 endmacro()
 
 if (APPLE AND CMAKE_MACOSX_BUNDLE)
-    set(prefix "86Box.app/Contents")
+    set(prefix "86Box-Next.app/Contents")
     set(INSTALL_RUNTIME_DIR "${prefix}/MacOS")
     set(INSTALL_CMAKE_DIR "${prefix}/Resources")
     set(INSTALL_LIB_DIR "${prefix}/Frameworks")
@@ -591,7 +591,7 @@ if (APPLE AND CMAKE_MACOSX_BUNDLE)
     install(CODE "
         include(BundleUtilities)
         get_filename_component(CMAKE_INSTALL_PREFIX_ABSOLUTE \$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX} ABSOLUTE)
-        fixup_bundle(\"\${CMAKE_INSTALL_PREFIX_ABSOLUTE}/86Box.app\" \"${RUNTIME_PLUGINS}\" \"${DIRS}\")
+        fixup_bundle(\"\${CMAKE_INSTALL_PREFIX_ABSOLUTE}/86Box-Next.app\" \"${RUNTIME_PLUGINS}\" \"${DIRS}\")
         execute_process(
             COMMAND ${CMAKE_INSTALL_NAME_TOOL} -add_rpath \"@executable_path/../Frameworks/\"
             \"\${CMAKE_INSTALL_PREFIX_ABSOLUTE}/${INSTALL_RUNTIME_DIR}/86Box\")

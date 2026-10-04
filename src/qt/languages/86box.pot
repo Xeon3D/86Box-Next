@@ -246,7 +246,7 @@ msgstr ""
 msgid "&Documentation…"
 msgstr ""
 
-msgid "&About 86Box…"
+msgid "&About 86Box-Next…"
 msgstr ""
 
 msgid "&New image…"
@@ -1075,7 +1075,7 @@ msgstr ""
 msgid "Are you sure you want to hard reset the emulated machine?"
 msgstr ""
 
-msgid "Are you sure you want to exit 86Box?"
+msgid "Are you sure you want to exit 86Box-Next?"
 msgstr ""
 
 msgid "Unable to initialize Ghostscript. %1 is required for automatic conversion of PostScript files to PDF.\n\nAny documents sent to the generic PostScript printer will be saved as PostScript (.ps) files."
@@ -1277,7 +1277,7 @@ msgstr ""
 msgid "Introduction"
 msgstr ""
 
-msgid "This will help you add a new system to 86Box."
+msgid "This will help you add a new system to 86Box-Next."
 msgstr ""
 
 msgid "New configuration"
@@ -1433,7 +1433,7 @@ msgstr ""
 msgid "&Kill"
 msgstr ""
 
-msgid "Killing a virtual machine can cause data loss. Only do this if the 86Box process gets stuck.\n\nDo you really wish to kill the virtual machine \"%1\"?"
+msgid "Killing a virtual machine can cause data loss. Only do this if the 86Box-Next process gets stuck.\n\nDo you really wish to kill the virtual machine \"%1\"?"
 msgstr ""
 
 msgid "&Delete"
@@ -1886,7 +1886,7 @@ msgstr ""
 msgid "This machine might have been moved or copied."
 msgstr ""
 
-msgid "In order to ensure proper networking functionality, 86Box needs to know if this machine was moved or copied.\n\nSelect \"I Copied It\" if you are not sure."
+msgid "In order to ensure proper networking functionality, 86Box-Next needs to know if this machine was moved or copied.\n\nSelect \"I Copied It\" if you are not sure."
 msgstr ""
 
 msgid "I Moved It"
@@ -1895,7 +1895,7 @@ msgstr ""
 msgid "I Copied It"
 msgstr ""
 
-msgid "86Box Monitor #%1"
+msgid "86Box-Next Monitor #%1"
 msgstr ""
 
 msgid "No MCA devices."

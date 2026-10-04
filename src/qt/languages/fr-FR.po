@@ -252,8 +252,8 @@ msgstr "Ai&de"
 msgid "&Documentation…"
 msgstr "&Documentation…"
 
-msgid "&About 86Box…"
-msgstr "À &propos de 86Box…"
+msgid "&About 86Box-Next…"
+msgstr "À &propos de 86Box-Next…"
 
 msgid "&New image…"
 msgstr "&Nouvelle image…"
@@ -1086,8 +1086,8 @@ msgstr "Images de flux"
 msgid "Are you sure you want to hard reset the emulated machine?"
 msgstr "Êtes-vous sûr de vouloir réinitialiser la machine émulée ?"
 
-msgid "Are you sure you want to exit 86Box?"
-msgstr "Êtes-vous sûr de vouloir quitter 86Box ?"
+msgid "Are you sure you want to exit 86Box-Next?"
+msgstr "Êtes-vous sûr de vouloir quitter 86Box-Next ?"
 
 msgid "Unable to initialize Ghostscript. %1 is required for automatic conversion of PostScript files to PDF.\n\nAny documents sent to the generic PostScript printer will be saved as PostScript (.ps) files."
 msgstr "Impossible d'initialiser Ghostscript. %1 est nécessaire pour la conversion automatique des fichiers PostScript en PDF.\n\nTous les documents envoyés à l'imprimante générique PostScript seront sauvés en tant que fichiers PostScript (.ps)."
@@ -1304,8 +1304,8 @@ msgstr "Assistant pour ajouter un nouveau système"
 msgid "Introduction"
 msgstr "Introduction"
 
-msgid "This will help you add a new system to 86Box."
-msgstr "Cela vous aidera à ajouter un nouveau système à 86Box."
+msgid "This will help you add a new system to 86Box-Next."
+msgstr "Cela vous aidera à ajouter un nouveau système à 86Box-Next."
 
 msgid "New configuration"
 msgstr "Nouvelle configuration"
@@ -1460,8 +1460,8 @@ msgstr "Avertissement"
 msgid "&Kill"
 msgstr "Fo&rcer extinction"
 
-msgid "Killing a virtual machine can cause data loss. Only do this if the 86Box process gets stuck.\n\nDo you really wish to kill the virtual machine \"%1\"?"
-msgstr "La fermeture forcée d'une machine virtuelle peut entraîner une perte de données. Ne procédez ainsi que si le processus 86Box est bloqué.\n\nVoulez-vous vraiment fermer la machine virtuelle « %1 » ?"
+msgid "Killing a virtual machine can cause data loss. Only do this if the 86Box-Next process gets stuck.\n\nDo you really wish to kill the virtual machine \"%1\"?"
+msgstr "La fermeture forcée d'une machine virtuelle peut entraîner une perte de données. Ne procédez ainsi que si le processus 86Box-Next est bloqué.\n\nVoulez-vous vraiment fermer la machine virtuelle « %1 » ?"
 
 msgid "&Delete"
 msgstr "&Supprimer"
@@ -1920,8 +1920,8 @@ msgstr "<html><head/><body><p>Lors de la sélection d'images multimédia (CD-ROM
 msgid "This machine might have been moved or copied."
 msgstr "Cette machine peut avoir été déplacée ou copiée."
 
-msgid "In order to ensure proper networking functionality, 86Box needs to know if this machine was moved or copied.\n\nSelect \"I Copied It\" if you are not sure."
-msgstr "Afin d'assurer le bon fonctionnement du réseau, 86Box doit savoir si cette machine a été déplacée ou copiée.\n\nSélectionnez « Je l'ai copié » si vous n'êtes pas sûr."
+msgid "In order to ensure proper networking functionality, 86Box-Next needs to know if this machine was moved or copied.\n\nSelect \"I Copied It\" if you are not sure."
+msgstr "Afin d'assurer le bon fonctionnement du réseau, 86Box-Next doit savoir si cette machine a été déplacée ou copiée.\n\nSélectionnez « Je l'ai copié » si vous n'êtes pas sûr."
 
 msgid "I Moved It"
 msgstr "Je l'ai déplacé"
@@ -1929,8 +1929,8 @@ msgstr "Je l'ai déplacé"
 msgid "I Copied It"
 msgstr "Je l'ai copié"
 
-msgid "86Box Monitor #%1"
-msgstr "Moniteur 86Box %1"
+msgid "86Box-Next Monitor #%1"
+msgstr "Moniteur 86Box-Next %1"
 
 msgid "No MCA devices."
 msgstr "Pas de dispositifs MCA."

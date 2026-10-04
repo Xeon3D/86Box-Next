@@ -252,7 +252,7 @@ msgstr "&Ohje"
 msgid "&Documentation…"
 msgstr "&Ohjekirja…"
 
-msgid "&About 86Box…"
+msgid "&About 86Box-Next…"
 msgstr "&Tietoja 86Boxista…"
 
 msgid "&New image…"
@@ -1082,7 +1082,7 @@ msgstr "Flux-levykuvat"
 msgid "Are you sure you want to hard reset the emulated machine?"
 msgstr "Haluatko varmasti käynnistää emuloidun tietokoneen uudelleen?"
 
-msgid "Are you sure you want to exit 86Box?"
+msgid "Are you sure you want to exit 86Box-Next?"
 msgstr "Haluatko varmasti sulkea 86Boxin?"
 
 msgid "Unable to initialize Ghostscript. %1 is required for automatic conversion of PostScript files to PDF.\n\nAny documents sent to the generic PostScript printer will be saved as PostScript (.ps) files."
@@ -1292,7 +1292,7 @@ msgstr "Koneenlisäysohjelma"
 msgid "Introduction"
 msgstr "Johdanto"
 
-msgid "This will help you add a new system to 86Box."
+msgid "This will help you add a new system to 86Box-Next."
 msgstr "Tämä ohjelma auttaa sinua lisäämään uuden koneen 86Boxiin."
 
 msgid "New configuration"
@@ -1448,7 +1448,7 @@ msgstr "Varoitus"
 msgid "&Kill"
 msgstr "P&akkopysäytä"
 
-msgid "Killing a virtual machine can cause data loss. Only do this if the 86Box process gets stuck.\n\nDo you really wish to kill the virtual machine \"%1\"?"
+msgid "Killing a virtual machine can cause data loss. Only do this if the 86Box-Next process gets stuck.\n\nDo you really wish to kill the virtual machine \"%1\"?"
 msgstr "Virtuaalikoneen pakkopysäytys saattaa johtaa datan menettämiseen. Tee niin ainoastaan jos 86Box-prosessi on jumissa.\n\nHaluatko varmasti pakkopysäyttää \"%1\"-virtuaalikoneen?"
 
 msgid "&Delete"
@@ -1906,7 +1906,7 @@ msgstr "<html><head/><body><p>Kun valitset levykuvia (CD-ROM, levykkeet jne.), a
 msgid "This machine might have been moved or copied."
 msgstr "Kone on saatettu siirtää tai kopioida."
 
-msgid "In order to ensure proper networking functionality, 86Box needs to know if this machine was moved or copied.\n\nSelect \"I Copied It\" if you are not sure."
+msgid "In order to ensure proper networking functionality, 86Box-Next needs to know if this machine was moved or copied.\n\nSelect \"I Copied It\" if you are not sure."
 msgstr "Varmistaakseen asianmukaisen verkkotoiminnan 86Boxin on tiedettävä, onko tämä kone siirretty vai kopioitu.\n\nValitse \"Kopioin sen\", jos et ole varma."
 
 msgid "I Moved It"
@@ -1915,8 +1915,8 @@ msgstr "Siirsin sen"
 msgid "I Copied It"
 msgstr "Kopioin sen"
 
-msgid "86Box Monitor #%1"
-msgstr "86Box Monitor %1"
+msgid "86Box-Next Monitor #%1"
+msgstr "86Box-Next Monitor %1"
 
 msgid "No MCA devices."
 msgstr "Ei MCA-laitteita."

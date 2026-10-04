@@ -253,7 +253,7 @@ msgstr "ヘルプ(&H)"
 msgid "&Documentation…"
 msgstr "文書(&D)…"
 
-msgid "&About 86Box…"
+msgid "&About 86Box-Next…"
 msgstr "86Boxのバージョン情報(&A)…"
 
 msgid "&New image…"
@@ -1082,7 +1082,7 @@ msgstr "Fluxイメージ"
 msgid "Are you sure you want to hard reset the emulated machine?"
 msgstr "使用中のマシンをハード リセットしますか？"
 
-msgid "Are you sure you want to exit 86Box?"
+msgid "Are you sure you want to exit 86Box-Next?"
 msgstr "86Boxを終了しますか？"
 
 msgid "Unable to initialize Ghostscript. %1 is required for automatic conversion of PostScript files to PDF.\n\nAny documents sent to the generic PostScript printer will be saved as PostScript (.ps) files."
@@ -1284,7 +1284,7 @@ msgstr "新しいシステムを追加するためのウィザード"
 msgid "Introduction"
 msgstr "序文"
 
-msgid "This will help you add a new system to 86Box."
+msgid "This will help you add a new system to 86Box-Next."
 msgstr "これにより、86Boxに新しいシステムを追加することができます。"
 
 msgid "New configuration"
@@ -1440,7 +1440,7 @@ msgstr "警告"
 msgid "&Kill"
 msgstr "強制的に終了する(&K)"
 
-msgid "Killing a virtual machine can cause data loss. Only do this if the 86Box process gets stuck.\n\nDo you really wish to kill the virtual machine \"%1\"?"
+msgid "Killing a virtual machine can cause data loss. Only do this if the 86Box-Next process gets stuck.\n\nDo you really wish to kill the virtual machine \"%1\"?"
 msgstr "仮想マシンを強制終了すると、データが失われる可能性があります。86Boxプロセスが応答しなくなった場合のみ、この操作を行ってください。\n\n本当に仮想マシン「%1」を終了しますか？"
 
 msgid "&Delete"
@@ -1899,7 +1899,7 @@ msgstr "<html><head/><body><p>メディアイメージ（CD-ROM、フロッピ�
 msgid "This machine might have been moved or copied."
 msgstr "このマシンは移動またはコピーされた可能性があります。"
 
-msgid "In order to ensure proper networking functionality, 86Box needs to know if this machine was moved or copied.\n\nSelect \"I Copied It\" if you are not sure."
+msgid "In order to ensure proper networking functionality, 86Box-Next needs to know if this machine was moved or copied.\n\nSelect \"I Copied It\" if you are not sure."
 msgstr "ネットワーク機能を正しく動作させるために、86Boxはこのマシンが移動されたかコピーされたかを知る必要があります。\n\n不明な場合は、「コピーした」を選択してください。"
 
 msgid "I Moved It"
@@ -1908,8 +1908,8 @@ msgstr "移動した"
 msgid "I Copied It"
 msgstr "コピーした"
 
-msgid "86Box Monitor #%1"
-msgstr "86Box モニター%1"
+msgid "86Box-Next Monitor #%1"
+msgstr "86Box-Next モニター%1"
 
 msgid "No MCA devices."
 msgstr "MCAデバイスはありません。"

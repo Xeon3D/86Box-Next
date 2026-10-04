@@ -608,9 +608,9 @@ sdl_init_common(int flags)
 
     sdl_mutex = SDL_CreateMutex();
 #ifdef USE_SDL2_LIB
-    sdl_win   = SDL_CreateWindow("86Box", strncasecmp(SDL_GetCurrentVideoDriver(), "wayland", 7) != 0 && window_remember ? window_x : SDL_WINDOWPOS_CENTERED, strncasecmp(SDL_GetCurrentVideoDriver(), "wayland", 7) != 0 && window_remember ? window_y : SDL_WINDOWPOS_CENTERED, scrnsz_x, scrnsz_y, window_flags);
+    sdl_win   = SDL_CreateWindow(EMU_DISPLAY_NAME, strncasecmp(SDL_GetCurrentVideoDriver(), "wayland", 7) != 0 && window_remember ? window_x : SDL_WINDOWPOS_CENTERED, strncasecmp(SDL_GetCurrentVideoDriver(), "wayland", 7) != 0 && window_remember ? window_y : SDL_WINDOWPOS_CENTERED, scrnsz_x, scrnsz_y, window_flags);
 #else
-    sdl_win   = SDL_CreateWindow("86Box", scrnsz_x, scrnsz_y, window_flags);
+    sdl_win   = SDL_CreateWindow(EMU_DISPLAY_NAME, scrnsz_x, scrnsz_y, window_flags);
 #endif
     sdl_set_fs(video_fullscreen);
     if (!(video_fullscreen & 1)) {

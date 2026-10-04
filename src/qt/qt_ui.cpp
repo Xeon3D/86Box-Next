@@ -162,7 +162,7 @@ ui_msgbox_header(int flags, char *header, char *message)
 
     if (flags & MBX_QUESTION_YN) {
         QMessageBox box((flags & MBX_WARNING) ? QMessageBox::Icon::Warning : QMessageBox::Icon::Question,
-                        hdr.isEmpty() ? QString(EMU_NAME) : hdr, msg, QMessageBox::Yes | QMessageBox::No, main_window);
+                        hdr.isEmpty() ? QString(EMU_DISPLAY_NAME) : hdr, msg, QMessageBox::Yes | QMessageBox::No, main_window);
         box.setDefaultButton(QMessageBox::No);
         return (box.exec() == QMessageBox::Yes) ? 1 : 0;
     }
@@ -176,7 +176,7 @@ ui_msgbox_header(int flags, char *header, char *message)
             else if (flags & MBX_ERROR)
                 defaultheader = QObject::tr("Error");
             else
-                defaultheader = EMU_NAME;
+                defaultheader = EMU_DISPLAY_NAME;
         }
 
         auto msgicon = QMessageBox::Icon::Information;

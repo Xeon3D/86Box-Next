@@ -165,7 +165,7 @@ monitor_execute_line(char *line)
                 "screenshot - save a screenshot.\n"
                 "fullscreen - toggle fullscreen.\n"
                 "version - print version and license information.\n"
-                "exit - exit " EMU_NAME ".\n");
+                "exit - exit " EMU_DISPLAY_NAME ".\n");
         } else if (strncasecmp(xargv[0], "exit", 4) == 0) {
             exit_event = 1;
         } else if (strncasecmp(xargv[0], "version", 7) == 0) {
@@ -199,7 +199,7 @@ monitor_execute_line(char *line)
                 "Tiseno100, reenigne, and others.\n"
                 "With previous core contributions from Sarah Walker, leilei, JohnElliott, greatpsycho, and others.\n\n"
                 "Released under the GNU General Public License version 2 or later. See LICENSE for more information.\n",
-                EMU_NAME, EMU_VERSION_FULL, EMU_GIT_HASH, ARCH_STR, DYNAREC_STR);
+                EMU_DISPLAY_NAME, EMU_VERSION_FULL, EMU_GIT_HASH, ARCH_STR, DYNAREC_STR);
         } else if (strncasecmp(xargv[0], "fullscreen", 10) == 0) {
             video_fullscreen   = video_fullscreen ? 0 : 1;
             fullscreen_pending = 1;
@@ -358,21 +358,21 @@ monitor_thread(UNUSED(void *param))
     if (isatty(fileno(stdin)) && isatty(fileno(stdout))) {
         char  *line = NULL;
 
-        printf(EMU_NAME " monitor console.\n");
+        printf(EMU_DISPLAY_NAME " monitor console.\n");
         while (!exit_event) {
             if (feof(stdin))
                 break;
 
 #    ifdef ENABLE_READLINE
             if (f_readline) {
-                line = f_readline("(" EMU_NAME ") ");
+                line = f_readline("(" EMU_DISPLAY_NAME ") ");
                 monitor_execute_line(line);
                 free(line);
             } else {
 #    endif
                 char tmp[1024] = { 0 };
 
-                printf("(" EMU_NAME ") ");
+                printf("(" EMU_DISPLAY_NAME ") ");
                 line = fgets(tmp, sizeof(tmp), stdin);
 
                 monitor_execute_line(line);

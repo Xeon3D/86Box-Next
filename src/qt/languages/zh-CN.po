@@ -253,8 +253,8 @@ msgstr "帮助(&H)"
 msgid "&Documentation…"
 msgstr "文档(&D)…"
 
-msgid "&About 86Box…"
-msgstr "关于 86Box(&A)…"
+msgid "&About 86Box-Next…"
+msgstr "关于 86Box-Next(&A)…"
 
 msgid "&New image…"
 msgstr "新建映像(&N)…"
@@ -1082,8 +1082,8 @@ msgstr "Flux 映像"
 msgid "Are you sure you want to hard reset the emulated machine?"
 msgstr "确定要硬重置模拟器吗？"
 
-msgid "Are you sure you want to exit 86Box?"
-msgstr "确定要退出 86Box 吗？"
+msgid "Are you sure you want to exit 86Box-Next?"
+msgstr "确定要退出 86Box-Next 吗？"
 
 msgid "Unable to initialize Ghostscript. %1 is required for automatic conversion of PostScript files to PDF.\n\nAny documents sent to the generic PostScript printer will be saved as PostScript (.ps) files."
 msgstr "无法初始化 Ghostscript。需要 %1 库将 PostScript 文件转换为 PDF。\n\n使用通用 PostScript 打印机打印的文档将被保存为 PostScript (.ps) 文件。"
@@ -1284,7 +1284,7 @@ msgstr "添加新系统向导"
 msgid "Introduction"
 msgstr "概述"
 
-msgid "This will help you add a new system to 86Box."
+msgid "This will help you add a new system to 86Box-Next."
 msgstr "这将帮助您在86Box中添加一个新系统。"
 
 msgid "New configuration"
@@ -1440,7 +1440,7 @@ msgstr "警告"
 msgid "&Kill"
 msgstr "强制终止(&K)"
 
-msgid "Killing a virtual machine can cause data loss. Only do this if the 86Box process gets stuck.\n\nDo you really wish to kill the virtual machine \"%1\"?"
+msgid "Killing a virtual machine can cause data loss. Only do this if the 86Box-Next process gets stuck.\n\nDo you really wish to kill the virtual machine \"%1\"?"
 msgstr "强制终止虚拟机可能导致数据丢失。仅在86Box进程卡住时才执行此操作。\n\n您确定要强制终止虚拟机 \"%1\" 吗？"
 
 msgid "&Delete"
@@ -1902,8 +1902,8 @@ msgstr "<html><head/><body><p>选择媒体镜像（光盘、软盘等）时，�
 msgid "This machine might have been moved or copied."
 msgstr "这台机器可能被移动或复制过。"
 
-msgid "In order to ensure proper networking functionality, 86Box needs to know if this machine was moved or copied.\n\nSelect \"I Copied It\" if you are not sure."
-msgstr "为了确保网络功能正常，86Box 需要知道这台机器是否被移动或复制。\n\n如果您不确定，请选择\"我已复制这台机器\"。"
+msgid "In order to ensure proper networking functionality, 86Box-Next needs to know if this machine was moved or copied.\n\nSelect \"I Copied It\" if you are not sure."
+msgstr "为了确保网络功能正常，86Box-Next 需要知道这台机器是否被移动或复制。\n\n如果您不确定，请选择\"我已复制这台机器\"。"
 
 msgid "I Moved It"
 msgstr "我已移动这台机器"
@@ -1911,8 +1911,8 @@ msgstr "我已移动这台机器"
 msgid "I Copied It"
 msgstr "我已复制这台机器"
 
-msgid "86Box Monitor #%1"
-msgstr "86Box 显示器 #%1"
+msgid "86Box-Next Monitor #%1"
+msgstr "86Box-Next 显示器 #%1"
 
 msgid "No MCA devices."
 msgstr "无 MCA 设备。"

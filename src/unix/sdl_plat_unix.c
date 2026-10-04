@@ -458,7 +458,7 @@ plat_run_command(const char *cmd, const char **env, const char *title)
     if (title) {
         /* Set arguments for xdg-terminal-exec. */
         if (!title[0])
-            title = EMU_NAME;
+            title = EMU_DISPLAY_NAME;
         int   len       = (strlen(title) * 3) + 9;
         char *title_buf = (char *) malloc(len);
         int   c         = snprintf(title_buf, len, "--title=");

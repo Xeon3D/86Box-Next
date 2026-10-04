@@ -253,8 +253,8 @@ msgstr "&Справка"
 msgid "&Documentation…"
 msgstr "&Документация…"
 
-msgid "&About 86Box…"
-msgstr "&О 86Box…"
+msgid "&About 86Box-Next…"
+msgstr "&О 86Box-Next…"
 
 msgid "&New image…"
 msgstr "&Новый образ…"
@@ -1084,8 +1084,8 @@ msgstr "Образы Flux"
 msgid "Are you sure you want to hard reset the emulated machine?"
 msgstr "Вы уверены, что хотите выполнить холодную перезагрузку эмулируемой машины?"
 
-msgid "Are you sure you want to exit 86Box?"
-msgstr "Вы уверены, что хотите выйти из 86Box?"
+msgid "Are you sure you want to exit 86Box-Next?"
+msgstr "Вы уверены, что хотите выйти из 86Box-Next?"
 
 msgid "Unable to initialize Ghostscript. %1 is required for automatic conversion of PostScript files to PDF.\n\nAny documents sent to the generic PostScript printer will be saved as PostScript (.ps) files."
 msgstr "Невозможно инициализировать Ghostscript. Для автоматического преобразования файлов PostScript в PDF требуется %1.\n\nВсе документы, отправленные на стандартный принтер PostScript, будут сохранены в виде файлов PostScript (.ps)."
@@ -1306,8 +1306,8 @@ msgstr "Мастер добавления новой системы"
 msgid "Introduction"
 msgstr "Введение"
 
-msgid "This will help you add a new system to 86Box."
-msgstr "Это поможет вам добавить новую систему в 86Box."
+msgid "This will help you add a new system to 86Box-Next."
+msgstr "Это поможет вам добавить новую систему в 86Box-Next."
 
 msgid "New configuration"
 msgstr "Новая конфигурация"
@@ -1462,8 +1462,8 @@ msgstr "Внимание"
 msgid "&Kill"
 msgstr "&Завершить процесс"
 
-msgid "Killing a virtual machine can cause data loss. Only do this if the 86Box process gets stuck.\n\nDo you really wish to kill the virtual machine \"%1\"?"
-msgstr "Принудительное завершение процесса виртуальной машины может привести к потере данных. Делайте это только в том случае, если процесс 86Box завис.\n\nВы действительно хотите принудительно завершить процесс виртуальной машины «%1»?"
+msgid "Killing a virtual machine can cause data loss. Only do this if the 86Box-Next process gets stuck.\n\nDo you really wish to kill the virtual machine \"%1\"?"
+msgstr "Принудительное завершение процесса виртуальной машины может привести к потере данных. Делайте это только в том случае, если процесс 86Box-Next завис.\n\nВы действительно хотите принудительно завершить процесс виртуальной машины «%1»?"
 
 msgid "&Delete"
 msgstr "&Удалить"
@@ -1915,8 +1915,8 @@ msgstr "<html><head/><body><p>При выборе образов носител�
 msgid "This machine might have been moved or copied."
 msgstr "Возможно, эта машина была перемещена или скопирована."
 
-msgid "In order to ensure proper networking functionality, 86Box needs to know if this machine was moved or copied.\n\nSelect \"I Copied It\" if you are not sure."
-msgstr "Чтобы обеспечить правильную работу сети, 86Box должен знать, была ли эта машина перемещена или скопирована.\n\nЕсли вы не уверены, выберите «Скопирована»."
+msgid "In order to ensure proper networking functionality, 86Box-Next needs to know if this machine was moved or copied.\n\nSelect \"I Copied It\" if you are not sure."
+msgstr "Чтобы обеспечить правильную работу сети, 86Box-Next должен знать, была ли эта машина перемещена или скопирована.\n\nЕсли вы не уверены, выберите «Скопирована»."
 
 msgid "I Moved It"
 msgstr "Перемещена"
@@ -1924,8 +1924,8 @@ msgstr "Перемещена"
 msgid "I Copied It"
 msgstr "Скопирована"
 
-msgid "86Box Monitor #%1"
-msgstr "Монитор 86Box № %1"
+msgid "86Box-Next Monitor #%1"
+msgstr "Монитор 86Box-Next № %1"
 
 msgid "No MCA devices."
 msgstr "Нет устройств MCA."

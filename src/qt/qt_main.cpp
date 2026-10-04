@@ -599,6 +599,7 @@ main(int argc, char *argv[])
 #endif
 
     app.setApplicationName(EMU_NAME);
+    app.setApplicationDisplayName(EMU_DISPLAY_NAME);
     Q_INIT_RESOURCE(qt_resources);
     Q_INIT_RESOURCE(qt_translations);
 
@@ -642,7 +643,7 @@ main(int argc, char *argv[])
     Preferences::loadTranslators(&app);
 #ifdef Q_OS_WINDOWS
     QApplication::setFont(Preferences::getUIFont());
-    SetCurrentProcessExplicitAppUserModelID(L"86Box.86Box");
+    SetCurrentProcessExplicitAppUserModelID(L"86Box.86Box-Next");
 #endif
 
 #ifndef Q_OS_MACOS
@@ -696,7 +697,7 @@ main(int argc, char *argv[])
         QMessageBox movewarnbox;
         movewarnbox.setIcon(QMessageBox::Icon::Warning);
         movewarnbox.setText(QObject::tr("This machine might have been moved or copied."));
-        movewarnbox.setInformativeText(QObject::tr("In order to ensure proper networking functionality, 86Box needs to know if this machine was moved or copied.\n\nSelect \"I Copied It\" if you are not sure."));
+        movewarnbox.setInformativeText(QObject::tr("In order to ensure proper networking functionality, 86Box-Next needs to know if this machine was moved or copied.\n\nSelect \"I Copied It\" if you are not sure."));
         const QPushButton *movedButton  = movewarnbox.addButton(QObject::tr("I Moved It"), QMessageBox::AcceptRole);
         const QPushButton *copiedButton = movewarnbox.addButton(QObject::tr("I Copied It"), QMessageBox::DestructiveRole);
         QPushButton       *cancelButton = movewarnbox.addButton(QObject::tr("Cancel"), QMessageBox::RejectRole);

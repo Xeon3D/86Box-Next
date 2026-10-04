@@ -965,7 +965,7 @@ Preferences::reloadStrings()
     translatedstrings[STRING_HW_NOT_AVAILABLE_DEVICE]   = QCoreApplication::translate("", "Device \"%s\" is not available due to missing ROMs. Ignoring the device.").toUtf8();
     translatedstrings[STRING_HW_NOT_AVAILABLE_TITLE]    = QCoreApplication::translate("", "Hardware not available").toUtf8();
     translatedstrings[STRING_UNSUPPORTED_TITLE] = QCoreApplication::translate("", "Unsupported Hardware").toUtf8();
-    translatedstrings[STRING_UNSUPPORTED_TEXT] = QCoreApplication::translate("", "Hardware in this machine profile is not supported by this current build of 86Box.").toUtf8();
+    translatedstrings[STRING_UNSUPPORTED_TEXT] = QCoreApplication::translate("", "Hardware in this machine profile is not supported by this current build of 86Box-Next.").toUtf8();
     translatedstrings[STRING_UNSUPPORTED_OTHERS] = QCoreApplication::translate("", "(and %i others)").toUtf8();
     translatedstrings[STRING_UNSUPPORTED_REPLACE] = QCoreApplication::translate("", "Loading the configuration anyway will replace the machine and overwrite the existing configuration.").toUtf8();
     translatedstrings[STRING_UNSUPPORTED_REMOVE] = QCoreApplication::translate("", "Loading the configuration anyway will remove these components and overwrite the existing configuration.").toUtf8();
@@ -1427,10 +1427,10 @@ plat_run_command(const char *cmd, const char **env, const char *title)
             process->setProgram(terminal);
             QStringList args;
             if (terminal == QStringLiteral("xdg-terminal-exec")) {
-                args << QStringLiteral("--title=" EMU_NAME) << QStringLiteral("--dir=").append(process->workingDirectory()) << QStringLiteral("--");
+                args << QStringLiteral("--title=" EMU_DISPLAY_NAME) << QStringLiteral("--dir=").append(process->workingDirectory()) << QStringLiteral("--");
             } else if (terminal == QStringLiteral("gnome-terminal")) {
                 /* Really old versions will ignore -t and print a warning. */
-                args << QStringLiteral("-t") << QStringLiteral(EMU_NAME) << QStringLiteral("--");
+                args << QStringLiteral("-t") << QStringLiteral(EMU_DISPLAY_NAME) << QStringLiteral("--");
             } else {
                 /* Hide script name in the Konsole title bar. */
                 bool is_konsole = (terminal == QStringLiteral("konsole"));
@@ -1439,9 +1439,9 @@ plat_run_command(const char *cmd, const char **env, const char *title)
                 else if (is_konsole || /* Trinity Konsole (no effect on KDE Konsole) */
                          (terminal == QStringLiteral("x-terminal-emulator")) ||
                          (terminal == QStringLiteral("xterm")) || terminal.endsWith(QStringLiteral("rxvt")))
-                    args << QStringLiteral("-T") << QStringLiteral(EMU_NAME);
+                    args << QStringLiteral("-T") << QStringLiteral(EMU_DISPLAY_NAME);
                 else if (terminal == QStringLiteral("mate-terminal"))
-                    args << QStringLiteral("-t") << QStringLiteral(EMU_NAME);
+                    args << QStringLiteral("-t") << QStringLiteral(EMU_DISPLAY_NAME);
                 args << QStringLiteral("-e");
             }
             process->setArguments(args << script);

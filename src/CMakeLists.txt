@@ -120,6 +120,8 @@ if(INSTRUMENT)
     add_compile_definitions(USE_INSTRUMENT)
 endif()
 
+set_target_properties(86Box PROPERTIES OUTPUT_NAME "86Box-Next")
+
 target_link_libraries(86Box
     cpu
     char
@@ -268,7 +270,7 @@ elseif(APPLE AND NOT QT)
     install(CODE "
         include(BundleUtilities)
         get_filename_component(CMAKE_INSTALL_PREFIX_ABSOLUTE \${CMAKE_INSTALL_PREFIX} ABSOLUTE)
-        fixup_bundle(\"\${CMAKE_INSTALL_PREFIX_ABSOLUTE}/86Box.app\" \"\" \"\")"
+        fixup_bundle(\"\${CMAKE_INSTALL_PREFIX_ABSOLUTE}/86Box-Next.app\" \"\" \"\")"
     COMPONENT Runtime)
 endif()
 
