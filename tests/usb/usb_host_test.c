@@ -408,7 +408,12 @@ test_native_speed(void)
     CHECK(xact(USB_PID_IN, 1, buf, 512) == 512, "at high speed a 512-byte packet passes as it is");
 }
 
-/* USB audio: a microphone (iso IN 84) and speakers (iso OUT 05). */
+/* USB audio: a microphone (iso IN 84) and speakers (iso OUT 05), on the
+   fake high-speed device at high speed: a packet a microframe, so P packets
+   to a transfer and Q queued at most. */
+#define P 32
+#define Q 128
+
 static void
 test_iso_in(void)
 {
@@ -420,21 +425,22 @@ test_iso_in(void)
     CHECK(n_iso_pending == 4, "the stream put four transfers on the device (%d)", n_iso_pending);
 
     iso_seq = 0;
-    fake_iso_round();   /* 4 transfers x 8 packets of 188 bytes */
+    fake_iso_round();   /* 4 transfers x P packets of 188 bytes */
     CHECK(n_iso_pending == 4, "and each went straight back (%d)", n_iso_pending);
-    for (int i = 0; i < 32; i++) {
+    for (int i = 0; i < 4 * P; i++) {
         int n = dev->iso(dev, USB_PID_IN, 4, buf, 192);
         ok &= (n == 188) && (buf[0] == i) && (buf[187] == i);
     }
-    CHECK(ok, "32 packets of 188 bytes, one per frame, in order");
+    CHECK(ok, "%d packets of 188 bytes, one per microframe, in order", 4 * P);
     CHECK(dev->iso(dev, USB_PID_IN, 4, buf, 192) == 0, "queue empty: an empty packet, not a stall");
 
     /* The device runs ahead (the emulation is slow): the latency is bounded
        by dropping the oldest. */
     fake_iso_round();
-    fake_iso_round();   /* 64 packets, 32 fit */
+    fake_iso_round();   /* 8 P packets, Q fit */
     int n = dev->iso(dev, USB_PID_IN, 4, buf, 192);
-    CHECK(n == 188 && buf[0] == 64, "after 64 packets unread the oldest kept is #64 (%d)", buf[0]);
+    CHECK(n == 188 && buf[0] == (uint8_t) (4 * P + 8 * P - Q), "after %d packets unread the oldest kept is #%d (%d)", 8 * P,
+          4 * P + 8 * P - Q, buf[0]);
 }
 
 static void
@@ -443,20 +449,23 @@ test_iso_out(void)
     uint8_t buf[192];
 
     n_iso_out = 0;
-    for (int i = 0; i < 15; i++) {
+    int taken = 1;
+    for (int i = 0; i < 2 * P - 1; i++) {
         memset(buf, 0x40 + i, 176);
-        CHECK(dev->iso(dev, USB_PID_OUT, 5, buf, 176) == 176, "OUT packet %d taken", i);
+        taken &= dev->iso(dev, USB_PID_OUT, 5, buf, 176) == 176;
     }
+    CHECK(taken, "OUT packets taken");
+    CHECK(n_iso_out == 0, "and held until the cushion is there");
     int before = n_iso_pending;
-    memset(buf, 0x40 + 15, 176);
+    memset(buf, 0x40 + 2 * P - 1, 176);
     dev->iso(dev, USB_PID_OUT, 5, buf, 176);
-    CHECK(n_iso_pending - before == 2, "a 16-packet cushion goes out as two transfers (%d)", n_iso_pending - before);
+    CHECK(n_iso_pending - before == 2, "a %d-packet cushion goes out as two transfers (%d)", 2 * P, n_iso_pending - before);
 
     fake_iso_round();   /* also runs the IN stream's round */
-    int ok = (n_iso_out == 16);
-    for (int i = 0; i < n_iso_out && i < 16; i++)
+    int ok = (n_iso_out == 2 * P);
+    for (int i = 0; i < n_iso_out && i < 2 * P; i++)
         ok &= (iso_out_pkts[i] == 176) && (iso_out_first[i] == 0x40 + i);
-    CHECK(ok, "the device played 16 packets of 176 bytes, in order (%d)", n_iso_out);
+    CHECK(ok, "the device played %d packets of 176 bytes, in order (%d)", 2 * P, n_iso_out);
 }
 
 static void

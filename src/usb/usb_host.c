@@ -382,6 +382,11 @@ host_note_endpoints(host_dev_t *hd, const struct libusb_interface_descriptor *al
         const int i = (ep->bEndpointAddress & 0x0f) | ((ep->bEndpointAddress & 0x80) ? 16 : 0);
         hd->ep_type[i] = ep->bmAttributes & 3;
         hd->ep_maxp[i] = ep->wMaxPacketSize & 0x7ff;
+        /* A high-bandwidth high-speed isochronous endpoint moves up to three
+           packets a microframe (bits 12:11); the guest's iTD transaction and
+           libusb's packet are all of them together. */
+        if ((hd->ep_type[i] == LIBUSB_TRANSFER_TYPE_ISOCHRONOUS) && (hd->dev.speed == USBN_SPEED_HIGH))
+            hd->ep_maxp[i] *= 1 + ((ep->wMaxPacketSize >> 11) & 3);
     }
 }
 
@@ -581,18 +586,25 @@ host_reset_endpoint(host_dev_t *hd, uint8_t epaddr)
    streaming by selecting an interface's alternate setting. */
 
 #define ISO_XFERS 4    /* transfers on the device per stream */
-#define ISO_PKTS  8    /* 1 ms packets per transfer */
-#define ISO_QUEUE 32   /* packets queued at most: 32 ms */
+#define ISO_PKTS  8    /* packets per transfer: 8 ms at full speed */
+#define ISO_QUEUE 32   /* packets queued at most: 32 ms at full speed */
+#define ISO_HS    4    /* high speed: a packet a microframe, so four times
+                          the packets per transfer and in the queue (4 ms
+                          and 16 ms at one packet each microframe) */
 
 typedef struct iso_stream_t {
     uint8_t                 ep;         /* endpoint address, direction included */
-    int                     maxp;
+    int                     maxp;       /* the most a packet carries (all of a
+                                           high-bandwidth microframe's) */
+    int                     pkts;       /* packets per transfer: ISO_PKTS, or
+                                           ISO_PKTS * ISO_HS at high speed */
+    int                     qmax;       /* packets queued at most */
     int                     active;
     int                     primed;     /* OUT: enough queued to be sending */
     int                     inflight;   /* this stream's transfers on the device */
     struct libusb_transfer *slot[ISO_XFERS];
-    uint16_t                len[ISO_QUEUE];
-    uint8_t                *data;       /* ISO_QUEUE packets of maxp bytes */
+    uint16_t               *len;        /* qmax packet lengths */
+    uint8_t                *data;       /* qmax packets of maxp bytes */
     int                     head, count;
     /* trace: packets from or for the guest, packets moved by the device and
        the transfers they came in, what failed, and the queue's misses */
@@ -611,12 +623,12 @@ iso_push(iso_stream_t *s, const uint8_t *p, int n)
 {
     if (n > s->maxp)
         n = s->maxp;
-    if (s->count == ISO_QUEUE) {
-        s->head = (s->head + 1) % ISO_QUEUE;
+    if (s->count == s->qmax) {
+        s->head = (s->head + 1) % s->qmax;
         s->count--;
         s->dropped++;
     }
-    int i = (s->head + s->count) % ISO_QUEUE;
+    int i = (s->head + s->count) % s->qmax;
     if (n > 0)
         memcpy(s->data + i * s->maxp, p, n);
     s->len[i] = n;
@@ -632,7 +644,7 @@ iso_pop(iso_stream_t *s, uint8_t *p, int max)
     int n = (s->len[i] < max) ? s->len[i] : max;
     if (n > 0)
         memcpy(p, s->data + i * s->maxp, n);
-    s->head = (s->head + 1) % ISO_QUEUE;
+    s->head = (s->head + 1) % s->qmax;
     s->count--;
     return n;
 }
@@ -640,7 +652,7 @@ iso_pop(iso_stream_t *s, uint8_t *p, int max)
 static void LIBUSB_CALL iso_cb(struct libusb_transfer *t);
 
 /* Put a transfer on the device for stream s; xfer_lock held.  OUT: the next
-   ISO_PKTS queued packets go in it. */
+   s->pkts queued packets go in it. */
 static int
 iso_submit(host_dev_t *hd, iso_stream_t *s)
 {
@@ -653,19 +665,19 @@ iso_submit(host_dev_t *hd, iso_stream_t *s)
     if (slot < 0)
         return 0;
 
-    struct libusb_transfer *t   = libusb_alloc_transfer(ISO_PKTS);
-    uint8_t                *buf = malloc(ISO_PKTS * s->maxp);
+    struct libusb_transfer *t   = libusb_alloc_transfer(s->pkts);
+    uint8_t                *buf = malloc(s->pkts * s->maxp);
     iso_sub_t              *sub = malloc(sizeof(iso_sub_t));
-    int                     total = ISO_PKTS * s->maxp;
+    int                     total = s->pkts * s->maxp;
 
     sub->hd   = hd;
     sub->s    = s;
     sub->slot = slot;
-    libusb_fill_iso_transfer(t, hd->h, s->ep, buf, total, ISO_PKTS, iso_cb, sub, 0);
+    libusb_fill_iso_transfer(t, hd->h, s->ep, buf, total, s->pkts, iso_cb, sub, 0);
     libusb_set_iso_packet_lengths(t, s->maxp);
     if (!(s->ep & 0x80)) {
         total = 0;
-        for (int i = 0; i < ISO_PKTS; i++) {
+        for (int i = 0; i < s->pkts; i++) {
             int n = iso_pop(s, buf + total, s->maxp);
             t->iso_packet_desc[i].length = (n > 0) ? n : 0;
             total += t->iso_packet_desc[i].length;
@@ -693,12 +705,12 @@ iso_submit(host_dev_t *hd, iso_stream_t *s)
 static void
 iso_out_pump(host_dev_t *hd, iso_stream_t *s)
 {
-    if (!s->primed && (s->count >= 2 * ISO_PKTS))
+    if (!s->primed && (s->count >= 2 * s->pkts))
         s->primed = 1;
-    while (s->primed && (s->inflight < ISO_XFERS) && (s->count >= ISO_PKTS))
+    while (s->primed && (s->inflight < ISO_XFERS) && (s->count >= s->pkts))
         if (!iso_submit(hd, s))
             break;
-    if (s->primed && !s->inflight && (s->count < ISO_PKTS)) {
+    if (s->primed && !s->inflight && (s->count < s->pkts)) {
         s->primed = 0;     /* ran dry: build the cushion again */
         s->starved++;
     }
@@ -761,10 +773,14 @@ iso_stream(host_dev_t *hd, uint8_t epaddr)
         const int maxp = hd->ep_maxp[i];
         if (maxp <= 0)
             return NULL;
-        iso_stream_t *s = calloc(1, sizeof(iso_stream_t));
+        const int     hs = (hd->dev.speed == USBN_SPEED_HIGH);
+        iso_stream_t *s  = calloc(1, sizeof(iso_stream_t));
         s->ep   = epaddr;
         s->maxp = maxp;
-        s->data = malloc(ISO_QUEUE * maxp);
+        s->pkts = hs ? ISO_PKTS * ISO_HS : ISO_PKTS;
+        s->qmax = hs ? ISO_QUEUE * ISO_HS : ISO_QUEUE;
+        s->len  = calloc(s->qmax, sizeof(uint16_t));
+        s->data = malloc(s->qmax * maxp);
         hd->iso[i] = s;
     }
     return hd->iso[i];
@@ -791,6 +807,7 @@ iso_stop(host_dev_t *hd, int i)
     }
     thread_release_mutex(xfer_lock);
     if (s) {
+        free(s->len);
         free(s->data);
         free(s);
     }

@@ -22,10 +22,13 @@
  *
  *             The schedules -- the periodic frame list and the asynchronous
  *             queue-head ring -- are walked once per emulated millisecond.
- *             Queue heads and qTDs are supported; isochronous iTDs and
- *             split-transaction siTDs are skipped.  A qTD is handed to the
- *             device whole (up to 20 KB) and a device that is not ready NAKs,
- *             leaving it active for the next frame.
+ *             Queue heads and qTDs, and high-speed isochronous iTDs, are
+ *             supported; split-transaction siTDs are skipped (full-speed
+ *             devices go to the companion).  A qTD is handed to the device
+ *             whole (up to 20 KB) and a device that is not ready NAKs,
+ *             leaving it active for the next frame.  An iTD's eight
+ *             microframe transactions all run in its frame, one isochronous
+ *             transaction each (the device's iso entry), never retried.
  *
  *             Reference: Intel, "Enhanced Host Controller Interface
  *             Specification for Universal Serial Bus", revision 1.0, 2002.
@@ -130,6 +133,16 @@ ehci_log(const char *fmt, ...)
 #define TOK_IOC        0x00008000
 #define TOK_BYTES(t)   (((t) >> 16) & 0x7fff)
 #define TOK_TOGGLE     0x80000000
+
+/* iTD transaction status and control. */
+#define ITD_ACTIVE     0x80000000
+#define ITD_DBERR      0x40000000
+#define ITD_BABBLE     0x20000000
+#define ITD_XACTERR    0x10000000
+#define ITD_LEN(s)     (((s) >> 16) & 0xfff)
+#define ITD_IOC        0x00008000
+#define ITD_PG(s)      (((s) >> 12) & 7)
+#define ITD_OFF(s)     ((s) & 0xfff)
 
 #define PID_OUT        0
 #define PID_IN         1
@@ -425,6 +438,87 @@ ehci_process_qh(ehci_t *dev, uint32_t qh)
     }
 }
 
+/* An iTD's data: seven 4 KB page pointers; a transaction starts in page
+   PG at its offset and may run on into the next page. */
+static void
+itd_copy(const uint32_t bp[7], int pg, uint32_t off, uint8_t *buf, int len, int to_guest)
+{
+    for (int i = 0; i < len;) {
+        int      page  = pg + (int) ((off + i) >> 12);
+        uint32_t in_pg = (off + i) & 0xfff;
+        int      n     = 0x1000 - in_pg;
+
+        if (page > 6)
+            break;
+        if (n > len - i)
+            n = len - i;
+        uint32_t a = (bp[page] & ~0xfff) + in_pg;
+        if (to_guest)
+            dma_bm_write(a, buf + i, n, 1);
+        else
+            dma_bm_read(a, buf + i, n, 1);
+        i += n;
+    }
+}
+
+/* A high-speed isochronous iTD: up to eight transactions, one a microframe,
+   all run in this frame.  IN writes back the length received; OUT keeps
+   the length it sent.  No device at the address: a transaction error. */
+static void
+ehci_process_itd(ehci_t *dev, uint32_t itd)
+{
+    uint32_t bp[7];
+
+    for (int i = 0; i < 7; i++)
+        bp[i] = rd32(itd + 0x24 + i * 4);
+
+    const uint8_t  addr = bp[0] & 0x7f;
+    const uint8_t  ep   = (bp[0] >> 8) & 0x0f;
+    const int      in   = !!(bp[1] & 0x800);
+    const int      maxp = bp[1] & 0x7ff;
+    const int      mult = (bp[2] & 3) ? (bp[2] & 3) : 1;
+    usbn_device_t *d    = ehci_find_device(dev, addr);
+
+    for (int uf = 0; uf < 8; uf++) {
+        uint32_t st = rd32(itd + 4 + uf * 4);
+
+        if (!(st & ITD_ACTIVE))
+            continue;
+
+        int len = ITD_LEN(st);
+        int n   = 0;
+
+        if (len > maxp * mult)
+            len = maxp * mult;
+        if (len > XFER_MAX)
+            len = XFER_MAX;
+        st &= ~ITD_ACTIVE;
+        if (d == NULL)
+            st |= ITD_XACTERR;
+        else if (d->iso) {
+            if (in) {
+                n = d->iso(d, USB_PID_IN, ep, dev->buf, len);
+                if (n > len) {
+                    n = len;
+                    st |= ITD_BABBLE;
+                }
+                if (n > 0)
+                    itd_copy(bp, ITD_PG(st), ITD_OFF(st), dev->buf, n, 1);
+            } else {
+                itd_copy(bp, ITD_PG(st), ITD_OFF(st), dev->buf, len, 0);
+                d->iso(d, USB_PID_OUT, ep, dev->buf, len);
+            }
+        }
+        if (in)
+            st = (st & ~0x0fff0000) | ((uint32_t) (n < 0 ? 0 : n) << 16);
+        wr32(itd + 4 + uf * 4, st);
+        if (st & ITD_IOC)
+            dev->pending_sts |= STS_USBINT;
+        if (st & (ITD_XACTERR | ITD_BABBLE))
+            dev->pending_sts |= STS_ERRINT;
+    }
+}
+
 static void
 ehci_periodic(ehci_t *dev)
 {
@@ -435,8 +529,10 @@ ehci_periodic(ehci_t *dev)
 
         if (LINK_TYPE(link) == TYPE_QH)
             ehci_process_qh(dev, a);
-        /* iTDs, siTDs and FSTNs are passed over: their first dword is the
-           next link all the same. */
+        else if (LINK_TYPE(link) == TYPE_ITD)
+            ehci_process_itd(dev, a);
+        /* siTDs and FSTNs are passed over: their first dword is the next
+           link all the same. */
         link = rd32(a);
     }
 }

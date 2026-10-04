@@ -52,6 +52,7 @@ static fake_dev_t hs, fs;
 #define USBSTS      (OP + 0x04)
 #define USBINTR     (OP + 0x08)
 #define FRINDEX     (OP + 0x0c)
+#define PERIODIC    (OP + 0x14)
 #define ASYNC       (OP + 0x18)
 #define CONFIGFLAG  (OP + 0x40)
 #define PORTSC(p)   (OP + 0x44 + 4 * (p))
@@ -232,6 +233,85 @@ test_doorbell(void)
     fake_mmio_wl(USBSTS, 0x3f);
 }
 
+/* High-speed isochronous: iTDs in the periodic frame list, each microframe's
+   transaction run once in the iTD's frame. */
+#define FLIST 0x30000
+#define ITD   0x31000
+#define ITD2  0x31080
+#define IBUF  0x32000
+
+static void
+itd(uint32_t at, uint32_t next, uint8_t addr, uint8_t ep, int in, int maxp)
+{
+    wr32m(at, next);
+    for (int uf = 0; uf < 8; uf++)
+        wr32m(at + 4 + uf * 4, 0);
+    wr32m(at + 0x24, IBUF | ((uint32_t) ep << 8) | addr);
+    wr32m(at + 0x28, (IBUF + 0x1000) | (in ? 0x800 : 0) | (uint32_t) maxp);
+    wr32m(at + 0x2c, (IBUF + 0x2000) | 1);   /* one transaction a microframe */
+    for (int pg = 3; pg < 7; pg++)
+        wr32m(at + 0x24 + pg * 4, IBUF + pg * 0x1000);
+}
+
+static void
+itd_xact(uint32_t at, int uf, int len, int ioc, int pg, uint32_t off)
+{
+    wr32m(at + 4 + uf * 4, 0x80000000 | ((uint32_t) len << 16) | (ioc ? 0x8000 : 0) | ((uint32_t) pg << 12) | off);
+}
+
+static void
+test_itd(void)
+{
+    /* The async schedule off; every frame list entry: the IN iTD, then
+       the OUT one. */
+    fake_mmio_wl(USBCMD, 0x00080000 | 1);
+    for (int i = 0; i < 1024; i++)
+        wr32m(FLIST + i * 4, ITD);   /* type 0: iTD */
+    itd(ITD, ITD2, 5, 3, 1, 1024);
+    itd(ITD2, 1, 5, 4, 0, 1024);
+    itd_xact(ITD, 0, 192, 1, 0, 0x100);
+    itd_xact(ITD, 4, 192, 0, 0, 0x200);
+    itd_xact(ITD2, 3, 16, 0, 1, 0xff8);   /* runs on from page 1 into page 2 */
+    memset(ram + IBUF + 0x100, 0, 8);
+    memset(ram + IBUF + 0x1ff8, 0x5a, 8);
+    memset(ram + IBUF + 0x2000, 0xa5, 8);
+    fake_mmio_wl(PERIODIC, FLIST);
+    fake_mmio_wl(USBSTS, 0x3f);
+    fake_mmio_wl(USBCMD, 0x00080000 | 0x10 | 1);   /* run, periodic enabled */
+    CHECK(fake_mmio_rl(USBSTS) & 0x4000, "periodic schedule status follows PSE");
+    fake_frames(1);
+
+    uint32_t s0 = rd32m(ITD + 4), s1 = rd32m(ITD + 8), s4 = rd32m(ITD + 0x14);
+    CHECK(!(s0 & 0x80000000) && ((s0 >> 16) & 0xfff) == 4, "iTD IN microframe 0: done, 4 bytes (%08X)", s0);
+    CHECK(ram[IBUF + 0x100] == 1 && ram[IBUF + 0x103] == 4, "its data in guest memory");
+    CHECK(!(s4 & 0x80000000) && ((s4 >> 16) & 0xfff) == 4, "microframe 4 too, in the same frame (%08X)", s4);
+    CHECK(s1 == 0, "an inactive microframe is left alone");
+    uint32_t o3 = rd32m(ITD2 + 0x10);
+    CHECK(!(o3 & 0x80000000) && ((o3 >> 16) & 0xfff) == 16, "iTD OUT: done, its length kept (%08X)", o3);
+    CHECK(hs.iso_out_len == 16 && hs.iso_out_first == 0x5a, "the device got 16 bytes from the end of page 1 (%d)", hs.iso_out_len);
+    CHECK(fake_mmio_rl(USBSTS) & 1, "USBINT from the IOC transaction");
+    fake_mmio_wl(USBSTS, 0x3f);
+
+    /* No device at the address: a transaction error, not a hang. */
+    itd(ITD, 1, 9, 3, 1, 1024);
+    itd_xact(ITD, 2, 192, 0, 0, 0x100);
+    fake_frames(1);
+    uint32_t e = rd32m(ITD + 0x0c);
+    CHECK(!(e & 0x80000000) && (e & 0x10000000), "no device: transaction error (%08X)", e);
+    CHECK(fake_mmio_rl(USBSTS) & 2, "error interrupt");
+
+    /* A device without isochronous support completes them empty. */
+    hs.dev.iso = NULL;
+    itd(ITD, 1, 5, 3, 1, 1024);
+    itd_xact(ITD, 1, 192, 0, 0, 0x100);
+    fake_frames(1);
+    e = rd32m(ITD + 8);
+    CHECK(!(e & 0x80000000) && !(e & 0x70000000) && ((e >> 16) & 0xfff) == 0, "no iso support: done empty (%08X)", e);
+
+    fake_mmio_wl(USBCMD, 0x00080000 | 1);
+    fake_mmio_wl(USBSTS, 0x3f);
+}
+
 static void
 test_unplug_and_release(void)
 {
@@ -258,6 +338,7 @@ main(void)
     test_control_transfer();
     test_short_and_stall();
     test_doorbell();
+    test_itd();
     test_unplug_and_release();
     CARD.close(dev);
     CHECK(fs.destroyed == 1, "closing the card releases what was plugged in");
