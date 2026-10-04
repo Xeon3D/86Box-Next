@@ -1246,16 +1246,11 @@ usage:
     /* At this point, we can safely create the full path name. */
     path_append_filename(cfg_path, usr_path, p);
 
-    /* Build the global configuration file path. */
-    if (global == NULL) {
-        plat_get_global_config_dir(global_cfg_path, sizeof(global_cfg_path));
-        // avoid strcpy global_cfg_path over itself (valgrind says it's bad...)
-        // path_append_filename(global_cfg_path, global_cfg_path, GLOBAL_CONFIG_FILE);
-        path_slash(global_cfg_path);
-        strcat(global_cfg_path, GLOBAL_CONFIG_FILE);
-    } else {
-        strncpy(global_cfg_path, global, sizeof(global_cfg_path) - 1);
-    }
+    /* 86Box-Next keeps the global settings in the machine's own 86box.cfg,
+       so that file is the "global configuration file", and -O is ignored. */
+    if (global != NULL)
+        global_cfg_overridden = 0;
+    strncpy(global_cfg_path, cfg_path, sizeof(global_cfg_path) - 1);
 
     /*
      * Get the current directory's name

@@ -2842,18 +2842,24 @@ load_keybinds(void)
     ini_delete_section_if_empty(config, cat);
 }
 
+/* 86Box-Next has no global configuration file: the settings that upstream
+   keeps there live in the machine's own 86box.cfg, in the same ini as the
+   machine settings, so there is one file with one writer. */
 void
 config_load_global(void)
 {
-    config_log("Loading global config file '%s'...\n", global_cfg_path);
+    if (config == NULL) {
+        config_log("Loading global settings from '%s'...\n", cfg_path);
 
-    global = ini_read(global_cfg_path);
+        config = ini_read(cfg_path);
 
-    if (global == NULL) {
-        global = ini_new();
+        if (config == NULL) {
+            config = ini_new();
 
-        config_log("Global config file not present or invalid!\n");
+            config_log("Config file not present or invalid!\n");
+        }
     }
+    global = config;
 
     load_global();
 }
@@ -2881,11 +2887,16 @@ config_load(void)
     for (int i = 0; i < 768; i++)
         scancode_config_map[i] = i;
 
+    if (config != NULL)
+        ini_close(config);
     config = ini_read(cfg_path);
-
-    if (config == NULL) {
+    if (config == NULL)
         config = ini_new();
+    global = config;
 
+    /* A file holding only the global settings (written before a machine was
+       ever configured) is still a new machine. */
+    if (ini_find_section(config, "Machine") == NULL) {
         cpu_f = (cpu_family_t *) &cpu_families[0];
         cpu   = 0;
 
@@ -4733,9 +4744,15 @@ save_other_removable_devices(void)
 void
 config_save_global(void)
 {
+    if (config_mutex)
+        thread_wait_mutex(config_mutex);
+
     save_global();                  /* Global */
 
-    ini_write(global, global_cfg_path);
+    ini_write(config, cfg_path);
+
+    if (config_mutex)
+        thread_release_mutex(config_mutex);
 }
 
 void
@@ -4764,9 +4781,9 @@ config_save(void)
     save_vk_shaders();              /* GL3 Shaders */
 #endif
 
-    ini_write(config, cfg_path);
+    save_global();                  /* Global */
 
-    config_save_global();
+    ini_write(config, cfg_path);
 
     if (config_mutex)
         thread_release_mutex(config_mutex);

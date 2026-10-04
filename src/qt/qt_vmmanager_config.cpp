@@ -14,11 +14,15 @@
  */
 #include <QDebug>
 #include <QDir>
+#include <QFileInfo>
 #include "qt_vmmanager_config.hpp"
 
 extern "C" {
 #include <86box/plat.h>
 #include <86box/version.h>
+extern "C" {
+#include <86box/86box.h>
+}
 }
 
 QVariantHash VMManagerConfig::generalDefaults = {
@@ -35,9 +39,9 @@ QVariantHash VMManagerConfig::generalDefaults = {
 
 VMManagerConfig::VMManagerConfig(const ConfigType type, const QString &section)
 {
-    char BUF[256];
-    plat_get_global_config_dir(BUF, 255);
-    const auto configDir  = QString(BUF);
+    /* 86Box-Next: no global settings folder; the manager's settings sit next
+       to the 86box.cfg it was started with. */
+    const auto configDir  = QFileInfo(QString::fromUtf8(cfg_path)).absolutePath();
     const auto configFile = QDir::cleanPath(configDir + "/" + "vmm.ini");
 
     config_type = type;
