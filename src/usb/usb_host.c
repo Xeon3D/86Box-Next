@@ -148,6 +148,7 @@ typedef struct host_dev_t {
     /* A high-speed device shown at full speed (dev.fs_view): the guest's
        full-speed packets, gathered into or cut out of high-speed ones. */
     int ctl_patched;           /* the configuration descriptor was rewritten */
+    int cfg_dumped;            /* trace: the configuration descriptor was logged */
     int out_acc[16];           /* OUT bytes gathered, not yet sent          */
     int out_idle[16];          /* frames since the last OUT packet           */
     int in_len[16], in_pos[16];/* the last high-speed IN packet, handed out */
@@ -418,6 +419,37 @@ host_claim_all(host_dev_t *hd)
     libusb_free_config_descriptor(cfg);
 }
 
+static void iso_stop(host_dev_t *hd, int i);
+static void host_reset_endpoint(host_dev_t *hd, uint8_t epaddr);
+static void host_reset_endpoints(host_dev_t *hd);
+
+/* SET_INTERFACE starts over the endpoints of that interface -- in any of its
+   alternate settings -- and no others: a headset's microphone keeps
+   streaming while its headphone interface is switched, and its buttons'
+   interrupt endpoint is not touched. */
+static void
+host_reset_interface(host_dev_t *hd, int iface)
+{
+    struct libusb_config_descriptor *cfg;
+
+    if (libusb_get_active_config_descriptor(libusb_get_device(hd->h), &cfg) != 0) {
+        host_reset_endpoints(hd);
+        return;
+    }
+    for (int i = 0; i < cfg->bNumInterfaces; i++)
+        for (int a = 0; a < cfg->interface[i].num_altsetting; a++) {
+            const struct libusb_interface_descriptor *alt = &cfg->interface[i].altsetting[a];
+            if (alt->bInterfaceNumber != iface)
+                continue;
+            for (int e = 0; e < alt->bNumEndpoints; e++) {
+                const uint8_t ea = alt->endpoint[e].bEndpointAddress;
+                iso_stop(hd, (ea & 0x0f) | ((ea & 0x80) ? 16 : 0));
+                host_reset_endpoint(hd, ea);
+            }
+        }
+    libusb_free_config_descriptor(cfg);
+}
+
 static void
 host_set_alt(host_dev_t *hd, int iface, int alt)
 {
@@ -562,7 +594,9 @@ typedef struct iso_stream_t {
     uint16_t                len[ISO_QUEUE];
     uint8_t                *data;       /* ISO_QUEUE packets of maxp bytes */
     int                     head, count;
-    uint32_t                dropped, starved, packets;
+    /* trace: packets from or for the guest, packets moved by the device and
+       the transfers they came in, what failed, and the queue's misses */
+    uint32_t                guest, packets, xfers, xfer_err, pkt_err, dropped, starved;
 } iso_stream_t;
 
 typedef struct iso_sub_t {
@@ -677,6 +711,16 @@ iso_cb(struct libusb_transfer *t)
 
     thread_wait_mutex(xfer_lock);
     iso_stream_t *s = sub->s;
+    if (s) {
+        s->xfers++;
+        if (t->status != LIBUSB_TRANSFER_COMPLETED) {
+            if (s->xfer_err++ < 3)
+                usbn_trace("  iso ep %02X: transfer %s", s->ep, xfer_status_name(t->status));
+        } else
+            for (int i = 0; i < t->num_iso_packets; i++)
+                if (t->iso_packet_desc[i].status != LIBUSB_TRANSFER_COMPLETED)
+                    s->pkt_err++;
+    }
     if (s && (s->ep & 0x80) && s->active && (t->status == LIBUSB_TRANSFER_COMPLETED)) {
         for (int i = 0; i < t->num_iso_packets; i++) {
             const struct libusb_iso_packet_descriptor *d = &t->iso_packet_desc[i];
@@ -694,7 +738,8 @@ iso_cb(struct libusb_transfer *t)
         s->slot[sub->slot] = NULL;
         s->inflight--;
         if (!(s->ep & 0x80)) {
-            s->packets += t->num_iso_packets;
+            if (t->status == LIBUSB_TRANSFER_COMPLETED)
+                s->packets += t->num_iso_packets;
             if (s->active)
                 iso_out_pump(sub->hd, s);
         }
@@ -739,8 +784,9 @@ iso_stop(host_dev_t *hd, int i)
                 libusb_cancel_transfer(s->slot[k]);
             }
         if (s->active)
-            usbn_trace("  iso ep %02X: stopped after %u packets, %u dropped, %u starved", s->ep, s->packets, s->dropped,
-                       s->starved);
+            usbn_trace("  iso ep %02X: stopped: guest %u packets, device %u packets in %u transfers "
+                       "(%u transfer errors, %u packet errors), %u dropped, %u starved, %d still in flight",
+                       s->ep, s->guest, s->packets, s->xfers, s->xfer_err, s->pkt_err, s->dropped, s->starved, s->inflight);
         hd->iso[i] = NULL;
     }
     thread_release_mutex(xfer_lock);
@@ -781,6 +827,7 @@ host_iso(usbn_device_t *dev, uint8_t pid, uint8_t ep, uint8_t *buf, int len)
     if (pid == USB_PID_IN)
         while ((s->inflight < ISO_XFERS) && iso_submit(hd, s))
             ;
+    s->guest++;
     if (pid == USB_PID_IN) {
         n = iso_pop(s, buf, len);
         if (n < 0) {
@@ -940,7 +987,7 @@ host_local_request(host_dev_t *hd)
         }
         case REQ(0x01, LIBUSB_REQUEST_SET_INTERFACE): {
             uint32_t t0 = usbn_ms();
-            host_reset_endpoints(hd);
+            host_reset_interface(hd, widx & 0xff);
             host_set_alt(hd, widx, wval);
             usbn_trace("  SET_INTERFACE %d alt %d: %u ms", widx, wval, usbn_ms() - t0);
             return 1;
@@ -1015,6 +1062,15 @@ host_control(host_dev_t *hd, uint8_t pid, uint8_t *buf, int len)
             && (hd->setup[3] == LIBUSB_DT_CONFIG)) {
             usbn_config_to_full_speed(x->buf + 8, x->actual);
             hd->ctl_patched = 1;
+        }
+        if (usbn_trace_on && !hd->cfg_dumped && (hd->setup[1] == LIBUSB_REQUEST_GET_DESCRIPTOR) && (hd->setup[3] == LIBUSB_DT_CONFIG)
+            && (x->actual > 9) && (hd->ctl_pos == 0)) {
+            char hex[3 * CTL_MAX + 1];
+            int  k = 0;
+            for (int b = 0; b < x->actual; b++)
+                k += sprintf(hex + k, "%02X ", x->buf[8 + b]);
+            usbn_trace("  configuration descriptor (%d bytes): %s", x->actual, hex);
+            hd->cfg_dumped = 1;
         }
         r = x->actual - hd->ctl_pos;
         if (r > len)

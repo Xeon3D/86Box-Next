@@ -49,17 +49,20 @@ uint32_t   usbn_ms(void) { return 0; }
 
 /* ------------------------------------------------------- the fake device */
 
-static const struct libusb_endpoint_descriptor eps[5] = {
+static const struct libusb_endpoint_descriptor eps[3] = {
     { .bLength = 7, .bDescriptorType = 5, .bEndpointAddress = 0x81, .bmAttributes = 2, .wMaxPacketSize = 512 },
     { .bLength = 7, .bDescriptorType = 5, .bEndpointAddress = 0x02, .bmAttributes = 2, .wMaxPacketSize = 512 },
     { .bLength = 7, .bDescriptorType = 5, .bEndpointAddress = 0x83, .bmAttributes = 3, .wMaxPacketSize = 1024, .bInterval = 4 },
-    /* USB audio: 48 kHz 16-bit stereo, 192 bytes a millisecond each way */
+};
+/* Interface 1, USB audio: 48 kHz 16-bit stereo, 192 bytes a millisecond each way */
+static const struct libusb_endpoint_descriptor aud[2] = {
     { .bLength = 9, .bDescriptorType = 5, .bEndpointAddress = 0x84, .bmAttributes = 1, .wMaxPacketSize = 192, .bInterval = 1 },
     { .bLength = 9, .bDescriptorType = 5, .bEndpointAddress = 0x05, .bmAttributes = 1, .wMaxPacketSize = 192, .bInterval = 1 },
 };
-static const struct libusb_interface_descriptor alt0 = { .bLength = 9, .bDescriptorType = 4, .bNumEndpoints = 5, .endpoint = eps };
-static const struct libusb_interface            itf0 = { .altsetting = &alt0, .num_altsetting = 1 };
-static struct libusb_config_descriptor          cfg  = { .bLength = 9, .bDescriptorType = 2, .bNumInterfaces = 1, .interface = &itf0 };
+static const struct libusb_interface_descriptor alt0 = { .bLength = 9, .bDescriptorType = 4, .bInterfaceNumber = 0, .bNumEndpoints = 3, .endpoint = eps };
+static const struct libusb_interface_descriptor alt1 = { .bLength = 9, .bDescriptorType = 4, .bInterfaceNumber = 1, .bNumEndpoints = 2, .endpoint = aud };
+static const struct libusb_interface            itfs[2] = { { .altsetting = &alt0, .num_altsetting = 1 }, { .altsetting = &alt1, .num_altsetting = 1 } };
+static struct libusb_config_descriptor          cfg  = { .bLength = 9, .bDescriptorType = 2, .bNumInterfaces = 2, .interface = itfs };
 
 /* The same configuration as the bytes GET_DESCRIPTOR returns. */
 static const uint8_t cfg_bytes[39] = {
@@ -463,10 +466,24 @@ test_iso_stops_on_set_interface(void)
     uint8_t setif[8] = { 0x01, 0x0b, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00 };   /* alt 0: stop streaming */
 
     CHECK(n_iso_pending > 0, "streams running");
+
+    /* A bulk read on interface 0 in flight across the switch of interface 1. */
+    hold_in = 1;
+    CHECK(dev->packet(dev, USB_PID_IN, 1, buf, 64) == USBN_NAK, "a bulk read on interface 0 goes out");
+    struct libusb_transfer *bulk = held;
+    hold_in = 0;
+
     CHECK(dev->packet(dev, USB_PID_SETUP, 0, setif, 8) == 8, "SET_INTERFACE 1 alt 0");
     CHECK(xact(USB_PID_IN, 0, buf, 0) == 0, "its status stage");
     fake_iso_abandon_round();   /* the cancelled transfers come back */
     CHECK(n_iso_pending == 0, "nothing resubmitted after the stop");
+
+    memset(bulk->buffer, 0x77, 64);
+    bulk->status        = LIBUSB_TRANSFER_COMPLETED;
+    bulk->actual_length = 64;
+    bulk->callback(bulk);
+    int n = xact(USB_PID_IN, 1, buf, 64);
+    CHECK(n == 64 && buf[0] == 0x77, "interface 0's read was not touched by it (%d, %02X)", n, buf[0]);
 
     CHECK(dev->iso(dev, USB_PID_IN, 4, buf, 192) == 0, "a new stream starts empty");
     CHECK(n_iso_pending == 4, "with its own four transfers");
