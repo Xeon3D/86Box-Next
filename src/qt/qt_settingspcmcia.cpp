@@ -63,10 +63,10 @@ SettingsPcmcia::SettingsPcmcia(QWidget *parent)
     const QStringList labels = { tr("Card:"), tr("Network:"), tr("Interface:") };
     int               labelWidth = 0;
     for (const auto &l : labels)
-        labelWidth = qMax(labelWidth, fontMetrics().horizontalAdvance(l));
+        labelWidth = qMax(labelWidth, QLabel(l).sizeHint().width());
     auto label = [labelWidth](const QString &text) {
         auto *l = new QLabel(text);
-        l->setMinimumWidth(labelWidth);
+        l->setFixedWidth(labelWidth);
         return l;
     };
 

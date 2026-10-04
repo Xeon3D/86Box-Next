@@ -3,6 +3,8 @@
 
 #include <QWidget>
 
+class SettingsPcmcia;
+
 namespace Ui {
 class SettingsOtherPeripherals;
 }
@@ -71,6 +73,7 @@ private:
     bool                          softpower_card_enabled     = false;
 
     SettingsCompleter            *scRTC;
+    SettingsPcmcia               *pcmcia;   /* the PCMCIA tab */
     int                           io_board_cfg_changed = 0;
 
     SettingsCompleter            *scMemExpCard[4];

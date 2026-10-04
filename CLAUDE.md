@@ -20,7 +20,7 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   peripherals): funworld Photo Play (PeepeeBox `funworld_io.c`) and Merit
   Megatouch XL/MAXX (MegaPPBox `merit_io.c`; the MAXX's PC Card slots are the
   `src/pcmcia` controller). UI controls in `src/qt/qt_ioboard_controls.cpp`.
-- PCMCIA (`src/pcmcia/`, Settings > PCMCIA, ISA): MegaPPBox's Cirrus CL-PD6722 PC Card
+- PCMCIA (`src/pcmcia/`, Settings > Other peripherals > PCMCIA tab, ISA): MegaPPBox's Cirrus CL-PD6722 PC Card
   controller (`pcic_pd6722.c`, 0x3E0, two sockets, one per machine, shared with the
   MAXX I/O board) and the cards for its sockets (`pcmcia.c`'s list: TRENDnet
   TE100-PC16, `net_te100pc16.c`). Config in `[PCMCIA]`; a card's own settings are
