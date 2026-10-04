@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <86box/86box.h>
 #include <86box/path.h>
 #include <86box/plat.h>
@@ -49,8 +50,13 @@ usbn_trace_enable(int on)
         path_append_filename(path, usr_path, "usb_trace.txt");
         trace_fp = plat_fopen(path, "a");
         trace_t0 = plat_get_ticks();
-        if (trace_fp)
-            fprintf(trace_fp, "\n=== USB trace started ===   time: real seconds since start | f = emulated 1 ms frame\n");
+        if (trace_fp) {
+            char      stamp[32];
+            time_t    now = time(NULL);
+            struct tm tm  = *localtime(&now);
+            strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &tm);
+            fprintf(trace_fp, "\n=== USB trace started %s ===   time: real seconds since start | f = emulated 1 ms frame\n", stamp);
+        }
     } else if (!on && trace_fp) {
         fprintf(trace_fp, "=== USB trace stopped ===\n");
         fclose(trace_fp);
