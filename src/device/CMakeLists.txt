@@ -57,6 +57,7 @@ add_library(dev OBJECT
     ../usb/usb_bus.c
     ../usb/usb_uhci.c
     ../usb/usb_ehci.c
+    ../usb/usb_speed.c
     ../usb/usb_host.c
     funworld_io.c
     merit_io.c

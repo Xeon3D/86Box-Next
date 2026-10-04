@@ -153,8 +153,6 @@ UsbManager::poll()
     if (!usbn_present())
         return;
     for (const auto &d : arrived) {
-        if ((d.speed == USBN_SPEED_HIGH) && !usbn_bus_high_speed())
-            continue;   /* cannot go on a USB 1.1 controller; the menu says so */
         const QString choice = remembered(rememberKey(d.vid, d.pid));
         if (choice == "vm")
             connectToVm(d, true);
@@ -260,10 +258,8 @@ UsbManager::buildMenu()
         auto *a = menu->addAction(label(d));
         a->setCheckable(true);
         a->setChecked(portOf(d.vid, d.pid) >= 0);
-        if ((d.speed == USBN_SPEED_HIGH) && !usbn_bus_high_speed()) {
-            a->setEnabled(false);
-            a->setToolTip(tr("A high-speed (USB 2.0) device: the emulated controller is USB 1.1. Fit the USB 2.0 controller in Settings > Other peripherals."));
-        }
+        if ((d.speed == USBN_SPEED_HIGH) && !usbn_bus_high_speed())
+            a->setToolTip(tr("A high-speed (USB 2.0) device: on this USB 1.1 controller it runs at full speed, as it would on a real USB 1.1 port."));
         const usbn_host_info_t info = d;
         connect(a, &QAction::triggered, this, [this, info](bool on) {
             if (on)

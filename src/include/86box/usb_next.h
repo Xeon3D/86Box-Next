@@ -39,11 +39,13 @@ typedef struct usbn_device_t {
     char    name[128];
     int     speed;
     uint8_t addr;           /* set by the guest's SET_ADDRESS */
+    int     fs_view;        /* a high-speed device shown at full speed (on a USB 1.1 port) */
     void   *priv;
 
     /* One USB transaction.  Called from the emulation thread. */
     int  (*packet)(struct usbn_device_t *dev, uint8_t pid, uint8_t ep, uint8_t *buf, int len);
     void (*reset)(struct usbn_device_t *dev);    /* port reset */
+    void (*frame)(struct usbn_device_t *dev);    /* once per 1 ms frame (optional) */
     void (*destroy)(struct usbn_device_t *dev);  /* unplugged */
 } usbn_device_t;
 
@@ -89,6 +91,10 @@ extern void    uhci_companion_reset(uhci_t *dev);
 extern void    uhci_route_port(uhci_t *dev, int port, usbn_device_t *d);   /* NULL: not ours now */
 extern uint8_t uhci_pci_read(int func, int addr, int len, void *priv);
 extern void    uhci_pci_write(int func, int addr, int len, uint8_t val, void *priv);
+
+/* ---- a high-speed device at full speed (usb_speed.c) ---- */
+extern int  usbn_fs_maxp(int type, int hs_maxp);
+extern void usbn_config_to_full_speed(uint8_t *desc, int len);
 
 /* ---- host passthrough (usb_host.c) ---- */
 typedef struct usbn_host_info_t {

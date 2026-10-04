@@ -99,7 +99,8 @@ test_ownership(void)
 
     CHECK(fake_mmio_rl(PORTSC(0)) & 0x2000, "before CONFIGFLAG the ports are the companion's");
     CHECK(!(fake_mmio_rl(PORTSC(0)) & 1), "so EHCI sees nothing on port 1");
-    CHECK(!(fake_io_rw(0x10) & 1), "and the companion does not see the high-speed device either");
+    CHECK(fake_io_rw(0x10) & 1, "the companion shows the high-speed device (a guest without EHCI drivers)");
+    CHECK(hs.dev.fs_view, "at full speed");
     CHECK(fake_io_rw(0x12) & 1, "but it does see the full-speed one on port 2");
 
     fake_mmio_wl(CONFIGFLAG, 1);
@@ -108,6 +109,7 @@ test_ownership(void)
     CHECK(((p0 >> 10) & 3) == 2, "high/full speed device idles in the J state");
     CHECK(fake_mmio_rl(USBSTS) & 4, "port change detect");
     CHECK(!(fake_io_rw(0x12) & 1), "the companion lost port 2 to EHCI");
+    CHECK(!(fake_io_rw(0x10) & 1) && !hs.dev.fs_view, "port 1 moved to EHCI, at high speed again");
 
     /* Reset port 1: a high-speed device comes out enabled. */
     fake_mmio_wl(PORTSC(0), 0x1000 | 0x100 | 2);

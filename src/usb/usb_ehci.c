@@ -177,10 +177,12 @@ ehci_route(ehci_t *dev, int p)
     usbn_device_t *d    = dev->dev[p];
     int            comp = port_companion_owned(dev, p);
 
-    /* The companion is full/low speed.  A real high-speed device would fall
-       back to full speed there; a passed-through one cannot, so it stays
-       invisible to the companion and waits for the EHCI driver. */
-    uhci_route_port(dev->uhci, p, (comp && d && (d->speed != USBN_SPEED_HIGH)) ? d : NULL);
+    /* The companion is full/low speed: a high-speed device there is shown
+       at full speed (usb_speed.c), as a real one would fall back -- which is
+       what a guest without an EHCI driver sees. */
+    if (d && !comp)
+        d->fs_view = 0;
+    uhci_route_port(dev->uhci, p, comp ? d : NULL);
 
     int was = dev->portsc[p] & PORT_CCS;
     int now = !comp && (d != NULL);

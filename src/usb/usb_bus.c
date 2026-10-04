@@ -107,6 +107,8 @@ usbn_apply(void)
             pclog("USB: %s plugged into port %d\n", devs[p]->name, p + 1);
             root->connect(root_priv, p, devs[p]);
         }
+        if (devs[p] && devs[p]->frame)
+            devs[p]->frame(devs[p]);
     }
     bus_unlock();
 }

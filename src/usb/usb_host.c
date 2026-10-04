@@ -111,7 +111,8 @@ typedef struct host_dev_t {
     libusb_device_handle *h;
     uint16_t              vid, pid;
 
-    uint8_t ep_type[32];       /* LIBUSB_TRANSFER_TYPE_*, [ep | (in ? 16 : 0)] */
+    uint8_t  ep_type[32];      /* LIBUSB_TRANSFER_TYPE_*, [ep | (in ? 16 : 0)] */
+    uint16_t ep_maxp[32];      /* the device's own (high-speed) packet sizes */
     int     claimed[32];       /* interfaces we hold */
     int     nclaimed;
 
@@ -125,6 +126,14 @@ typedef struct host_dev_t {
     xfer_t  ctl;
 
     xfer_t in[16], out[16];
+
+    /* A high-speed device shown at full speed (dev.fs_view): the guest's
+       full-speed packets, gathered into or cut out of high-speed ones. */
+    int ctl_patched;           /* the configuration descriptor was rewritten */
+    int out_acc[16];           /* OUT bytes gathered, not yet sent          */
+    int out_idle[16];          /* frames since the last OUT packet           */
+    int in_len[16], in_pos[16];/* the last high-speed IN packet, handed out */
+    int in_zlp[16];            /* it was short but ended on a full-speed packet boundary */
 } host_dev_t;
 
 static libusb_context *ctx;
@@ -348,7 +357,9 @@ host_note_endpoints(host_dev_t *hd, const struct libusb_interface_descriptor *al
 {
     for (int e = 0; e < alt->bNumEndpoints; e++) {
         const struct libusb_endpoint_descriptor *ep = &alt->endpoint[e];
-        hd->ep_type[(ep->bEndpointAddress & 0x0f) | ((ep->bEndpointAddress & 0x80) ? 16 : 0)] = ep->bmAttributes & 3;
+        const int i = (ep->bEndpointAddress & 0x0f) | ((ep->bEndpointAddress & 0x80) ? 16 : 0);
+        hd->ep_type[i] = ep->bmAttributes & 3;
+        hd->ep_maxp[i] = ep->wMaxPacketSize & 0x7ff;
     }
 }
 
@@ -462,8 +473,10 @@ host_cancel_all(host_dev_t *hd)
     }
     host_wait_idle(hd);
     hd->ctl.state = XFER_IDLE;
-    for (int e = 0; e < 16; e++)
+    for (int e = 0; e < 16; e++) {
         hd->in[e].state = hd->out[e].state = XFER_IDLE;
+        hd->out_acc[e] = hd->out_idle[e] = hd->in_len[e] = hd->in_pos[e] = hd->in_zlp[e] = 0;
+    }
     hd->ctl_active = 0;
 }
 
@@ -558,8 +571,9 @@ host_control(host_dev_t *hd, uint8_t pid, uint8_t *buf, int len)
         memcpy(hd->setup, buf, 8);
         hd->ctl_in     = buf[0] & 0x80;
         hd->ctl_len    = buf[6] | (buf[7] << 8);
-        hd->ctl_pos    = 0;
-        hd->ctl_active = 1;
+        hd->ctl_pos     = 0;
+        hd->ctl_active  = 1;
+        hd->ctl_patched = 0;
         x->state       = XFER_IDLE;
         if (hd->ctl_len > CTL_MAX)
             return USBN_STALL;
@@ -585,6 +599,13 @@ host_control(host_dev_t *hd, uint8_t pid, uint8_t *buf, int len)
         if ((r = host_status_to_ret(x->status)) < 0) {
             hd->ctl_active = 0;
             return r;
+        }
+        /* GET_DESCRIPTOR(CONFIGURATION) for a high-speed device on a full-
+           speed port: the guest gets the full-speed version. */
+        if (hd->dev.fs_view && !hd->ctl_patched && (hd->setup[0] == 0x80) && (hd->setup[1] == LIBUSB_REQUEST_GET_DESCRIPTOR)
+            && (hd->setup[3] == LIBUSB_DT_CONFIG)) {
+            usbn_config_to_full_speed(x->buf + 8, x->actual);
+            hd->ctl_patched = 1;
         }
         r = x->actual - hd->ctl_pos;
         if (r > len)
@@ -623,6 +644,124 @@ host_control(host_dev_t *hd, uint8_t pid, uint8_t *buf, int len)
     return (r < 0) ? r : 0;
 }
 
+/* ----------------------------------------- high speed at full speed --- */
+
+/* Send what has been gathered on an OUT endpoint. */
+static int
+host_out_flush(host_dev_t *hd, uint8_t ep)
+{
+    const int i = ep & 0x0f;
+    const int n = hd->out_acc[i];
+
+    if ((n == 0) || (hd->out[i].state == XFER_PENDING))
+        return 1;
+    hd->out_acc[i] = 0;
+    hd->out[i].state = XFER_IDLE;
+    return host_submit(hd, &hd->out[i], ep, n);
+}
+
+/* Gathered bytes that are not a whole high-speed packet wait for the end of
+   the guest's transfer, which a full-speed packet stream does not mark when
+   it ends on a 64-byte boundary.  So they go when the guest turns to another
+   endpoint (a disk's status read, say) -- host_packet() -- or when no more
+   arrive for a few frames.  A transfer that spans frames keeps arriving every
+   frame, so it is not cut short. */
+static void
+host_frame(usbn_device_t *dev)
+{
+    host_dev_t *hd = (host_dev_t *) dev->priv;
+
+    if (!dev->fs_view)
+        return;
+    for (int e = 1; e < 16; e++) {
+        if (hd->out_acc[e] && (++hd->out_idle[e] >= 3))
+            host_out_flush(hd, e);
+    }
+}
+
+/* The guest sends full-speed packets; the device takes high-speed ones.
+   Gather them, and send when the guest's transfer ends (a short packet) or a
+   whole high-speed packet is ready -- so the device sees the same byte
+   stream with the end of every transfer in the same place.  Each guest
+   packet is acknowledged at once; a send still in flight NAKs the next one,
+   and a failed send is reported on it. */
+static int
+host_out_fs(host_dev_t *hd, uint8_t ep, uint8_t *buf, int len)
+{
+    xfer_t   *x    = &hd->out[ep];
+    const int i    = ep & 0x0f;
+    const int hs   = hd->ep_maxp[i] ? hd->ep_maxp[i] : 512;
+    const int fs   = usbn_fs_maxp(hd->ep_type[i], hs);
+    int       r;
+
+    if (x->state == XFER_PENDING)
+        return USBN_NAK;
+    if (x->state == XFER_DONE) {
+        x->state = XFER_IDLE;
+        if ((r = host_status_to_ret(x->status)) < 0) {
+            hd->out_acc[i] = 0;
+            return r;
+        }
+    }
+    if (hd->out_acc[i] + len > DATA_MAX)
+        len = DATA_MAX - hd->out_acc[i];
+    memcpy(x->buf + hd->out_acc[i], buf, len);
+    hd->out_acc[i] += len;
+    hd->out_idle[i] = 0;
+
+    if ((len < fs) || ((hd->out_acc[i] % hs) == 0) || (hd->out_acc[i] + fs > DATA_MAX)) {
+        const int n    = hd->out_acc[i];
+        hd->out_acc[i] = 0;
+        if (!host_submit(hd, x, ep, n))
+            return USBN_STALL;
+    }
+    return len;
+}
+
+/* The device sends high-speed packets; the guest takes full-speed ones.  Read
+   one high-speed packet at a time and hand it out in full-speed pieces; when
+   it was short but happens to end on a full-speed boundary, the guest gets a
+   zero-length packet after it, so its transfer ends where the device's did. */
+static int
+host_in_fs(host_dev_t *hd, uint8_t ep, uint8_t *buf, int len)
+{
+    xfer_t   *x  = &hd->in[ep];
+    const int i  = ep & 0x0f;
+    const int hs = hd->ep_maxp[i | 16] ? hd->ep_maxp[i | 16] : 512;
+    const int fs = usbn_fs_maxp(hd->ep_type[i | 16], hs);
+    int       r;
+
+    if (hd->in_pos[i] < hd->in_len[i]) {
+        int n = hd->in_len[i] - hd->in_pos[i];
+        if (n > len)
+            n = len;
+        memcpy(buf, x->buf + hd->in_pos[i], n);
+        hd->in_pos[i] += n;
+        return n;
+    }
+    if (hd->in_zlp[i]) {
+        hd->in_zlp[i] = 0;
+        return 0;
+    }
+
+    if (x->state == XFER_PENDING)
+        return USBN_NAK;
+    if (x->state == XFER_DONE) {
+        x->state = XFER_IDLE;
+        if ((r = host_status_to_ret(x->status)) < 0)
+            return r;
+        hd->in_len[i] = x->actual;
+        hd->in_pos[i] = 0;
+        hd->in_zlp[i] = (x->actual > 0) && (x->actual < hs) && ((x->actual % fs) == 0);
+        if (x->actual == 0)
+            return 0;
+        return host_in_fs(hd, ep, buf, len);
+    }
+    if (!host_submit(hd, x, ep | 0x80, hs))
+        return USBN_STALL;
+    return USBN_NAK;
+}
+
 /* -------------------------------------------------------- the device --- */
 
 static int
@@ -636,6 +775,18 @@ host_packet(usbn_device_t *dev, uint8_t pid, uint8_t ep, uint8_t *buf, int len)
         return host_control(hd, pid, buf, len);
     if (pid == USB_PID_SETUP)
         return USBN_STALL;
+
+    if (dev->fs_view) {
+        /* The guest has turned elsewhere: what another OUT endpoint gathered
+           was the whole of its transfer. */
+        for (int e = 1; e < 16; e++)
+            if (hd->out_acc[e] && ((e != ep) || (pid != USB_PID_OUT)))
+                host_out_flush(hd, e);
+
+        const int type = hd->ep_type[(ep & 0x0f) | ((pid == USB_PID_IN) ? 16 : 0)];
+        if ((type == LIBUSB_TRANSFER_TYPE_BULK) || (type == LIBUSB_TRANSFER_TYPE_INTERRUPT))
+            return (pid == USB_PID_IN) ? host_in_fs(hd, ep, buf, len) : host_out_fs(hd, ep, buf, len);
+    }
 
     x = (pid == USB_PID_IN) ? &hd->in[ep] : &hd->out[ep];
 
@@ -719,11 +870,6 @@ usbn_host_open(uint16_t vid, uint16_t pid, char *err, int errlen)
     }
 
     int speed = map_speed(libusb_get_device_speed(found));
-    if ((speed == USBN_SPEED_HIGH) && !usbn_bus_high_speed()) {
-        libusb_unref_device(found);
-        snprintf(err, errlen, "it is a high-speed (USB 2.0 or later) device, and the emulated controller is USB 1.1; fit the USB 2.0 controller instead");
-        return NULL;
-    }
 
     hd = calloc(1, sizeof(host_dev_t));
     r  = libusb_open(found, &hd->h);
@@ -749,6 +895,7 @@ usbn_host_open(uint16_t vid, uint16_t pid, char *err, int errlen)
     hd->dev.priv    = hd;
     hd->dev.packet  = host_packet;
     hd->dev.reset   = host_reset;
+    hd->dev.frame   = host_frame;
     hd->dev.destroy = host_destroy;
     {
         libusb_device                  *ud = libusb_get_device(hd->h);

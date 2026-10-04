@@ -174,6 +174,8 @@ uhci_update_irq(uhci_t *dev)
 static void
 uhci_port_connect(uhci_t *dev, int p, usbn_device_t *d)
 {
+    /* A USB 1.1 port: a high-speed device is shown at full speed. */
+    d->fs_view     = (d->speed == USBN_SPEED_HIGH);
     dev->dev[p]    = d;
     dev->portsc[p] = (dev->portsc[p] & ~(PORT_LSDA | PORT_LS_J | PORT_LS_K | PORT_PED)) | PORT_CCS | PORT_CSC;
     if (d->speed == USBN_SPEED_LOW)
