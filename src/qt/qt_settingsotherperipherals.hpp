@@ -27,6 +27,7 @@ private slots:
     void on_pushButtonConfigureRTC_clicked();
     void on_comboBoxIOBoard_currentIndexChanged(int index);
     void on_pushButtonConfigureIOBoard_clicked();
+    void updateIOBoardHint();
 
     void on_comboBoxMemExpCard1_currentIndexChanged(int index);
     void on_pushButtonConfigureMemExpCard1_clicked();

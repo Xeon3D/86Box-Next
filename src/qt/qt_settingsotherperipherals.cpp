@@ -163,6 +163,7 @@ SettingsOtherPeripherals::onCurrentMachineChanged(int machineId)
     ui->comboBoxIOBoard->setCurrentIndex(ioRow);
     ui->comboBoxIOBoard->setEnabled(machineHasIsaOrSidecar);
     ui->pushButtonConfigureIOBoard->setEnabled((io_board_type != IO_BOARD_NONE) && io_board_has_config(io_board_type) && machineHasIsaOrSidecar);
+    updateIOBoardHint();
 
     // Memory Expansion Cards (shared UI: ISA or MCA boards depending on
     // the machine bus).  The isamem/mcamem databases and their config
@@ -360,6 +361,29 @@ SettingsOtherPeripherals::on_comboBoxIOBoard_currentIndexChanged(int index)
 
     const int board = ui->comboBoxIOBoard->currentData().toInt();
     ui->pushButtonConfigureIOBoard->setEnabled((board != IO_BOARD_NONE) && io_board_has_config(board) && hasIsaOrSidecarBus(machineId));
+    updateIOBoardHint();
+}
+
+/* Whatever of the I/O board row is greyed out, say why and what to do. */
+void
+SettingsOtherPeripherals::updateIOBoardHint()
+{
+    QString why;
+    QString fix;
+
+    if (!hasIsaOrSidecarBus(machineId)) {
+        why = tr("The arcade I/O boards are ISA cards, and this machine has no ISA slot.");
+        fix = tr("Choose a machine with ISA slots on the Machine page to fit one.");
+    } else if (ui->comboBoxIOBoard->currentData().toInt() == IO_BOARD_NONE) {
+        why = tr("Configure is unavailable because no board is fitted.");
+        fix = tr("Select a board above, then configure it.");
+    } else if (!io_board_has_config(ui->comboBoxIOBoard->currentData().toInt())) {
+        why = tr("This board has no settings to configure.");
+    }
+
+    ui->labelIOBoardHint->setVisible(!why.isEmpty());
+    if (!why.isEmpty())
+        ui->labelIOBoardHint->setText(QString("<small>&#9432; %1%2</small>").arg(why.toHtmlEscaped(), fix.isEmpty() ? QString() : QString(" ") + fix.toHtmlEscaped()));
 }
 
 void
