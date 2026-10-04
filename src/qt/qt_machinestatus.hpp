@@ -82,6 +82,7 @@ public:
     void    setSoundMenu(QMenu *menu);
     void    setDynarecMenu(QMenu *menu);
     void    setPcCardMenu(class PcCardMenu *menu);   /* 86Box-Next */
+    void    setUsbManager(class UsbManager *usb);     /* 86Box-Next */
 public slots:
     void refresh(QStatusBar *sbar);
     void message(const QString &msg);
@@ -98,6 +99,7 @@ private:
     QMenu                  *soundMenu;
     QMenu                  *dynarecMenu;
     class PcCardMenu       *pcCardMenu = nullptr;
+    class UsbManager       *usbManager = nullptr;
 };
 
 #endif // QT_MACHINESTATUS_HPP

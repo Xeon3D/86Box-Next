@@ -154,7 +154,7 @@ ICON_SET = {
     "floppy_and_cdrom_drives": pair(g.floppy_35, g.cdrom), "floppy_tab": pair(g.floppy_525, g.floppy_35),
     "other_removable_devices": pair(g.zip_disk, g.mo), "rdisk_tab": pair(g.rdisk, g.zip_disk),
     "other_peripherals": g.other_peripherals, "general_other_peripherals": with_gear(g.other_peripherals),
-    "pcmcia": g.pcmcia,
+    "pcmcia": g.pcmcia, "usb": g.usb,
     "isa_memory": g.isa_memory, "isa_rom": g.isa_rom, "performance": g.performance,
 
     # arcade I/O boards

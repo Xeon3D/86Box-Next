@@ -226,6 +226,10 @@ MainWindow::MainWindow(QWidget *parent)
     /* 86Box-Next: hot-plugging PC Cards, from the status bar. */
     pcCardMenu = new PcCardMenu(this);
     status->setPcCardMenu(pcCardMenu);
+    /* 86Box-Next: host USB devices and the VM's USB controller, from the
+       status bar too. */
+    usbManager = new UsbManager(this);
+    status->setUsbManager(usbManager);
     ui->actionMute_Unmute->setText(sound_muted ? tr("&Unmute") : tr("&Mute"));
     ui->stackedWidget->setMouseTracking(true);
     statusBar()->setVisible(!hide_status_bar);
@@ -331,8 +335,6 @@ MainWindow::MainWindow(QWidget *parent)
 
     /* 86Box-Next: the arcade I/O board's cabinet controls. */
     ioBoard = new IOBoardControls(this, ui->menubar, ui->menuAbout->menuAction(), ui->toolBar, ui->toolBar->actions().last());
-    /* 86Box-Next: host USB devices and the VM's USB controller. */
-    usbManager = new UsbManager(this, ui->menubar, ui->menuAbout->menuAction());
 
     this->setWindowFlag(Qt::CustomizeWindowHint, true);
     this->setWindowFlag(Qt::MSWindowsFixedSizeDialogHint, vid_resize != 1);

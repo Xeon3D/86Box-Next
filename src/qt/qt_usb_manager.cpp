@@ -26,12 +26,11 @@ extern "C" {
 
 #define POLL_MS 2000
 
-UsbManager::UsbManager(QWidget *parent, QMenuBar *menubar, QAction *menuBefore)
+UsbManager::UsbManager(QWidget *parent)
     : QObject(parent)
     , parentWidget(parent)
 {
     menu = new QMenu(tr("&USB"), parent);
-    menubar->insertMenu(menuBefore, menu);
     connect(menu, &QMenu::aboutToShow, this, &UsbManager::buildMenu);
 
     timer = new QTimer(this);
@@ -94,6 +93,19 @@ UsbManager::portOf(uint16_t vid, uint16_t pid) const
         if (QString(usbn_port_cfg[p]).compare(id, Qt::CaseInsensitive) == 0)
             return p;
     return -1;
+}
+
+/* The ports and what the VM has in them. */
+QString
+UsbManager::toolTip() const
+{
+    QString tip = tr("USB");
+    for (int p = 0; p < USBN_PORTS; p++) {
+        char name[128];
+        usbn_port_name(p, name, sizeof(name));
+        tip += "\n" + tr("Port %1: %2").arg(p + 1).arg(name[0] ? QString::fromUtf8(name) : tr("empty"));
+    }
+    return tip;
 }
 
 void

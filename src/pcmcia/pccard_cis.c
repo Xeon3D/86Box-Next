@@ -322,7 +322,7 @@ pccard_cis_sram(uint8_t *buf, uint32_t size)
     uint8_t            dev[3] = { 0x63, 0x00, 0xff };   /* SRAM, 150 ns */
     const uint8_t      fn_memory[2] = { CISTPL_FUNCID_MEMORY, 0x00 };
 
-    for (int scale = 0; scale < 7; scale++) {
+    for (int scale = 6; scale >= 0; scale--) {   /* the fewest units */
         const uint32_t unit = 512u << (scale * 2);
         if (!(size % unit) && (size / unit >= 1) && (size / unit <= 32)) {
             dev[1] = (uint8_t) (((size / unit - 1) << 3) | scale);

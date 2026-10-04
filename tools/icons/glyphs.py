@@ -282,6 +282,20 @@ def other_peripherals(c):
     expansion_card(c)
 
 
+def usb(c):
+    """The USB trident: a stem from a round foot to an arrowhead, a branch
+    ending in a circle on the left and one ending in a square on the right."""
+    col = P["blue"]
+    w = 2.2
+    c.line([(16, 26), (16, 7)], col, w)
+    c.poly([(16, 2.5), (20.5, 9), (11.5, 9)], fill=col, outline=None)
+    c.line([(16, 20), (8.5, 15.5), (8.5, 12)], col, w)
+    c.circle(8.5, 10.5, 2.6, fill=col, outline=None)
+    c.line([(16, 17.5), (23.5, 13), (23.5, 10)], col, w)
+    c.rect(21.2, 6.2, 4.6, 4.6, 0.3, fill=col, outline=None)
+    c.circle(16, 27, 3.2, fill=col, outline=None)
+
+
 def pcmcia(c):
     """A PC Card, connector end down: the metal shell, its label, and the
     68-pin socket edge."""

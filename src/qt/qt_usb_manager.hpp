@@ -32,10 +32,14 @@ class UsbManager : public QObject {
     Q_OBJECT
 
 public:
-    UsbManager(QWidget *parent, QMenuBar *menubar, QAction *menuBefore);
+    explicit UsbManager(QWidget *parent);
 
     /* The machine may have gained or lost its controller. */
     void refresh();
+
+    /* The USB menu, behind the USB icon in the status bar. */
+    QMenu  *usbMenu() const { return menu; }
+    QString toolTip() const;
 
 private:
     QWidget                   *parentWidget;
