@@ -54,6 +54,8 @@ add_library(dev OBJECT
     lpt_ditto.c
     lpt_epat.c
     io_board.c
+    ../usb/usb_uhci.c
+    ../usb/usb_host.c
     funworld_io.c
     merit_io.c
     merit_pcic.c
@@ -114,4 +116,19 @@ endif()
 if(WACOM)
     target_compile_definitions(dev PRIVATE USE_WACOM)
     target_sources(dev PRIVATE mouse_wacom_tablet.c)
+endif()
+
+# 86Box-Next: USB host passthrough through libusb, when it is available.
+find_package(PkgConfig QUIET)
+if(PKG_CONFIG_FOUND)
+    pkg_check_modules(LIBUSB QUIET libusb-1.0)
+endif()
+if(LIBUSB_FOUND)
+    target_compile_definitions(dev PRIVATE USE_LIBUSB)
+    target_include_directories(dev PRIVATE ${LIBUSB_INCLUDE_DIRS})
+    if(STATIC_BUILD)
+        target_link_libraries(86Box ${LIBUSB_STATIC_LDFLAGS})
+    else()
+        target_link_libraries(86Box ${LIBUSB_LDFLAGS})
+    endif()
 endif()

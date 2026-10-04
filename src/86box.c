@@ -72,6 +72,7 @@
 #include <86box/isarom.h>
 #include <86box/isartc.h>
 #include <86box/io_board.h>
+#include <86box/usb_next.h>
 #include <86box/lpt.h>
 #include <86box/serial.h>
 #include <86box/keyboard.h>
@@ -1886,6 +1887,9 @@ pc_reset_hard_init(void)
 
     /* 86Box-Next: the arcade I/O board, if one is fitted. */
     io_board_reset();
+
+    /* 86Box-Next: the USB controller card, if one is fitted. */
+    usb_card_reset();
 
     /* Initialize the Voodoo cards here inorder to minimize
        the chances of the SCSI controller ending up on the bridge. */

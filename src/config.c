@@ -57,6 +57,7 @@
 #include <86box/isarom.h>
 #include <86box/isartc.h>
 #include <86box/io_board.h>
+#include <86box/usb_next.h>
 #include <86box/lpt.h>
 #include <86box/serial.h>
 #include <86box/hdd.h>
@@ -2722,6 +2723,16 @@ load_other_peripherals(void)
     p             = ini_section_get_string(cat, "io_board", "none");
     io_board_type = io_board_get_from_internal_name(p);
 
+    /* 86Box-Next: the USB controller card, and what is plugged into it. */
+    p             = ini_section_get_string(cat, "usb_card", "none");
+    usb_card_type = usb_card_get_from_internal_name(p);
+    for (int u = 0; u < USBN_PORTS; u++) {
+        char key[16];
+        sprintf(key, "port%d", u + 1);
+        p = ini_section_get_string(ini_find_section(config, "USB"), key, "");
+        snprintf(usbn_port_cfg[u], sizeof(usbn_port_cfg[u]), "%s", p ? p : "");
+    }
+
     if (!strcmp(p, "none"))
         ini_section_delete_var(cat, temp);
 }
@@ -2954,6 +2965,7 @@ config_load(void)
         mem_size          = 64;
         isartc_type       = 0;
         io_board_type     = IO_BOARD_NONE;
+        usb_card_type     = 0;
         for (i = 0; i < ISAROM_MAX; i++)
             isarom_type[i] = 0;
         for (i = 0; i < ISAMEM_MAX; i++)
@@ -4198,6 +4210,23 @@ save_other_peripherals(void)
     else
         ini_section_set_string(cat, "io_board",
                                io_board_get_internal_name(io_board_type));
+
+    if (usb_card_type == 0)
+        ini_section_delete_var(cat, "usb_card");
+    else
+        ini_section_set_string(cat, "usb_card", (char *) usb_card_get_internal_name(usb_card_type));
+    {
+        ini_section_t usb = ini_find_or_create_section(config, "USB");
+        for (int u = 0; u < USBN_PORTS; u++) {
+            char key[16];
+            sprintf(key, "port%d", u + 1);
+            if (usbn_port_cfg[u][0])
+                ini_section_set_string(usb, key, usbn_port_cfg[u]);
+            else
+                ini_section_delete_var(usb, key);
+        }
+        ini_delete_section_if_empty(config, usb);
+    }
 
     ini_delete_section_if_empty(config, cat);
 }

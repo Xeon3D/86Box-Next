@@ -27,6 +27,7 @@ extern "C" {
 #include <86box/isarom.h>
 #include <86box/isartc.h>
 #include <86box/io_board.h>
+#include <86box/usb_next.h>
 #include <86box/unittester.h>
 #include <86box/softpower.h>
 #include <86box/novell_cardkey.h>
@@ -166,6 +167,14 @@ SettingsOtherPeripherals::onCurrentMachineChanged(int machineId)
     ui->pushButtonConfigureIOBoard->setEnabled((io_board_type != IO_BOARD_NONE) && io_board_has_config(io_board_type) && machineHasIsaOrSidecar);
     updateIOBoardHint();
 
+    // USB controller card: a PCI card.
+    ui->comboBoxUSB->clear();
+    for (int i = 0; i < usb_card_count(); i++)
+        ui->comboBoxUSB->addItem((i == 0) ? tr("None") : QString(usb_card_get_name(i)), i);
+    ui->comboBoxUSB->setCurrentIndex(machine_has_bus(machineId, MACHINE_BUS_PCI) ? usb_card_type : 0);
+    ui->comboBoxUSB->setEnabled(machine_has_bus(machineId, MACHINE_BUS_PCI) > 0);
+    updateUSBHint();
+
     // Memory Expansion Cards (shared UI: ISA or MCA boards depending on
     // the machine bus).  The isamem/mcamem databases and their config
     // globals remain separate; only the four dropdown slots are shared.
@@ -260,6 +269,7 @@ SettingsOtherPeripherals::changed()
     has_changed |= isartc_cfg_changed;
     has_changed |= (io_board_type          != ui->comboBoxIOBoard->currentData().toInt());
     has_changed |= io_board_cfg_changed;
+    has_changed |= (usb_card_type          != ui->comboBoxUSB->currentData().toInt());
     has_changed |= (bugger_enabled         != (ui->checkBoxISABugger->isChecked() ? 1 : 0));
     has_changed |= (postcard_enabled       != (ui->checkBoxPOSTCard->isChecked() ? 1 : 0));
     has_changed |= (unittester_enabled     != (ui->checkBoxUnitTester->isChecked() ? 1 : 0));
@@ -307,6 +317,7 @@ SettingsOtherPeripherals::save(int soft)
     /* Other peripherals category */
     isartc_type            = ui->comboBoxRTC->currentData().toInt();
     io_board_type          = hasIsaOrSidecarBus(machineId) ? ui->comboBoxIOBoard->currentData().toInt() : IO_BOARD_NONE;
+    usb_card_type          = machine_has_bus(machineId, MACHINE_BUS_PCI) ? ui->comboBoxUSB->currentData().toInt() : 0;
     bugger_enabled         = ui->checkBoxISABugger->isChecked() ? 1 : 0;
     postcard_enabled       = ui->checkBoxPOSTCard->isChecked() ? 1 : 0;
     unittester_enabled     = ui->checkBoxUnitTester->isChecked() ? 1 : 0;
@@ -363,6 +374,24 @@ SettingsOtherPeripherals::on_comboBoxIOBoard_currentIndexChanged(int index)
     const int board = ui->comboBoxIOBoard->currentData().toInt();
     ui->pushButtonConfigureIOBoard->setEnabled((board != IO_BOARD_NONE) && io_board_has_config(board) && hasIsaOrSidecarBus(machineId));
     updateIOBoardHint();
+}
+
+/* The USB controller row: why it is greyed out, or what it gives. */
+void
+SettingsOtherPeripherals::updateUSBHint()
+{
+    QString text;
+
+    if (!machine_has_bus(machineId, MACHINE_BUS_PCI))
+        text = tr("The USB controller is a PCI card, and this machine has no PCI slot. Choose a machine with PCI slots on the Machine page to fit one.");
+    else if (!usbn_host_available())
+        text = tr("This build has no USB passthrough, so devices on the host cannot be connected.");
+
+    ui->labelUSBHint->setVisible(!text.isEmpty());
+    ui->labelUSBHint->setText(QString("<small>&#9432; %1</small>").arg(text.toHtmlEscaped()));
+    const QString tip = text.isEmpty() ? tr("A USB 1.1 (UHCI) controller with two ports. Host USB devices can be connected to it from the USB menu; a device connected to the virtual machine is disconnected from the host.") : text;
+    ui->comboBoxUSB->setToolTip(tip);
+    ui->labelUSB->setToolTip(tip);
 }
 
 /* What each board is, for its dropdown entry and the Configure button. */

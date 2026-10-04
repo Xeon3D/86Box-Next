@@ -22,6 +22,7 @@
 
 #include "qt_mainwindow.hpp"
 #include "qt_ioboard_controls.hpp"
+#include "qt_usb_manager.hpp"
 #include "ui_qt_mainwindow.h"
 
 #include "qt_specifydimensions.h"
@@ -326,6 +327,8 @@ MainWindow::MainWindow(QWidget *parent)
 
     /* 86Box-Next: the arcade I/O board's cabinet controls. */
     ioBoard = new IOBoardControls(this, ui->menubar, ui->menuAbout->menuAction(), ui->toolBar, ui->toolBar->actions().last());
+    /* 86Box-Next: host USB devices and the VM's USB controller. */
+    usbManager = new UsbManager(this, ui->menubar, ui->menuAbout->menuAction());
 
     this->setWindowFlag(Qt::CustomizeWindowHint, true);
     this->setWindowFlag(Qt::MSWindowsFixedSizeDialogHint, vid_resize != 1);
@@ -1853,6 +1856,8 @@ MainWindow::refreshMediaMenu()
     ui->actionMCA_devices->setVisible(machine_has_bus(machine, MACHINE_BUS_MCA));
     if (ioBoard)
         ioBoard->refresh();
+    if (usbManager)
+        usbManager->refresh();
     const bool has_power_button = device_has_power_button();
     if (acpi_enabled || has_power_button) {
         ui->actionACPI_Shutdown->setText(tr("Power &off (soft)"));
