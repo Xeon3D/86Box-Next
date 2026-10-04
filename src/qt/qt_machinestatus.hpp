@@ -81,6 +81,7 @@ public:
     void    clearActivity();
     void    setSoundMenu(QMenu *menu);
     void    setDynarecMenu(QMenu *menu);
+    void    setPcCardMenu(class PcCardMenu *menu);   /* 86Box-Next */
 public slots:
     void refresh(QStatusBar *sbar);
     void message(const QString &msg);
@@ -88,6 +89,7 @@ public slots:
     void refreshEmptyIcons();
     void refreshIcons();
     void updateSoundIcon();
+    void updatePcCardIcon();
 
 private:
     struct States;
@@ -95,6 +97,7 @@ private:
     QTimer                 *refreshTimer;
     QMenu                  *soundMenu;
     QMenu                  *dynarecMenu;
+    class PcCardMenu       *pcCardMenu = nullptr;
 };
 
 #endif // QT_MACHINESTATUS_HPP

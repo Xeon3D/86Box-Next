@@ -1,8 +1,9 @@
 /*
  * 86Box-Next  A fork of 86Box with extra features.
  *
- *             The PC Card menu: take the card in each socket out, and put it
- *             back, as with a real laptop's eject buttons.
+ *             The PC Card menu, behind the PC Card icon in the status bar:
+ *             put any card into either socket, or take it out, while the
+ *             machine runs.
  *
  *             Released under the GNU General Public License version 2 or
  *             later.  See COPYING for more information.
@@ -11,25 +12,27 @@
 #define QT_PCCARD_MENU_HPP
 
 #include <QObject>
+#include <QString>
 
-class QAction;
 class QMenu;
-class QMenuBar;
 class QWidget;
 
 class PcCardMenu : public QObject {
     Q_OBJECT
 
 public:
-    PcCardMenu(QWidget *parent, QMenuBar *menubar, QAction *menuBefore);
+    explicit PcCardMenu(QWidget *parent);
 
-    /* The menu shows while a PC Card controller is fitted. */
-    void refresh();
+    QMenu  *menu() const { return m_menu; }
+    QString toolTip() const;   /* the sockets and what is in them */
+
+signals:
+    void changed();
 
 private:
     void buildMenu();
 
-    QMenu *menu;
+    QMenu *m_menu;
 };
 
 #endif // QT_PCCARD_MENU_HPP

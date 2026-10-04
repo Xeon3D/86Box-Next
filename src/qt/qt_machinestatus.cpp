@@ -18,6 +18,7 @@
 
 extern "C" {
 #include <86box/86box.h>
+#include <86box/pcmcia.h>
 #include <86box/hdd.h>
 #include <86box/timer.h>
 #include <86box/device.h>
@@ -57,6 +58,7 @@ extern int          is_dynarec_active(void);
 #include "qt_mediamenu.hpp"
 #include "qt_mainwindow.hpp"
 #include "qt_soundgain.hpp"
+#include "qt_pccard_menu.hpp"
 #include "qt_preferences.hpp"
 #include "qt_iconindicators.hpp"
 
@@ -121,6 +123,7 @@ struct Pixmaps {
     PixmapSetActive      hd;
     PixmapSetEmptyActive net;
     PixmapSetDisabled    sound;
+    PixmapSetDisabled    pccard;   /* 86Box-Next */
     PixmapSetDisabled    dynarec;
 };
 
@@ -355,6 +358,7 @@ struct MachineStatus::States {
         pixmaps.hd.load(QIcon(":/settings/qt/icons/hard_disk.ico"));
         pixmaps.net.load(QIcon(":/settings/qt/icons/network.ico"));
         pixmaps.sound.load(QIcon(":/settings/qt/icons/sound.ico"));
+        pixmaps.pccard.load(QIcon(":/settings/qt/icons/pcmcia.ico"));
         pixmaps.dynarec.normal                          = QIcon(":/menuicons/qt/icons/recompiler.ico").pixmap(pixmap_size);
         pixmaps.dynarec.disabled                        = QIcon(":/menuicons/qt/icons/interpreter.ico").pixmap(pixmap_size);
 
@@ -394,6 +398,7 @@ struct MachineStatus::States {
     std::array<StateActive, HDD_BUS_USB>       hdds;
     std::array<StateEmptyActive, NET_CARD_MAX> net;
     std::unique_ptr<ClickableLabel>            sound;
+    std::unique_ptr<ClickableLabel>            pccard;   /* 86Box-Next */
     std::unique_ptr<ClickableLabel>            dynarec;
     std::unique_ptr<QLabel>                    text;
 };
@@ -410,6 +415,26 @@ MachineStatus::MachineStatus(QObject *parent)
 }
 
 MachineStatus::~MachineStatus() = default;
+
+/* 86Box-Next: the PC Card icon, with the sockets' menu behind it. */
+void
+MachineStatus::setPcCardMenu(PcCardMenu *menu)
+{
+    pcCardMenu = menu;
+    connect(menu, &PcCardMenu::changed, this, &MachineStatus::updatePcCardIcon);
+}
+
+void
+MachineStatus::updatePcCardIcon()
+{
+    if (!d->pccard || !pcCardMenu)
+        return;
+    bool any = false;
+    for (int s = 0; s < PCMCIA_SOCKETS; s++)
+        any |= (pcmcia_card_type[s] > 0);
+    d->pccard->setPixmap(any ? d->pixmaps.pccard.normal : d->pixmaps.pccard.disabled);
+    d->pccard->setToolTip(pcCardMenu->toolTip());
+}
 
 void
 MachineStatus::setSoundMenu(QMenu *menu)
@@ -767,6 +792,8 @@ MachineStatus::refresh(QStatusBar *sbar)
     }
     sbar->removeWidget(d->dynarec.get());
     sbar->removeWidget(d->sound.get());
+    if (d->pccard)
+        sbar->removeWidget(d->pccard.get());
 
     if (cassette_enable) {
         d->cassette.label = std::make_unique<ClickableLabel>();
@@ -1083,6 +1110,19 @@ MachineStatus::refresh(QStatusBar *sbar)
 
     d->text = std::make_unique<QLabel>();
     sbar->addWidget(d->text.get());
+
+    /* 86Box-Next: the PC Card icon, at the right beside the indicators, while
+       a PC Card controller is fitted: a click opens the sockets' menu. */
+    d->pccard.reset();
+    if (pcmcia_enabled && pcCardMenu) {
+        d->pccard = std::make_unique<ClickableLabel>();
+        connect(d->pccard.get(), &ClickableLabel::clicked, this, [this](QPoint pos) {
+            QMenu *m = this->pcCardMenu->menu();
+            m->popup(pos - QPoint(0, m->sizeHint().height()));
+        });
+        sbar->insertPermanentWidget(0, d->pccard.get());
+        updatePcCardIcon();
+    }
 
     sbar_initialized = true;
 

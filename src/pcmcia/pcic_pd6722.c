@@ -62,10 +62,10 @@
  * Index 0x00-0x3F is socket A, 0x40-0x7F socket B; there is no socket C or D,
  * and those indexes read 0xFF, which is how the drivers tell.
  *
- * Taking a card out and putting it back (the PC Card menu) comes from the UI
- * thread as a request; the controller's poll applies it on the emulation
- * thread: the socket's card detect goes, a card detect change is latched,
- * and the card's windows stop answering -- then the same the other way.
+ * Cards are hot-pluggable (the PC Card status bar icon, pcmcia.c): a request
+ * from the UI thread is carried out by the controller's poll on the
+ * emulation thread; a card going in or out latches a card detect change, and
+ * a card gone stops answering in its windows.
  *
  *             Released under the GNU General Public License version 2 or
  *             later.  See COPYING for more information.
@@ -126,7 +126,7 @@
 #define PD6722_IDENT  0x83
 #define PD6722_INFO   0x20 /* dual socket, revision 0 */
 
-#define POLL_US       10000.0   /* eject and insert requests, every 10 ms */
+#define POLL_US       10000.0   /* hot-plug requests, every 10 ms */
 
 struct pcic_t;
 
@@ -159,12 +159,10 @@ typedef struct pcic_t {
     pc_timer_t    poll_timer;
 } pcic_t;
 
-/* One controller per machine.  The cards fitted, whether the controller
-   exists yet or not, and the user's ejections: the socket holds
-   fitted && !ejected. */
+/* One controller per machine; the cards in its sockets, whether the
+   controller exists yet or not. */
 static pcic_t         *pcic_inst;
 static const pccard_t *pcic_fitted[PCIC_SOCKETS];
-static volatile int    pcic_ejected[PCIC_SOCKETS];
 
 #ifdef ENABLE_PCIC_LOG
 int pcic_do_log = ENABLE_PCIC_LOG;
@@ -565,7 +563,7 @@ static void
 pcic_socket_set(pcic_t *dev, int s)
 {
     pcic_socket_t  *sock = &dev->sock[s];
-    const pccard_t *card = pcic_ejected[s] ? NULL : pcic_fitted[s];
+    const pccard_t *card = pcic_fitted[s];
 
     if (sock->card == card)
         return;
@@ -602,19 +600,6 @@ pcmcia_card_irq(int socket, int level)
     pcic_irq_refresh(dev);
 }
 
-void
-pcmcia_eject(int socket, int ejected)
-{
-    if ((socket >= 0) && (socket < PCIC_SOCKETS))
-        pcic_ejected[socket] = !!ejected;
-}
-
-int
-pcmcia_ejected(int socket)
-{
-    return (socket >= 0) && (socket < PCIC_SOCKETS) && pcic_ejected[socket];
-}
-
 const char *
 pcmcia_socket_card_name(int socket)
 {
@@ -631,7 +616,7 @@ pcmcia_controller_present(void)
 
 /* --- Device --------------------------------------------------------------- */
 
-/* The UI's eject and insert requests, on the emulation thread. */
+/* The UI's hot-plug requests, on the emulation thread. */
 static void
 pcic_poll(void *priv)
 {
@@ -639,8 +624,7 @@ pcic_poll(void *priv)
 
     timer_on_auto(&dev->poll_timer, POLL_US);
     dev->running = 1;
-    for (int s = 0; s < PCIC_SOCKETS; s++)
-        pcic_socket_set(dev, s);
+    pcmcia_slots_poll();
 }
 
 static void
@@ -670,7 +654,7 @@ pcic_init(UNUSED(const device_t *info))
 
     for (int s = 0; s < PCIC_SOCKETS; s++) {
         /* A card fitted at power-on is simply there: no change to report. */
-        dev->sock[s].card = pcic_ejected[s] ? NULL : pcic_fitted[s];
+        dev->sock[s].card = pcic_fitted[s];
         for (int w = 0; w < PCIC_MEMWIN; w++) {
             dev->sock[s].mem_win[w] = (pcic_win_t) { .pcic = dev, .socket = s, .win = w };
             mem_mapping_add(&dev->sock[s].mem[w], 0, 0,

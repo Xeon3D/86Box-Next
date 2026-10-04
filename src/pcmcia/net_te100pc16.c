@@ -525,7 +525,9 @@ te100_init(UNUSED(const device_t *info))
         dev->maclocal[5] = mac & 0xff;
     }
 
-    dev->dp8390            = device_add_inst(&dp8390_device, dp3890_inst++);
+    /* Its own, not in the device list: the card is hot-pluggable, and its
+       8390 goes when it does. */
+    dev->dp8390            = dp8390_device.init(&dp8390_device);
     dev->dp8390->priv      = dev;
     dev->dp8390->interrupt = te100_interrupt;
     dp8390_set_defaults(dev->dp8390, DP8390_FLAG_EVEN_MAC | DP8390_FLAG_CHECK_CR | DP8390_FLAG_CLEAR_IRQ);
@@ -560,8 +562,11 @@ te100_init(UNUSED(const device_t *info))
 static void
 te100_close(void *priv)
 {
-    pcmcia_insert(((te100_t *) priv)->socket, NULL);
-    free(priv);
+    te100_t *dev = (te100_t *) priv;
+
+    pcmcia_insert(dev->socket, NULL);
+    dp8390_device.close(dev->dp8390);   /* its network link with it */
+    free(dev);
 }
 
 // clang-format off

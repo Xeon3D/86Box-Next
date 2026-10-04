@@ -52,13 +52,15 @@ extern int  pcmcia_controller_present(void);
    is created. */
 extern void pcmcia_insert(int socket, const pccard_t *card);
 
-/* The user taking a card out of its socket and putting it back (the PC Card
-   menu): the card stays fitted, the socket sees it go and come, with the
-   card-detect change the guest's socket services wait for.  Safe from the UI
-   thread; applied on the emulation thread. */
-extern void        pcmcia_eject(int socket, int ejected);
-extern int         pcmcia_ejected(int socket);
-extern const char *pcmcia_socket_card_name(int socket);   /* NULL: no card fitted */
+/* Hot plugging (the PC Card status bar icon): put a card of a type from
+   pcmcia.c's list into a socket, 0 to take it out.  Safe from the UI thread;
+   carried out on the emulation thread by the controller's poll
+   (pcmcia_slots_poll()), with the card-detect change the guest's socket
+   services wait for. */
+extern void        pcmcia_request_card(int socket, int type);
+extern int         pcmcia_slots_active(void);
+extern void        pcmcia_slots_poll(void);
+extern const char *pcmcia_socket_card_name(int socket);   /* NULL: an empty socket */
 
 /* The card's IREQ line: 1 = interrupt requested.  The controller steers it
    to the ISA IRQ the driver chose, once the card is in I/O mode. */

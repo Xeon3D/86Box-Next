@@ -172,6 +172,8 @@ timer_add(pc_timer_t *t, void (*cb)(void *), void *priv, UNUSED(int start))
 void timer_on_auto(UNUSED(pc_timer_t *t), UNUSED(double period)) { }
 void timer_stop(UNUSED(pc_timer_t *t)) { }
 
+void pcmcia_slots_poll(void) { }   /* pcmcia.c's hot-plug requests: none here */
+
 static void
 poll(void)
 {
@@ -358,7 +360,7 @@ test_common_memory(void)
     CHECK(card_common[0x10] == 0x77, "a write-protected common window does not write");
 }
 
-/* Card detect changes: a card taken out and put back (the PC Card menu),
+/* Card detect changes: a card hot-unplugged and plugged back in,
    each socket with its own status changes, the two sharing an IRQ. */
 static int     b_resets;
 static uint8_t b_attr_read(UNUSED(uint32_t a), UNUSED(void *p)) { return 0x01; }
@@ -373,10 +375,8 @@ test_card_events(void)
     setreg(1, 0x05, 0xb8);   /* socket B: the same IRQ */
     CHECK(!irq_up[11], "no change, no interrupt");
 
-    pcmcia_eject(0, 1);
-    CHECK((reg(0, 0x01) & 0x0c) == 0x0c, "an eject request waits for the controller's poll");
-    poll();
-    CHECK(!(reg(0, 0x01) & 0x0c), "ejected: socket A's card detect goes");
+    pcmcia_insert(0, NULL);   /* hot-unplugged */
+    CHECK(!(reg(0, 0x01) & 0x0c), "pulled out: socket A's card detect goes");
     CHECK(memrb(0xd2010) == 0xff, "and its windows stop answering");
     CHECK(irq_up[11], "a card detect change interrupt");
 
@@ -388,18 +388,15 @@ test_card_events(void)
     CHECK(reg(1, 0x04) == 0x08, "socket B: card detect changed");
     CHECK(!irq_up[11], "both read: the IRQ drops");
 
-    pcmcia_eject(0, 0);
-    poll();
+    pcmcia_insert(0, &card);   /* hot-plugged */
     CHECK((reg(0, 0x01) & 0x0c) == 0x0c, "put back: socket A's card detect returns");
     CHECK(irq_up[11] && (reg(0, 0x04) == 0x08), "with a card detect change");
     CHECK(!irq_up[11], "read: down again");
 
     setreg(0, 0x05, 0xb0);   /* A: IRQ 11, no changes enabled */
-    pcmcia_eject(0, 1);
-    poll();
+    pcmcia_insert(0, NULL);
     CHECK(!irq_up[11] && (reg(0, 0x04) == 0x08), "a change not enabled is latched without an interrupt");
-    pcmcia_eject(0, 0);
-    poll();
+    pcmcia_insert(0, &card);
     reg(0, 0x04);
 
     /* Software interrupts are per socket too. */
