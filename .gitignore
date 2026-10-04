@@ -72,3 +72,6 @@ CMakeLists.txt.user
 *.patch
 *.*.orig
 *.*.rej
+
+# 86Box-Next staged rig
+/Latest

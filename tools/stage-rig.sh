@@ -1,0 +1,40 @@
+#!/bin/sh
+# Stage a runnable 86Box-Next rig in ./Latest: the built exe, every DLL and
+# Qt plugin it needs from MSYS2 UCRT64, and the 86Box ROM set.  Replaces
+# whatever was there, so Latest only ever holds the newest build.
+#
+# Usage: tools/stage-rig.sh [build-dir]   (run from the repo root, Git Bash)
+set -e
+BUILD=${1:-build}
+OUT=Latest
+UCRT=/c/msys64/ucrt64
+EXE="$BUILD/src/86Box-Next.exe"
+export PATH="$UCRT/bin:/c/msys64/usr/bin:$PATH"
+
+[ -f "$EXE" ] || { echo "no $EXE - build first" >&2; exit 1; }
+
+# Keep the ROM clone across restages; it is large and rarely changes.
+if [ -d "$OUT/roms/.git" ]; then
+    git -C "$OUT/roms" pull -q --ff-only || true
+    find "$OUT" -mindepth 1 -maxdepth 1 ! -name roms -exec rm -rf {} +
+else
+    rm -rf "$OUT"
+    mkdir -p "$OUT"
+    git clone -q --depth 1 https://github.com/86Box/roms.git "$OUT/roms"
+fi
+
+cp "$EXE" "$OUT/"
+windeployqt6 --no-translations --no-compiler-runtime --no-system-d3d-compiler \
+    --no-opengl-sw --dir "$OUT" "$OUT/86Box-Next.exe" >/dev/null
+
+# Copy every UCRT64 DLL the exe and the deployed Qt plugins pull in.
+for i in 1 2 3; do
+    find "$OUT" -name '*.exe' -o -name '*.dll' | grep -v "^$OUT/roms" |
+        xargs ldd 2>/dev/null | awk '{print $3}' | grep -i '^/ucrt64/' | sort -u |
+        while read -r dll; do
+            name=$(basename "$dll")
+            [ -f "$OUT/$name" ] || cp "$UCRT/bin/$name" "$OUT/"
+        done
+done
+
+echo "Staged $(git describe --always --dirty) in $OUT"
