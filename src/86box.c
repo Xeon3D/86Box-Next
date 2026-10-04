@@ -1297,6 +1297,7 @@ usage:
 
     pclog("#\n# %s v%s logfile, created %s\n#\n",
           EMU_DISPLAY_NAME, EMU_VERSION_FULL, temp);
+    pclog("# 86Box-Next build %d\n", next_build_number);
 
     if (portable_mode) {
         pclog("# Portable mode enabled.\n");

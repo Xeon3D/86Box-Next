@@ -122,6 +122,25 @@ endif()
 
 set_target_properties(86Box PROPERTIES OUTPUT_NAME "86Box-Next")
 
+# 86Box-Next: a build number that goes up with every successful build
+# (cmake/NextBuildNumber.cmake), counted in .build-number at the repository
+# root and shown in the title bar.
+set(NEXT_BUILD_FILE   ${PROJECT_SOURCE_DIR}/.build-number)
+set(NEXT_BUILD_HEADER ${PROJECT_BINARY_DIR}/src/include/86box/next_build.h)
+add_custom_target(next_build_number
+    COMMAND ${CMAKE_COMMAND} -DMODE=pre -DFILE=${NEXT_BUILD_FILE} -DOUT=${NEXT_BUILD_HEADER}
+            -P ${PROJECT_SOURCE_DIR}/cmake/NextBuildNumber.cmake
+    BYPRODUCTS ${NEXT_BUILD_HEADER}
+    VERBATIM
+)
+add_dependencies(86Box next_build_number)
+target_sources(86Box PRIVATE next_build.c)
+add_custom_command(TARGET 86Box POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -DMODE=post -DFILE=${NEXT_BUILD_FILE} -DOUT=${NEXT_BUILD_HEADER}
+            -P ${PROJECT_SOURCE_DIR}/cmake/NextBuildNumber.cmake
+    VERBATIM
+)
+
 target_link_libraries(86Box
     cpu
     char

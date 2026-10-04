@@ -28,6 +28,9 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   southbridge stub and is untouched.
 - Upstream's CI workflows and Dependabot are disabled/removed in this repo; only
   `sync-upstream.yml` runs.
+- Build number in the title bar / About box: `.build-number` (git-ignored, repo root)
+  holds the last successful build; `cmake/NextBuildNumber.cmake` bumps it on every
+  successful link, so a no-change build still relinks with the next number.
 
 ## Layout and the staged rig
 `F:\Claude\86Box-Next\86box` is this repository; `F:\Claude\86Box-Next\Latest` (outside

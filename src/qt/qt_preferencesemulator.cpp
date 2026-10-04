@@ -122,7 +122,7 @@ PreferencesEmulator::save()
     QString vmname(vm_name);
     if (vmname.at(vmname.size() - 1) == '"' || vmname.at(vmname.size() - 1) == '\'')
         vmname.truncate(vmname.size() - 1);
-    main_window->setWindowTitle(QString("%1 - %2 %3").arg(vmname, EMU_DISPLAY_NAME, EMU_VERSION_FULL));
+    main_window->setWindowTitle(QString("%1 - %2 %3 build %4").arg(vmname, EMU_DISPLAY_NAME, EMU_VERSION_FULL).arg(next_build_number));
     QString msg = main_window->status->getMessage();
     main_window->status.reset(new MachineStatus(main_window));
     main_window->refreshMediaMenu();

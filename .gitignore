@@ -77,3 +77,6 @@ CMakeLists.txt.user
 # 86Box-Next local build trees
 /build-*
 /build*.log
+
+# 86Box-Next build counter (cmake/NextBuildNumber.cmake)
+/.build-number
