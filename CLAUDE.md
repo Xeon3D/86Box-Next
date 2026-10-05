@@ -34,7 +34,18 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   `PCMCIA\MTD-A289` for TrueFFS; program/erase need 12 V on the socket's Vpp; verified in
   Win98 + TrueFFS-9x: TFORMAT, copy, TCHECK, reboot. TrueFFS quirks that are not bugs: a blank
   SRAM card can't be formatted (TFORMAT is flash-only), a FAT image on flash mounts read-only,
-  writes fail for ~10 s after TFORMAT exits (its lazy Vpp-off); see `flashhandoff.md`). A memory card's write-protect switch shows on the socket's WP bit. CIS in
+  writes fail for ~10 s after TFORMAT exits (its lazy Vpp-off); see `flashhandoff.md`), 3Com 3C562D LAN+33.6 Modem (`pccard_3c562.c`), the first
+  multi-function card: `pccard_mfc.c` is a PC Card 95 MFC framework (per-function COR/CCSR/
+  I/O base/limit registers, I/O routed by each function's decode, IREQ = OR of the functions),
+  CIS with LONGLINK_MFC chains (Windows 9x's ID walk follows function 0's chain); its LAN is
+  `net_3c509b.c`'s `threec562_lan_device`, its modem `char_modem.c`'s engine on a detached
+  16550 (`serial_init_detached()`, no COM slot) opened with `char_open_unlisted()` in the card's
+  device context; the modem icon lists it as "PC Card A/B" and saves its line in the card's
+  section. Verified in Win98 (NET3C562.INF + MDMGATEW.INF, ping, ATI over ReadFile); caveat:
+  Windows tends to give its modem COM4 at 2E8h, which the S3 cards' 8514/A register shadows
+  (`vid_s3.c`, as on real hardware) -- reads come back 00h; move the modem's I/O in Device
+  Manager; see `mfchandoff.md`. A memory card's write-protect switch shows on the socket's WP
+  bit. CIS in
   `pccard_cis.c`: built there, with NO_LINK, and a 2-byte CONFIG filler subtuple solved at
   build time so Windows 9x's ID matches the INF's (its checksum: ARC by nibble tables with one
   wrong entry, from PCCARD.VXD/CONFIGMG.VXD). Config in `[PCMCIA]`; a card's own settings are
@@ -59,7 +70,8 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   speakers whose sound handlers are registered once per sound reset: `sound_has_handler()`).
   `DEVICE_HOTPLUG`, so attaching, removing or reconfiguring one is a soft change (the soft
   settings path refreshes the status bar). Status bar modem icon (`src/qt/qt_modem_menu.cpp`,
-  shown while a COM port is configured with a modem) sets each modem's line live through
+  shown while a COM port is configured with a modem or a socket holds a PC Card with one;
+  `char_modem.h` slots: the COM ports, then one per socket) sets each modem's line live through
   `char_modem.h` (applied on the emulation thread; a call in progress gets NO CARRIER) and saves
   it in the modem's section (`<name> #<COM+1>`). Tests: `tests/modem/` (FN_SYS's tables).
 - Upstream's CI workflows and Dependabot are disabled/removed in this repo; only

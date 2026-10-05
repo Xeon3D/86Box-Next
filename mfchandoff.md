@@ -5,61 +5,49 @@ Started 2026-10-05 on branch `pcmcia-mfc` (not merged, not pushed). Read `CLAUDE
 `infgrep.py`, `fat32.py`/`fatput.py`, `creg.py`) and the VxD tooling (`le3.py`, `dumpobj.py`,
 `dis.py`, `stackmatch.py`).
 
-## Status (2026-10-05, build 67-69)
+## Status (2026-10-05, builds 67-73)
 
-**The 3Com 3C562D LAN+33.6 Modem card works as a multi-function card in Windows 98 SE.**
-Windows found both functions by their INF IDs on the first try and installed both drivers
-from its own CABs: "3Com (3C562D-3C563D) EtherLink LAN+336 Modem PC Card" (NET3C562.INF,
-elpc3r.sys) and "3Com (3C562) EL III LAN+33.6 Modem PC Card" (MDMGATEW.INF). Windows put the
-LAN at 110h-11Fh (socket B I/O window 0) and the modem at 2E8h-2EFh (window 1, COM4).
-- **LAN: works**: `PING 10.0.2.2` over SLiRP, 3/3 replies. (Socket A also holds a 3C589D and
-  the machine an RTL8139, so it is not yet proven which adapter answered; check with
-  `WINIPCFG` or remove the others.)
-- **Modem: works on the card side; the guest-side check is unfinished.** A trace of the
-  modem function's register accesses (temporary pclog in `c562_modem_read/write`, since removed)
-  shows Windows' serial driver probing the 16550, then a test program's `ATI4` going out and
-  "ATI4", CR LF, "3Com EtherLink III LAN+33.6 Modem PC Card"... coming back through RBR byte by
-  byte with the right LSR/IIR. But the test program (`ATPROBE.EXE`, below) got that many bytes
-  from `ReadFile`, **all 00h**. Without its own `SetCommState` it gets nothing at all (Windows'
-  default DCB holds transmission: only the driver's two probe bytes reached THR). **Cause found:
-  the probe itself** -- `gcc -m32` emitted CMOVcc (P6 only) and the test machine is a Pentium
-  MMX: Windows reported "invalid instruction 0F 45" in ATPROBE. `build.sh` now uses
-  `-march=pentium-mmx` (no cmov in the binary); DCB restored, hex logging kept. **Rerun: still
-  zeros** -- e.g. ATI0 gives 20 bytes (the right count: echo + 33600 + OK), every one 00h, via
-  ReadFile (SetCommState ok; COM4's DCB before it: flags 3011h, baud 0). So the zeroing is
-  between the UART (right bytes in RBR) and ReadFile. Next: the same probe on a COM2 modem
-  (COM port, not the card) to tell a card/UART-detached bug from a Windows/probe one.
-- WINIPCFG now works (`WINIPCFG /BATCH C:\IPCFG.TXT`): three Ethernet adapters, adapter 2 has
-  10.0.2.15 from SLiRP; pings answer. Only socket B (the 3C562D) has a link now (socket A
-  emptied, [Network] has no cards linked): **the 3C562D's LAN is proven.**
-- Comparison run: `pcictest\86box.cfg` got `[Ports (COM & LPT)] serial1_device = modem_supra`
-  (backup before it: `86box.cfg.mfc-bak`). The same probe on COM1 reads the Supra perfectly
-  ("AT | OK", "SupraExpress 56e PRO"...), COM4 (the card) still all 00h. **So the bug is on the
-  card side** (the detached UART / PC Card path), even though RBR read back right in the
-  build-69 register trace. Remove the COM1 modem from the cfg when done.
-- **MDMGATEW.INF overrides the modem function too** (`ADDREG_3COMA.reg`, Override 0000-0004):
-  8 ports, 8-aligned, at 3E8h / 2E8h / 3F8h / 2F8h or anywhere; IRQ any; PC Card record:
-  **ConfigBase 0x1900, COR 0x47, Present 0x23** (I/O base 0 only: the modem also compares
-  A7-A0). Our CIS/`pccard_mfc_add` had the modem at mask 63h (A15-A0 against base 0+1, but
-  Windows writes only base 0): fixed to 23h / index 7 (build 70; mfc_test updated, 52 pass).
-  **Still zeros.** A register trace (build 71, temporary pclog in `c562_modem_read/write`)
-  with the fixed probe shows Windows' serial driver getting exactly the right bytes from RBR
-  (`ATI4` echo, "3Com EtherLink III LAN..."), with IIR C4h/C1h, LSR 61h/60h and an ISR-like
-  sequence (IIR, RBR+LSR pairs, IER 0Fh -> 0Dh). So the card and UART deliver; the bytes become
-  00h **inside Windows**, between serial.vxd and ReadFile, only for the card's COM4 (COM1's
-  Supra modem reads fine with the same probe).
-  Leads for next time:
-  - COM4's DCB at open has baud 0 (COM1: 1200): MDMGATEW's sections may lack the usual `DCB`
-    value; compare the two ports' registry entries (`creg.py`, Enum\PCMCIA\...DEV1-E4C0 and the
-    modem class key: PortDriver Serial.vxd, Contention *vcd, DeviceType 03).
-  - Whether the bytes really come through serial.vxd's ISR (the shared, level PC Card IRQ):
-    log the guest CS:EIP of the RBR reads (as build 58 did for power writes: `ss+ESP`,
-    `mmutranslate_noabrt`, `cpu.h`) and match it with `stackmatch.py` against SERIAL.VXD.
-  - Try HyperTerminal on COM4 by hand (the owner can), or Unimodem's "More Info"
-    (Control Panel > Modems > Diagnostics), which reads ATI answers itself.
-- The owner removed the 3C589D from socket A, so a ping now proves the 3C562D's LAN.
-- Not yet done: the modem in the PC Card status bar / COM modem status icon (it is "unlisted",
-  see below); CLAUDE.md; merge; restage the rigs.
+**The 3Com 3C562D LAN+33.6 Modem card works as a multi-function card in Windows 98 SE, both
+functions proven end to end.**
+
+- Windows found both functions by their INF IDs and installed both drivers from its own CABs:
+  "3Com (3C562D-3C563D) EtherLink LAN+336 Modem PC Card" (NET3C562.INF, elpc3r.sys) and
+  "3Com (3C562) EL III LAN+33.6 Modem PC Card" (MDMGATEW.INF). Windows put the LAN at 110h-11Fh
+  (socket B I/O window 0) and the modem at 2E8h-2EFh (window 1, COM4).
+- **LAN: works.** `WINIPCFG /BATCH C:\IPCFG.TXT` shows the adapter with 10.0.2.15 from SLiRP;
+  `PING 10.0.2.2` answers 3/3, with socket A empty and no other adapter linked.
+- **Modem: works.** `ATPROBE.EXE` on COM4 (build 72, below): `ATI0` -> `33600`, `ATI3` -> `3Com
+  3C562D/3C563D 33.6 Modem`, `ATI4` -> `3Com EtherLink III LAN+33.6 Modem PC Card`, all through
+  Windows' serial.vxd and ReadFile.
+- **The "all bytes 00h" bug was not ours: COM4 at 2E8h collides with the S3 Trio64.** 86Box's
+  S3 (`vid_s3.c`, `s3_io_set()`) claims 02E8h-02E9h (the 8514/A Display Status register,
+  read-only, 0 except a vsync bit), and `io.c`'s `inb()` ANDs every handler on a port, so each
+  RBR read gave `modem byte & 00h`. The register trace (right bytes in RBR) and the probe
+  (right count, all zeros) both fit. Proof: build 72 = the same code with the S3's 02E8h
+  handler disabled (throwaway, `pcictest\nos3_2e8.exe`; `vid_s3.c` was restored) -> the probe
+  reads every answer right. The same conflict is the classic real-world "S3/8514 card vs COM4"
+  one, and the guest's INFs reserve nothing at 2E8h for the S3 card, so Windows hands it to the
+  modem on real hardware too. **Not an emulator bug; nothing changed in vid_s3.c (upstream).**
+  For users: give the modem function another I/O range in Device Manager (MDMGATEW allows
+  3E8h, 2E8h, 3F8h, 2F8h or anywhere), or use a non-S3 video card. Why Windows passed over 3E8h
+  in this guest is unknown (its registry shows no 3E8h user; arbitration order).
+- **Modem in the status bar (build 73).** `char_modem.c`'s registry has slots: the COM ports,
+  then one per PC Card socket (`char_modem_slots()`, `char_modem_slot_label()` -> "COM1" /
+  "PC Card A"). An unlisted modem (opened with `char_open_unlisted()` inside a card's device
+  context, instance = socket + 1) registers in its socket's slot and keeps the card's device
+  (`device_context_get_device()`) to save its line into the card's section. The modem icon
+  shows while a COM port has a modem *or* a socket holds a card with one
+  (`pcmcia_card_has_modem()`, a `modem` column in `pcmcia.c`'s list), and hot-plugging such a
+  card rebuilds the status bar (`MachineStatus::setPcCardMenu`'s `changed` handler ->
+  `ui_sb_update_panes()`). Checked: the icon appears for the 3C562D with no COM modem. Not
+  checked by hand: the menu entries ("PC Card B: 3Com 3C562D ...") and a line change saved into
+  `[3Com EtherLink III LAN+33.6 Modem PC Card (3C562D) #2]` -- open the icon once.
+- MDMGATEW.INF overrides the modem function (`ADDREG_3COMA.reg`, Override 0000-0004): 8 ports,
+  8-aligned, at 3E8h / 2E8h / 3F8h / 2F8h or anywhere; IRQ any; PC Card record: ConfigBase
+  0x1900, COR 0x47, Present 0x23 (I/O base 0 only: the modem also compares A7-A0). Our
+  CIS/`pccard_mfc_add` follow it (mask 23h, index 7; build 70).
+- Tests: mfc 52, cis 117, pcic 59, flash 50, modem all pass (`tests/modem/modem_test.c` got a
+  `device_context_get_device()` stub).
 
 ## What was built
 
@@ -140,9 +128,9 @@ LAN at 110h-11Fh (socket B I/O window 0) and the modem at 2E8h-2EFh (window 1, C
 ## Guest test kit (flash-investigation\tools)
 
 - `pcictest\86box.cfg`: `socket_b = 3c562d`, `socket_b_net_type = slirp` (the flash card config
-  is in `86box.cfg.flash-bak`). `pcictest\b67.exe` = build 67 (normal), `trace.exe` = build 69
-  (PCIC log + the temporary modem register log).
-- `MFCTEST.BAT` (in the guest's StartUp now -- remove when done): waits 30 s, `WINIPCFG /BATCH`,
+  is in `86box.cfg.flash-bak`). `pcictest\b67.exe` = build 67 (normal), `trace.exe` = build 71
+  (PCIC log + the temporary modem register log), `b73.exe` = build 73, `nos3_2e8.exe` = build 72.
+- `MFCTEST.BAT` (not in the guest's StartUp now; `fatput.py` puts it back): waits 30 s, `WINIPCFG /BATCH`,
   `PING -n 3 10.0.2.2`, `C:\WINDOWS\ATPROBE.EXE`, all into `C:\MFCLOG.TXT`, then shuts down.
   (`WINIPCFG /BATCH` wrote nothing; check its syntax.) `WAITOFF.BAT`: wait 2 min, shut down.
 - `atprobe\`: `ATPROBE.EXE` for Windows 9x built without a C runtime: `gcc -m32`, `ld -m i386pe`,
@@ -158,11 +146,12 @@ LAN at 110h-11Fh (socket B I/O window 0) and the modem at 2E8h-2EFh (window 1, C
 
 ## Next steps
 
-1. Settle the probe's zero bytes (restore its SetCommState; read its hex log). If ReadFile really
-   returns zeros while RBR gives the right bytes, compare with a COM-port modem (Settings >
-   Ports, COM2 = a modem) under the same probe.
-2. Prove the LAN is the 3C562's (take the 3C589D out of socket A for the test, or WINIPCFG).
-3. Optional: show the PC Card modem in the modem status bar icon (`char_modem.c`'s `modems[]`
-   is by COM port; a PC Card modem has none -- extend the registry with socket entries).
-4. CLAUDE.md (PCMCIA paragraph: MFC framework, the 3C562D, detached UART, unlisted char
-   devices), commit, merge into master, build, restage all rigs (`tools/stage-rig.sh`).
+1. Open the modem icon once with the 3C562D in a socket: the entry reads "PC Card B: ...",
+   a line change lands in the card's section of `86box.cfg`.
+2. Merge `pcmcia-mfc` into master, build, restage all rigs (`tools/stage-rig.sh`) -- ask the
+   owner first.
+3. Optional: other multi-function cards on the framework (3Com 3CXEM556 LAN+56K is the shape
+   the tests already use; Xircom, Megahertz...).
+4. The guest test kit is clean: `MFCTEST.BAT` is out of the guest's StartUp, `pcictest\86box.cfg`
+   is back to `86box.cfg.mfc-bak` (no COM1 Supra), `trace.exe` = build 71 again, `b73.exe` =
+   build 73 (normal).

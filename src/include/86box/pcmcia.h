@@ -88,6 +88,7 @@ extern const char *pcmcia_card_get_name(int card);
 extern int         pcmcia_card_get_from_internal_name(const char *s);
 extern int         pcmcia_card_has_config(int card);
 extern int         pcmcia_card_is_network(int card);
+extern int         pcmcia_card_has_modem(int card);
 #ifdef EMU_DEVICE_H
 extern const device_t *pcmcia_card_get_device(int card);
 #endif

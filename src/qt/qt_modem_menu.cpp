@@ -2,11 +2,12 @@
  * 86Box-Next  A fork of 86Box with extra features.
  *
  *             The modem menu, behind the modem icon in the status bar.  For
- *             each COM port with a modem on it (char_modem.c): leave its
- *             telephone line unplugged, or have dialling reach a TCP/IP host.
- *             The change is made at once, without a reset -- a call in
- *             progress ends with NO CARRIER -- and kept in the modem's own
- *             configuration, where Settings > Ports shows it too.
+ *             each COM port with a modem on it, and each PC Card with a modem
+ *             of its own (the 3C562D) (char_modem.c): leave its telephone
+ *             line unplugged, or have dialling reach a TCP/IP host.  The
+ *             change is made at once, without a reset -- a call in progress
+ *             ends with NO CARRIER -- and kept in the modem's configuration
+ *             (a PC Card's: the card's), where Settings shows it too.
  *
  *             Released under the GNU General Public License version 2 or
  *             later.  See COPYING for more information.
@@ -32,6 +33,16 @@ extern "C" {
 #include <86box/char.h>
 #include <86box/serial.h>
 #include <86box/char_modem.h>
+#include <86box/pcmcia.h>
+}
+
+/* "COM1", or "PC Card A" for a PC Card's own modem. */
+static QString
+slotText(int slot)
+{
+    char buf[32];
+    char_modem_slot_label(slot, buf, sizeof(buf));
+    return QString::fromUtf8(buf);
 }
 
 static QString
@@ -75,13 +86,20 @@ ModemMenu::any()
         if ((d == &char_modem_supra_com_device) || (d == &char_modem_elsa_com_device))
             return true;
     }
+    /* Or a PC Card with a modem of its own in a socket. */
+    if (pcmcia_enabled) {
+        for (int s = 0; s < PCMCIA_SOCKETS; s++) {
+            if (pcmcia_card_has_modem(pcmcia_card_type[s]))
+                return true;
+        }
+    }
     return false;
 }
 
 bool
 ModemMenu::busy()
 {
-    for (int i = 0; i < SERIAL_MAX; i++) {
+    for (int i = 0; i < char_modem_slots(); i++) {
         if (char_modem_get_state(i) > CHAR_MODEM_IDLE)
             return true;
     }
@@ -92,7 +110,7 @@ QString
 ModemMenu::toolTip() const
 {
     QString tip = tr("Modem");
-    for (int i = 0; i < SERIAL_MAX; i++) {
+    for (int i = 0; i < char_modem_slots(); i++) {
         char        host[128] = "";
         int         port      = 0;
         const int   line      = char_modem_get_line(i, host, sizeof(host), &port);
@@ -100,7 +118,7 @@ ModemMenu::toolTip() const
 
         if ((line < 0) || (name == nullptr))
             continue;
-        tip += "\n" + tr("COM%1: %2, %3, %4").arg(i + 1).arg(QString::fromUtf8(name), lineText(line, QString::fromUtf8(host), port), stateText(char_modem_get_state(i)));
+        tip += "\n" + tr("%1: %2, %3, %4").arg(slotText(i), QString::fromUtf8(name), lineText(line, QString::fromUtf8(host), port), stateText(char_modem_get_state(i)));
     }
     return tip;
 }
@@ -109,7 +127,7 @@ void
 ModemMenu::buildMenu()
 {
     m_menu->clear();
-    for (int i = 0; i < SERIAL_MAX; i++) {
+    for (int i = 0; i < char_modem_slots(); i++) {
         char        host[128] = "";
         int         port      = 0;
         const int   line      = char_modem_get_line(i, host, sizeof(host), &port);
@@ -120,7 +138,7 @@ ModemMenu::buildMenu()
 
         const QString qhost = QString::fromUtf8(host);
         QMenu        *sub   = m_menu->addMenu(QIcon(":/settings/qt/icons/modem.ico"),
-                                              tr("COM%1: %2").arg(i + 1).arg(QString::fromUtf8(name)));
+                                              tr("%1: %2").arg(slotText(i), QString::fromUtf8(name)));
         auto         *grp   = new QActionGroup(sub);
 
         QAction *dead = sub->addAction(tr("Line not connected"));
@@ -177,7 +195,7 @@ ModemMenu::editHost(int com)
         return;
 
     QDialog dlg(m_parent);
-    dlg.setWindowTitle(tr("Modem on COM%1").arg(com + 1));
+    dlg.setWindowTitle(tr("Modem on %1").arg(slotText(com)));
     auto *form  = new QFormLayout(&dlg);
     auto *hostE = new QLineEdit(QString::fromUtf8(host), &dlg);
     hostE->setPlaceholderText(tr("host name or address"));
