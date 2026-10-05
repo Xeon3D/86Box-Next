@@ -114,6 +114,57 @@ pccard_cis_end(pccard_cis_t *c)
     put(c, CISTPL_END);
 }
 
+/* A multi-function card's link to its n functions' CIS chains, all in
+   attribute memory; their addresses are filled in by pccard_cis_mfc_link()
+   once the chains are placed.  Returns where the first address is. */
+int
+pccard_cis_longlink_mfc(pccard_cis_t *c, int n)
+{
+    uint8_t d[1 + 5 * PCCARD_MFC_MAX] = { (uint8_t) n };
+
+    pccard_cis_tuple(c, CISTPL_LONGLINK_MFC, d, 1 + 5 * n);   /* space 0: attribute */
+    return c->len - 5 * n;
+}
+
+/* Function f's chain starts at byte at of the CIS buffer (attribute address
+   2 * at). */
+void
+pccard_cis_mfc_link(pccard_cis_t *c, int link, int f, int at)
+{
+    const uint32_t addr = 2u * (uint32_t) at;
+
+    for (int k = 0; k < 4; k++)
+        if (link + 5 * f + 1 + k < c->max)
+            c->buf[link + 5 * f + 1 + k] = (uint8_t) (addr >> (8 * k));
+}
+
+/* What a linked chain starts with. */
+void
+pccard_cis_linktarget(pccard_cis_t *c)
+{
+    static const uint8_t cis[3] = { 'C', 'I', 'S' };
+
+    pccard_cis_tuple(c, CISTPL_LINKTARGET, cis, 3);
+}
+
+/* An I/O configuration: index (with 0x40 set, the default), I/O interface,
+   5 V, len ports at base (0: anywhere) decoding lines address lines, 8-bit
+   only or 8 and 16 bit, any of the IRQs in irqs, level-triggered. */
+void
+pccard_cis_cftable_io(pccard_cis_t *c, uint8_t index, uint16_t base, uint8_t len, uint8_t lines, int bits16, uint16_t irqs)
+{
+    const uint8_t d[13] = {
+        (uint8_t) (0x80 | index), 0x01, /* index, I/O interface               */
+        0x19,                           /* features: Vcc, I/O, IRQ            */
+        0x01, 0x55,                     /* Vcc: nominal 5 V                   */
+        (uint8_t) ((bits16 ? 0x60 : 0x20) | 0x80 | lines), /* range follows, widths, lines */
+        0x60, base & 0xff, base >> 8,   /* one range, 2-byte base, 1-byte len */
+        (uint8_t) (len - 1),
+        0x30, irqs & 0xff, irqs >> 8    /* IRQ mask follows, level            */
+    };
+    pccard_cis_tuple(c, CISTPL_CFTABLE_ENTRY, d, 13);
+}
+
 /* -------------------------------------------------------- the Win9x ID --- */
 
 static const uint16_t crc_lo[16] = {
@@ -248,16 +299,7 @@ pccard_cis_match_id(pccard_cis_t *c, uint16_t crc)
 static void
 cftable_io(pccard_cis_t *c, uint16_t base, uint8_t len, uint8_t lines, uint16_t irqs)
 {
-    const uint8_t d[13] = {
-        0xc1, 0x01,                     /* index 1, default; I/O interface    */
-        0x19,                           /* features: Vcc, I/O, IRQ            */
-        0x01, 0x55,                     /* Vcc: nominal 5 V                   */
-        (uint8_t) (0xe0 | lines),       /* range follows, 16 and 8 bit, lines */
-        0x60, base & 0xff, base >> 8,   /* one range, 2-byte base, 1-byte len */
-        (uint8_t) (len - 1),
-        0x30, irqs & 0xff, irqs >> 8    /* IRQ mask follows, level            */
-    };
-    pccard_cis_tuple(c, CISTPL_CFTABLE_ENTRY, d, 13);
+    pccard_cis_cftable_io(c, 0x41, base, len, lines, 1, irqs);
 }
 
 static const uint8_t no_device[3] = { 0x00, 0x00, 0xff };   /* DEVICE: no common memory */

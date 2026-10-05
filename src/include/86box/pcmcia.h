@@ -98,10 +98,71 @@ extern const device_t *pcmcia_card_get_device(int card);
 extern netcard_t *pcmcia_network_attach(int socket, void *card_drv, uint8_t *mac, NETRXCB rx);
 #endif
 
+/* ---------------------------------------------- multi-function cards --- */
+
+/* A PC Card 95 multi-function card (pccard_mfc.c): up to PCCARD_MFC_MAX
+   functions -- a LAN and a modem, say -- behind one socket.  The card has one
+   CIS for the card and one for each function (CISTPL_LONGLINK_MFC points to
+   them), and each function its own configuration registers in attribute
+   memory:
+
+     +0x00  COR   bit 7 SRESET (the function's reset), bit 6 level IREQ,
+                  bits 5:3 configuration index, bit 2 IREQ enable, bit 1 the
+                  function decodes the I/O range its I/O base registers name,
+                  bit 0 function enable
+     +0x02  CCSR  bit 1 interrupt pending (the function's interrupt request),
+                  bit 0 interrupt acknowledge mode; the rest kept
+     +0x04  PRR, +0x06 SCR, +0x08 ESR: kept
+     +0x0A..+0x10  I/O base 0-3 (bytes, low first)
+     +0x12  I/O limit: the number of ports minus one
+
+   A function answers I/O only while enabled, in the range at its I/O base
+   (with address decode on) or -- off -- at any port whose low address lines
+   select one of its registers; its interrupt requests the card's one IREQ
+   while its COR enables it, and shows in its CCSR either way.
+
+   A function's I/O handlers get the offset into its range. */
+#define PCCARD_MFC_MAX 4
+
+typedef struct pccard_func_t {
+    uint16_t io_len;   /* ports it decodes: a power of two (8 for a UART) */
+    uint8_t (*io_read)(uint16_t off, void *priv);
+    void (*io_write)(uint16_t off, uint8_t val, void *priv);
+    uint16_t (*io_readw)(uint16_t off, void *priv);         /* NULL: two byte reads */
+    void (*io_writew)(uint16_t off, uint16_t val, void *priv);
+    void (*reset)(void *priv);          /* card RESET, power-off or COR SRESET */
+    void (*enable)(int on, void *priv); /* COR function enable changed; may be NULL */
+    void *priv;
+} pccard_func_t;
+
+typedef struct pccard_mfc_t {
+    pccard_t             card;     /* what the socket holds */
+    int                  socket;
+    int                  nfunc;
+    const pccard_func_t *func[PCCARD_MFC_MAX];
+    uint32_t             cfg_base[PCCARD_MFC_MAX];   /* attribute address of its registers */
+    uint8_t              reg[PCCARD_MFC_MAX][10];    /* COR, CCSR, PRR, SCR, ESR, I/O base 0-3, limit */
+    int                  intr[PCCARD_MFC_MAX];       /* the function's interrupt request */
+    int                  ireq;                       /* the card's IREQ, as last told */
+    uint8_t             *cis;      /* attribute memory's even bytes from 0 */
+    int                  cis_len;
+} pccard_mfc_t;
+
+/* Set up m for socket with the CIS in cis (cis_len bytes, kept by the
+   caller), then add the functions in CIS order, each with the attribute
+   address of its configuration registers; then pcmcia_insert(socket,
+   &m->card).  A function raises and drops its interrupt request with
+   pccard_mfc_irq(). */
+extern void pccard_mfc_init(pccard_mfc_t *m, int socket, const char *name, uint8_t *cis, int cis_len);
+extern int  pccard_mfc_add(pccard_mfc_t *m, const pccard_func_t *f, uint32_t cfg_base);
+extern void pccard_mfc_irq(pccard_mfc_t *m, int func, int level);
+
 /* ------------------------------------------- Card Information Structure --- */
 
 #define CISTPL_NULL          0x00
 #define CISTPL_DEVICE        0x01
+#define CISTPL_LONGLINK_MFC  0x06
+#define CISTPL_LINKTARGET    0x13
 #define CISTPL_NO_LINK       0x14
 #define CISTPL_VERS_1        0x15
 #define CISTPL_DEVICE_A      0x17
@@ -129,6 +190,11 @@ extern void     pccard_cis_vers1(pccard_cis_t *c, const char *const *s, int n);
 extern void     pccard_cis_manfid(pccard_cis_t *c, uint16_t manf, uint16_t card);
 extern void     pccard_cis_config(pccard_cis_t *c, uint16_t base, uint8_t rmask, uint8_t last);
 extern void     pccard_cis_end(pccard_cis_t *c);
+extern int      pccard_cis_longlink_mfc(pccard_cis_t *c, int n);
+extern void     pccard_cis_mfc_link(pccard_cis_t *c, int link, int f, int at);
+extern void     pccard_cis_linktarget(pccard_cis_t *c);
+extern void     pccard_cis_cftable_io(pccard_cis_t *c, uint8_t index, uint16_t base, uint8_t len, uint8_t lines,
+                                      int bits16, uint16_t irqs);
 extern uint16_t pccard_cis_win9x_crc(const uint8_t *cis, int len);
 extern void     pccard_cis_win9x_id(const uint8_t *cis, int len, char *out, int outlen);
 extern int      pccard_cis_match_id(pccard_cis_t *c, uint16_t crc);
