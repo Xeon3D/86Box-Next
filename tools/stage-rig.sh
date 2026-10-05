@@ -1,8 +1,12 @@
 #!/bin/sh
-# Stage the newest 86Box-Next build in ../Latest (next to the repository):
-# the built exe, the 86Box ROM set and MegaPPBox's Megatouch ROMs.
+# Stage the newest 86Box-Next build in ../Latest (next to the repository).
+# Latest holds one rig per guest OS ("Windows 98 SE", "MS-DOS", ...), each a
+# folder with its own 86box.cfg, nvr/, disk images and roms/: the exe goes
+# into every rig folder that has an 86box.cfg or an 86Box-Next.exe (folders
+# with neither are left alone).  A rig without roms/ gets the 86Box ROM set
+# and MegaPPBox's Megatouch ROMs.
 #
-# Latest is also where the machine being tested lives, so this only ever
+# The rigs are where the machines being tested live, so this only ever
 # replaces the exe (and, for a dynamic build, its DLLs and Qt plugins) and
 # never deletes anything: 86box.cfg, nvr/, disk images and whatever else is
 # there are left alone.  roms/ is left alone too: it is only created when it
@@ -32,46 +36,61 @@ if tasklist //FI "IMAGENAME eq 86Box-Next.exe" 2>/dev/null | grep -qi "86Box-Nex
     echo "86Box-Next is running; close it and stage again" >&2
     exit 2
 fi
-mkdir -p "$OUT"
-
-# The 86Box ROM set: cloned only if there is none; pulled only when asked.
-if [ ! -d "$OUT/roms" ]; then
-    git clone -q --depth 1 https://github.com/86Box/roms.git "$OUT/roms"
-elif [ "$UPDATE_ROMS" = 1 ] && [ -d "$OUT/roms/.git" ]; then
-    git -C "$OUT/roms" pull -q --ff-only || true
-fi
-
-# The Merit Megatouch boards' ROMs (board ROM, key password tables, CMOS
-# images) live in MegaPPBox's repository, not in the 86Box ROM set: added
-# only if missing, refreshed only when asked.
-if [ ! -d "$OUT/roms/megatouch" ] || [ "$UPDATE_ROMS" = 1 ]; then
-    MEGA=../../MegaPPBox-src
-    TMP=""
-    if [ ! -d "$MEGA/roms/megatouch" ]; then
-        TMP=$(mktemp -d)
-        git clone -q --depth 1 --filter=blob:none --sparse https://github.com/Xeon3D/MegaPPBox.git "$TMP/m"
-        git -C "$TMP/m" sparse-checkout set roms/megatouch
-        MEGA="$TMP/m"
+# Every rig: a subfolder of Latest with a machine or an exe in it.
+RIGS=""
+for d in "$OUT"/*/; do
+    d=${d%/}
+    if [ -f "$d/86box.cfg" ] || [ -f "$d/86Box-Next.exe" ]; then
+        RIGS="$RIGS
+$d"
     fi
-    mkdir -p "$OUT/roms/megatouch"
-    cp -r "$MEGA/roms/megatouch/." "$OUT/roms/megatouch/"
-    [ -n "$TMP" ] && rm -rf "$TMP"
-fi
-
-strip -o "$OUT/86Box-Next.exe" "$EXE"
-if ! ldd "$EXE" | grep -qi '/ucrt64/'; then
-    echo "Staged $(git describe --always --dirty) in $OUT (static)"
-    exit 0
-fi
-
-# A dynamic build: its Qt plugins and every UCRT64 DLL it pulls in.
-windeployqt6 --no-translations --no-compiler-runtime --no-system-d3d-compiler \
-    --no-opengl-sw --dir "$OUT" "$OUT/86Box-Next.exe" >/dev/null
-for i in 1 2 3; do
-    find "$OUT" -maxdepth 2 \( -name '*.exe' -o -name '*.dll' \) |
-        xargs ldd 2>/dev/null | awk '{print $3}' | grep -i '^/ucrt64/' | sort -u |
-        while read -r dll; do
-            cp -u "$UCRT/bin/$(basename "$dll")" "$OUT/"
-        done
 done
-echo "Staged $(git describe --always --dirty) in $OUT (dynamic)"
+[ -n "$RIGS" ] || { echo "no rig folders in $OUT" >&2; exit 1; }
+
+stage_rig() {
+    RIG=$1
+    # The 86Box ROM set: cloned only if there is none; pulled only when asked.
+    if [ ! -d "$RIG/roms" ]; then
+        git clone -q --depth 1 https://github.com/86Box/roms.git "$RIG/roms"
+    elif [ "$UPDATE_ROMS" = 1 ] && [ -d "$RIG/roms/.git" ]; then
+        git -C "$RIG/roms" pull -q --ff-only || true
+    fi
+
+    # The Merit Megatouch boards' ROMs (board ROM, key password tables, CMOS
+    # images) live in MegaPPBox's repository, not in the 86Box ROM set: added
+    # only if missing, refreshed only when asked.
+    if [ ! -d "$RIG/roms/megatouch" ] || [ "$UPDATE_ROMS" = 1 ]; then
+        MEGA=../../MegaPPBox-src
+        TMP=""
+        if [ ! -d "$MEGA/roms/megatouch" ]; then
+            TMP=$(mktemp -d)
+            git clone -q --depth 1 --filter=blob:none --sparse https://github.com/Xeon3D/MegaPPBox.git "$TMP/m"
+            git -C "$TMP/m" sparse-checkout set roms/megatouch
+            MEGA="$TMP/m"
+        fi
+        mkdir -p "$RIG/roms/megatouch"
+        cp -r "$MEGA/roms/megatouch/." "$RIG/roms/megatouch/"
+        [ -n "$TMP" ] && rm -rf "$TMP"
+    fi
+
+    strip -o "$RIG/86Box-Next.exe" "$EXE"
+    if ! ldd "$EXE" | grep -qi '/ucrt64/'; then
+        echo "Staged $(git describe --always --dirty) in $RIG (static)"
+        return
+    fi
+
+    # A dynamic build: its Qt plugins and every UCRT64 DLL it pulls in.
+    windeployqt6 --no-translations --no-compiler-runtime --no-system-d3d-compiler         --no-opengl-sw --dir "$RIG" "$RIG/86Box-Next.exe" >/dev/null
+    for i in 1 2 3; do
+        find "$RIG" -maxdepth 2 \( -name '*.exe' -o -name '*.dll' \) |
+            xargs ldd 2>/dev/null | awk '{print $3}' | grep -i '^/ucrt64/' | sort -u |
+            while read -r dll; do
+                cp -u "$UCRT/bin/$(basename "$dll")" "$RIG/"
+            done
+    done
+    echo "Staged $(git describe --always --dirty) in $RIG (dynamic)"
+}
+
+echo "$RIGS" | while read -r rig; do
+    [ -n "$rig" ] && stage_rig "$rig"
+done

@@ -1,9 +1,9 @@
 # Handoff: PC Card memory cards under Windows 98 + TrueFFS
 
-Second session, 2026-10-04/05 (builds 55-58, uncommitted work on `master`). Read `CLAUDE.md` first
-(repo layout, build, staging rules: never delete anything in `F:\Claude\86Box-Next\Latest`).
-The first session's notes are summarised at the end; several of its conclusions were wrong
-and are corrected here.
+Sessions of 2026-10-04/05. **Status: done** -- the flash card works in the guest end to end
+(build 65, merged into `master`). Read `CLAUDE.md` first (repo layout, build, the per-OS rigs
+in `F:\Claude\86Box-Next\Latest`). The first session's notes are summarised at the end; several
+of its conclusions were wrong and are corrected here.
 
 ## Bottom line
 
@@ -15,13 +15,14 @@ SRAM support in TrueFFS is a plain-FAT translation layer that mounts an SRAM car
 "1024 KBytes, write-protected" (the read-only fallback). Nothing to fix there, and the owner
 does not want pre-formatted cards.
 
-What TFORMAT is made for is a **linear flash card**, so this session added one: an
+What TFORMAT is made for is a **linear flash card**, so one was added: an
 **Intel Series 2 flash card (28F008SA)**, `src/pcmcia/flash_card.c`. Its CIS gives Windows
 `PCMCIA\MTD-A289`, which TRUEFFS.INF maps to TrueFFS, and its chips answer TrueFFS's Intel
 MTD exactly as the real parts do (checked by unit tests that port the MTD's routines from
-the disassembly). **In the guest, TFORMAT now formats it (4096 KB physical, 3798 KB formatted).
-Two bugs left: writes after TFORMAT find Vpp back at 5 V, and a boot with the formatted
-card hangs. See "Status".**
+the disassembly). **In the guest (build 65, normal build): TFORMAT formats a blank 4 MB card
+(3798 KB formatted), COPY/FC/TCHECK pass ("No errors were found"), and after a reboot the
+card mounts with its files, reads back and takes new writes.** The two "open bugs" of the
+second session were not emulator bugs (see "Resolution").
 
 ## How TrueFFS-9x 3.2 handles a card (TRUEFFS.PDR obj1 offsets)
 
@@ -83,7 +84,7 @@ scratchpad `le3.py`; worth copying into `flash-investigation\tools`).
   +0x10 offset, +0x14 size, +0x18 block size, +0x1C part multiple, +0x1E JEDEC.
 - Devnode name `PCMCIA\MTD-%04X` of the JEDEC word (`0xd08d`): bytes (89, A2) → `MTD-A289`.
 
-## What changed in the code (uncommitted)
+## What changed in the code
 
 - `src/pcmcia/flash_card.c` (new, "Flash memory card (Intel Series 2)", `pccard_flash`):
   2/4/10/20 MB of 28F008SA, two chips side by side (even/odd bytes), full command set
@@ -107,110 +108,111 @@ scratchpad `le3.py`; worth copying into `flash-investigation\tools`).
   (WP bit, Vpp). All pass: build them directly, e.g.
   `gcc -std=gnu11 -Isrc/include -Ibuild-static/src/include tests/pcmcia/flash_test.c src/pcmcia/flash_card.c src/pcmcia/pccard_cis.c`
   (UCRT64 gcc; `build-static` has BUILD_TESTING off).
-- CLAUDE.md's PCMCIA paragraph should get the flash card added once it's verified.
+- CLAUDE.md's PCMCIA paragraph has the flash card and its TrueFFS quirks.
 
-## Status / next steps
+## Resolution of the second session's open bugs (third session, 2026-10-05)
 
-### Guest results (2026-10-05, 4 MB card in socket B, trace builds 56-58)
+### "Writes after TFORMAT find Vpp back at 5 V" -- TrueFFS behaviour, not ours
 
-Run 1 (build 56, blank card) and run 3 (build 57, blank card, power log) behave the same:
+Build 58's stack dump of the `F5` power write, matched to the VxDs with the new
+`tools\stackmatch.py` (fixup bytes as wildcards): SOCKETSV obj1+0xCF (the port write) ←
+SOCKETSV obj1+0x2AA (SS dispatcher) ← PCCARD obj3+0x8670 ← **PCCARD's Card Services entry**
+(obj1+0x23b, function table obj5+0x644) running **CS function 0x1E, ReleaseConfiguration**
+(handler obj3+0x7713) ← TrueFFS's CS wrapper (`0x5130`, `int 20h` PCCARD service 1).
+Load addresses in that run: PCCARD obj1 C142CAE0, obj3 C1817AD0; SOCKETSV obj1 C1430920,
+obj2 C1825ED0. (`tools\dumpobj.py` writes one LE object + its fixups for objdump.)
 
-- Windows creates `MTD-A289`, TrueFFS loads; CFI/NAND probes harmless; Intel identify and
-  flIntelSize run exactly as reversed (pairs at 0 and 2 MB found, nothing at 4 MB).
-- **TFORMAT succeeds**: `Medium physical size is 4096 KBytes` ... `Format complete.
-  Formatted size is 3798 KBytes.` (blank card, so no erases, ~74 K programs, all at 12 V).
-  `DIR E:` after it: empty drive, 3,847,680 bytes free. The FTL on the card is well formed
-  (32 units of 128 KB, 31 logical + 1 transfer unit, formatted size 3,889,152, BAM at 0x44).
-- **Open bug 1: writes after TFORMAT fail.** `COPY ... E:\` gives "General failure reading
-  drive E" (Abort/Retry/Fail; the batch waits there). Power-register log (`flash_trace3.txt`):
-  - power-up: socket B `40` -> `55` -> `F5` (Vcc on, outputs on, Vpp1 = Vpp2 = Vcc);
-  - TFORMAT's first write: `FA` (Vpp1 = Vpp2 = 12 V): TrueFFS's ModifyConfiguration works;
-  - right after TFORMAT's last write (BAM at 0x270), **before** the remount: back to `F5`;
-  - then the remount (identify again) and the copy's writes at 0x274.. **without Vpp**, and
-    no further power write at all: TrueFFS never raises Vpp again.
+TrueFFS (obj1): Vpp-on `0x581d` increments the use counts (+0x2a on the socket and on the
+shared `+0x3e` object) and calls ModifyConfiguration(Vpp 12 V) only if shared+0x2e is 0, then
+sets it to 1. Vpp-off is lazy: the CS timer event (`0x529e` → `0x5329`, which calls `0x59cd`
+for each socket and re-arms a 5000 ms timer with CS 0x28) needs two ticks with the use count 0
+before it clears shared+0x2e and lowers Vpp. ReleaseConfiguration (`0x5ac8`, called from
+`0x60b8` when TrueFFS shuts a socket down and `0xd5e3` when a handle closes -- TFORMAT exiting)
+does **not** clear shared+0x2e. So after TFORMAT exits, PCCARD has reset Vpp to Vcc but
+TrueFFS still believes it is at 12 V, until its timer has ticked twice (~10 s). The old batch
+copied immediately. With `CHOICE /T:Y,20` between TFORMAT and COPY the copy works and the
+trace shows TrueFFS raising Vpp (`FA`) again. A real 82365 + PCCARD would do the same.
 
-  TrueFFS's Vpp-on (`0x581d`) calls ModifyConfiguration(12 V) only when the shared flag
-  `socket->+0x3e->+0x2e` is 0. Its own Vpp-off (`0x59cd`, called from `0x54ac(0)` and from
-  the CS TIMER_EXPIRED event 0x15 -> `0x529e`; it needs two calls, `+0x48` is the delay)
-  clears that flag *before* lowering Vpp, so it can't leave the flag stale. Its
-  ReleaseConfiguration (`0x5ac8`, CS 0x1E) runs only on CARD_REMOVAL (event 0x05 ->
-  `0x5220`; 0x40 CARD_INSERTION -> `0x51fa`), and there was none. So the drop to 5 V most
-  likely came from **outside TrueFFS**: PCCARD/SOCKETSV re-applying the socket's configured
-  power (on TFORMAT closing `\\.\TRUEFFS`, a power-management call, or a status change our
-  controller reported). Whether a real 82365 + PCCARD does the same is the open question.
+### "Boot hangs with the formatted card" -- does not reproduce
 
-  **Next step (prepared, not run):** `pcictest\trace.exe` is now **build 58** = build 57
-  plus, on every power-register write, the guest CS:EIP and every stack dword in VxD space
-  (0xC0000000-0xC2000000) with the 12 bytes before it. Match those bytes against
-  PCCARD.VXD / SOCKETSV.VXD / TRUEFFS.PDR / CONFIGMG.VXD to name the caller of the `F5`
-  write. The owner stopped that run before it started (they asked for the docs first); ask
-  before starting it. The temporary stack-dump code is **not** in the sources (added, built,
-  removed). To re-add: in `pcic_reg_write`'s REG_POWER logging, `ss + ESP`,
-  `mmutranslate_noabrt()`, `mem_readl_phys()`/`mem_readb_phys()`, `#include "cpu.h"`.
+`pcictest\flash_b_after_run1.bin` (the image from the run whose copy failed) boots fine on
+build 58: E: mounts (empty, as run 1's copy never reached the card), a new file is written
+and reads back identical. The earlier "hang" was most likely the boot waiting for a key (the
+network login dialog; see below), not TrueFFS.
 
-  Then: if the caller is SOCKETSV/PCCARD reacting to something our PCIC reports (ready or
-  status change, a CSC interrupt, the WP bit), fix the PCIC. If it is ordinary Card Services
-  behaviour, look for the CS event TrueFFS should have got for it.
-- **Open bug 2: boot hang with the formatted card** (run 2, build 57, card as run 1 left it:
-  `pcictest\flash_b_after_run1.bin`, log `flash_trace2_hang.txt`). Windows reaches the
-  desktop, TrueFFS identifies the card, then an hourglass and the tray clock stops; the
-  StartUp batch never runs; no flash commands or power writes after the identify. Maybe the
-  FTL mount loops (reads are not logged). Unit 0's BAM: entries 3-15 read `40 xx FF FF`
-  (low word programmed, high word still FFFF). Check whether TrueFFS writes BAM entries
-  that way or it is a leftover of the failed copy, and whether the mount hangs on it.
-  Repro: copy `flash_b_after_run1.bin` to `pcictest\nvr\pcmcia_flash_b.bin`.
-  (Every run also logs `Illegal instruction 00008B55 (FF)` once at 0147:B9BD during boot,
-  run 1 included; probably unrelated.)
-- The guest disk is `hdd_01_speed = ramdisk`: guest writes and the card's nvr file only
-  reach disk when 86Box exits cleanly. Never kill it; close the main window
-  (`$p.CloseMainWindow()`, `confirm_exit = 0` in the cfg). The runner does that.
+### FAT12 on a flash card (owner's question)
 
-### How the guest test is run (unattended)
+`tools\mkflashfat.py` makes a 4 MB card holding plain FAT12 + README.TXT
+(`pcictest\flash_fat12_4m.bin`). TrueFFS mounts it **read-only**: DIR/TYPE/COPY from it work
+and the file is byte-identical; TCHECK says "Could not recognize card format" (no FTL); a
+write gives "Write protect error". As reversed: the FTL mount fails, then the RAM/ROM FAT layer
+(`0xef30`) is writable only when `isRAM`, and flash is not RAM. Expected on real hardware too;
+TFORMAT the card to write to it.
+
+### Guest results (all on the `pcictest` copy)
+
+| run | build | card | result |
+| --- | --- | --- | --- |
+| 4 | 58 | blank | TFORMAT, 20 s wait, COPY×2, FC, TCHECK: all OK (`flash_trace4.txt`) |
+| 5 | 58 | run 4's | reboot: 2 files, FC OK, new copy OK (`flash_trace5.txt`) |
+| 6 | 58 | FAT12 | read-only mount as above (`flash_trace6_fat12.txt`) |
+| 7 | 58 | run 1's | boots, mounts, writes OK |
+| 8 | 65 | blank | as run 4, all OK |
+| 9 | 65 | run 8's | reboot: 3 files, FC OK, new copy OK; logged in by itself |
+
+## How the guest test is run (unattended)
 
 - `pcictest\86box.cfg`: `socket_b = pccard_flash`, `[Flash memory card (Intel Series 2) #2]
   size = 4` (the SRAM config is saved as `86box.cfg.sram-bak`). Card contents:
-  `pcictest\nvr\pcmcia_flash_b.bin`, **currently absent (= blank card)**.
+  `pcictest\nvr\pcmcia_flash_b.bin` (absent = blank card); saved images
+  `flash_b_after_run1.bin`, `flash_b_after_run4.bin`, `flash_fat12_4m.bin`.
+- The test copy **logs in automatically now**: `tools\AUTOLOG.REG` (imported by the batches
+  with `REGEDIT /S C:\WINDOWS\AUTOLOG.REG`) sets `HKLM\Network\Logon\PrimaryProvider=""`
+  (Windows Logon as the primary logon; blank password, so no prompt) plus the Winlogon
+  auto-logon values (those alone were not enough). The owner's image in `Latest` still asks
+  (Enter). After an exit without a Windows shutdown, Win98 runs ScanDisk at the next boot
+  (Enter leaves it).
+- Batches for the guest's StartUp folder, put there with
+  `python tools\fatput.py IMAGE "WINDOWS/Start Menu/Programs/StartUp" NAME.BAT NAME.BAT`
+  (`-` as the last argument removes it): `TFTEST.BAT` (TFORMAT, 20 s wait, DIR/COPY/FC,
+  TCHECK), `TFREAD.BAT` (boot with a formatted card: DIR, FC, a new copy), `TFFAT.BAT` (the
+  FAT12 card). All log to `C:\TFLOG.TXT` (read it with `fat32.py`) and shut Windows down.
+  **TFREAD.BAT is in StartUp now**; remove it when done. Write them with CRLF line ends from
+  Python (Git Bash's sed mangled backslashes and CRs).
+- Runner: `tools\run_guest.ps1 -Seconds 300 [-Exe F:\...\pcictest\b65.exe]` (default exe
+  `pcictest\trace.exe` = build 58, PCIC + flash logs on, plus the power-write stack dump).
+  Starts the VM minimized, restores it without focus, PrintWindow screenshots into
+  `tools\shots\`; every 5 s it presses Enter (`sendenter.cs`: brings the window to the front
+  for a moment, then gives the focus back) if the network login dialog or ScanDisk is on
+  screen; closes the VM (CloseMainWindow) once Windows has shut down (two more `power 40` in the
+  trace than at boot, or the orange "It's now safe to turn off your computer" screen) or after
+  `-Seconds`. ROMs come from `Latest\Windows 98 SE\roms` (read only). The guest disk is
+  `hdd_01_speed = ramdisk`: never kill 86Box, or the guest's writes and the card file are lost.
 - Trace builds: put `#define ENABLE_PCIC_LOG 1` / `#define ENABLE_FLASH_CARD_LOG 1` after
-  `#define HAVE_STDARG_H` in `pcic_pd6722.c` / `flash_card.c`, build, copy
-  `build-static\src\86Box-Next.exe` to `pcictest\trace.exe`, delete the lines again (the
-  normal build has both logs compiled out). Log: `-L pcictest\flash_trace.txt`; older ones:
-  `flash_trace1.txt` (run 1), `flash_trace2_hang.txt` (run 2), `flash_trace3.txt` (run 3).
-- Batch in the guest's StartUp folder (`flash-investigation\tools\TFTEST.BAT`), put there with
-  `python flash-investigation\tools\fatput.py IMAGE "WINDOWS/Start Menu/Programs/StartUp" TFTEST.BAT TFTEST.BAT`
-  (`-` as the last argument removes it). It is **still there** (remove it when done):
-  TFORMAT E: /Y /S:! /VERBOSE > C:\TFLOG.TXT, DIR/COPY/FC on E:, TCHECK E:, shutdown. Read
-  `C:\TFLOG.TXT` with `fat32.py`.
-- Runner: `flash-investigation\tools\run_guest.ps1 -Seconds 240 -Every 60`: starts
-  trace.exe minimized, restores it with SW_SHOWNOACTIVATE (no focus steal), PrintWindow
-  screenshots into `tools\shots\`, then CloseMainWindow. The owner sees the window; **ask
-  them first**.
-- Loader with the right LE page size for TRUEFFS.PDR: `flash-investigation\tools\le3.py`.
+  `#define HAVE_STDARG_H` in `pcic_pd6722.c` / `flash_card.c`, build, copy the exe to
+  `pcictest\trace.exe`, delete the lines again. For a stack dump per power write, re-add in
+  `pcic_reg_write`'s REG_POWER logging: `ss + ESP`, `mmutranslate_noabrt()`,
+  `mem_readl_phys()`/`mem_readb_phys()`, `#include "cpu.h"` (not in the sources).
 
 ### Code state
 
-- Committed on branch `pcmcia-flash-card` (a5a2e2f46, not pushed, not merged into
-  `master`). `Latest` was restaged on 2026-10-05 with **build 59** (the normal
-  build of this work: flash card, WP pin, Vpp; logs compiled out). Builds 56-58 were trace
-  builds for `pcictest` only. The sources
-  hold the changes listed above plus a `pcic_log` line for power-register writes (compiled
-  out normally). `F:\Claude\86Box-Next\pcic_pd6722.c.keep` is a scratch copy of the current
-  `pcic_pd6722.c`; delete it.
-- Unit tests (flash, cis, pcic) pass.
+- `pcmcia-flash-card` (a5a2e2f46, 0c32ad062) merged into `master` (7ba664c38) on top of
+  another session's modem commit; build 65 staged into every rig in `Latest`.
+- Unit tests pass: flash 50, CIS 117, controller 59 checks.
+- `F:\Claude\86Box-Next\pcic_pd6722.c.keep` (a scratch copy from the second session) can go.
 
-### After the open bugs
+### Possible follow-ups
 
-1. Restage `Latest` again with the fixes (`tools/stage-rig.sh`; refuses while 86Box-Next
-   runs), add the flash card to CLAUDE.md's PCMCIA paragraph, commit (memory: never commit
-   from a shell whose PATH starts with `/c/msys64/usr/bin`).
-2. Optional: other parts the MTDs accept (28F016SA Series 2+ `MTD-A089`, AMD Series D 29F016
-   `MTD-AD01` with the AMD unlock sequence), if the owner wants them.
+- Other parts TrueFFS's MTDs accept (28F016SA Series 2+ `MTD-A089`; AMD Series D 29F016
+  `MTD-AD01` with the AMD unlock sequence), if the owner wants them.
 
 ## Tools and artefacts (`F:\Claude\86Box-Next\flash-investigation`)
 
 - `binaries\`: TRUEFFS.PDR, SRAMMTD.VXD, SOCKETSV.VXD, PCCARD.VXD, CONFIGMG.VXD;
   disassemblies (`tf1.txt` etc. from the first session; fixup annotations there are
   unreliable for TRUEFFS because of the page-size bug).
-- `tools\`: `fat32.py` (read), `fatput.py` (new: write/remove one small file),
+- `tools\`: `fat32.py` (read), `fatput.py` (write/remove one small file), `stackmatch.py`,
+  `dumpobj.py`, `mkfat.py`/`mkflashfat.py`, `run_guest.ps1` + `sendenter.cs`, the batches,
   `infgrep.py`, `creg.py`, `pcmcia_devs2.py`, `emu_crc.py`, `le.py`/`le2.py` (4 KB pages
   only).
 - `traces\`: the first session's SRAM traces.

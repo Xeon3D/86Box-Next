@@ -31,8 +31,10 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   Cards (`pcmcia.c`'s list): 3Com 3C589D (`net_3c509b.c`'s PC Card mode), TRENDnet TE100-PC16
   (`net_te100pc16.c`), SRAM memory card (`sram_card.c`, contents in nvr/), Intel Series 2
   flash card (`flash_card.c`: 28F008SA pairs, JEDEC 89A2 so Windows 9x makes it
-  `PCMCIA\MTD-A289` for TrueFFS; program/erase need 12 V on the socket's Vpp; WIP, see
-  `flashhandoff.md`). A memory card's write-protect switch shows on the socket's WP bit. CIS in
+  `PCMCIA\MTD-A289` for TrueFFS; program/erase need 12 V on the socket's Vpp; verified in
+  Win98 + TrueFFS-9x: TFORMAT, copy, TCHECK, reboot. TrueFFS quirks that are not bugs: a blank
+  SRAM card can't be formatted (TFORMAT is flash-only), a FAT image on flash mounts read-only,
+  writes fail for ~10 s after TFORMAT exits (its lazy Vpp-off); see `flashhandoff.md`). A memory card's write-protect switch shows on the socket's WP bit. CIS in
   `pccard_cis.c`: built there, with NO_LINK, and a 2-byte CONFIG filler subtuple solved at
   build time so Windows 9x's ID matches the INF's (its checksum: ARC by nibble tables with one
   wrong entry, from PCCARD.VXD/CONFIGMG.VXD). Config in `[PCMCIA]`; a card's own settings are
@@ -68,11 +70,14 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
 
 ## Layout and the staged rig
 `F:\Claude\86Box-Next\86box` is this repository; `F:\Claude\86Box-Next\Latest` (outside
-it) is the newest build, where the owner also keeps the machine they test with.
-`tools/stage-rig.sh` replaces only the exe (plus DLLs for a dynamic build) there;
+it) holds the owner's test rigs, one folder per guest OS (`Windows 98 SE` -- the PCMCIA/USB
+machine; its Windows asks for a network login at boot, and runs ScanDisk at boot after
+an exit without a Windows shutdown: Enter for both -- `MS-DOS`, `OS2 Warp 3`, ...),
+each with the newest build. `tools/stage-rig.sh` replaces only the exe (plus DLLs for a
+dynamic build) in every rig folder holding an `86box.cfg` or an exe; a rig's
 `roms/` is only created when missing (86Box ROM set + MegaPPBox's `roms/megatouch`) and
 only refreshed with `--update-roms` -- leave the ROMs alone unless strictly necessary. **Never delete
-anything else in Latest** -- `86box.cfg`, `nvr/` and disk images are theirs.
+anything else in the rigs** -- `86box.cfg`, `nvr/` and disk images are theirs.
 Restage after every change; it refuses while 86Box-Next is running.
 
 ## Building (Windows)
