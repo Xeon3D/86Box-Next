@@ -430,12 +430,17 @@ void
 MachineStatus::setPcCardMenu(PcCardMenu *menu)
 {
     pcCardMenu = menu;
+    pcCardScsi = pcmciaHasSCSI();
     connect(menu, &PcCardMenu::changed, this, [this]() {
         updatePcCardIcon();
         /* A card with a modem of its own went in or came out: the modem icon
            comes or goes with it. */
         if (modemMenu && (ModemMenu::any() != (d->modem != nullptr)))
             ui_sb_update_panes();
+        /* A SCSI card went in or came out: its drives come or go with it. */
+        else if (pcmciaHasSCSI() != pcCardScsi)
+            ui_sb_update_panes();
+        pcCardScsi = pcmciaHasSCSI();
     });
 }
 
@@ -509,6 +514,33 @@ MachineStatus::hasSCSI()
     return (machine_has_flags(machine, MACHINE_SCSI) > 0) || other_scsi_present;
 }
 
+/* 86Box-Next: any SCSI bus at all -- the machine's, a SCSI card's, or that of
+   a SCSI PC Card in a socket (the APA-1460), whose drives belong in the
+   status bar and the Media menu too. */
+bool
+MachineStatus::hasAnySCSI()
+{
+    if (hasSCSI())
+        return true;
+    for (int i = 0; i < SCSI_CARD_MAX; i++) {
+        if (scsi_card_current[i] != 0)
+            return true;
+    }
+    return pcmciaHasSCSI();
+}
+
+bool
+MachineStatus::pcmciaHasSCSI()
+{
+    if (!pcmcia_enabled)
+        return false;
+    for (int s = 0; s < PCMCIA_SOCKETS; s++) {
+        if (pcmcia_card_is_scsi(pcmcia_card_type[s]))
+            return true;
+    }
+    return false;
+}
+
 void
 MachineStatus::iterateFDD(const std::function<void(int)> &cb)
 {
@@ -534,9 +566,7 @@ MachineStatus::iterateCDROM(const std::function<void(int)> &cb)
 //            !hdc_name.startsWith(QStringLiteral("jride")) &&
             !hdc_name.startsWith(QStringLiteral("mcide")))
             continue;
-        if ((cdrom[i].bus_type == CDROM_BUS_SCSI) && !hasSCSI() &&
-            (scsi_card_current[0] == 0) && (scsi_card_current[1] == 0) &&
-            (scsi_card_current[2] == 0) && (scsi_card_current[3] == 0))
+        if ((cdrom[i].bus_type == CDROM_BUS_SCSI) && !hasAnySCSI())
             continue;
         if ((cdrom[i].bus_type == CDROM_BUS_CM100 || cdrom[i].bus_type == CDROM_BUS_PHILIPS || cdrom[i].bus_type == CDROM_BUS_HITACHI || cdrom[i].bus_type == CDROM_BUS_MITSUMI || cdrom[i].bus_type == CDROM_BUS_MKE) && (cdrom_interface_current == 0))
             continue;
@@ -558,9 +588,7 @@ MachineStatus::iterateRDisk(const std::function<void(int)> &cb)
 //            !hdc_name.startsWith(QStringLiteral("jride")) &&
             !hdc_name.startsWith(QStringLiteral("mcide")))
             continue;
-        if ((rdisk_drives[i].bus_type == RDISK_BUS_SCSI) && !hasSCSI() &&
-            (scsi_card_current[0] == 0) && (scsi_card_current[1] == 0) &&
-            (scsi_card_current[2] == 0) && (scsi_card_current[3] == 0))
+        if ((rdisk_drives[i].bus_type == RDISK_BUS_SCSI) && !hasAnySCSI())
             continue;
         if (rdisk_drives[i].bus_type != 0) {
             cb(i);
@@ -580,9 +608,7 @@ MachineStatus::iterateMO(const std::function<void(int)> &cb)
 //            !hdc_name.startsWith(QStringLiteral("jride")) &&
             !hdc_name.startsWith(QStringLiteral("mcide")))
             continue;
-        if ((mo_drives[i].bus_type == MO_BUS_SCSI) && !hasSCSI() &&
-            (scsi_card_current[0] == 0) && (scsi_card_current[1] == 0) &&
-            (scsi_card_current[2] == 0) && (scsi_card_current[3] == 0))
+        if ((mo_drives[i].bus_type == MO_BUS_SCSI) && !hasAnySCSI())
             continue;
         if (mo_drives[i].bus_type != 0) {
             cb(i);
@@ -602,9 +628,7 @@ MachineStatus::iterateTape(const std::function<void(int)> &cb)
 //            !hdc_name.startsWith(QStringLiteral("jride")) &&
             !hdc_name.startsWith(QStringLiteral("mcide")))
             continue;
-        if ((tape_drives[i].bus_type == TAPE_BUS_SCSI) && !hasSCSI() &&
-            (scsi_card_current[0] == 0) && (scsi_card_current[1] == 0) &&
-            (scsi_card_current[2] == 0) && (scsi_card_current[3] == 0))
+        if ((tape_drives[i].bus_type == TAPE_BUS_SCSI) && !hasAnySCSI())
             continue;
         /* A parallel-port tape needs the port it sits on to exist. */
         if ((tape_drives[i].bus_type == TAPE_BUS_LPT) &&
@@ -1115,10 +1139,7 @@ MachineStatus::refresh(QStatusBar *sbar)
             sbar->addWidget(d->hdds[HDD_BUS_ATAPI].label.get());
         }
     }
-    if ((hasSCSI() ||
-        (scsi_card_current[0] != 0) || (scsi_card_current[1] != 0) ||
-        (scsi_card_current[2] != 0) || (scsi_card_current[3] != 0)) &&
-        (c_scsi > 0)) {
+    if (hasAnySCSI() && (c_scsi > 0)) {
         d->hdds[HDD_BUS_SCSI].label = std::make_unique<QLabel>();
         d->hdds[HDD_BUS_SCSI].setActive(false);
         d->hdds[HDD_BUS_SCSI].setWriteActive(false);
