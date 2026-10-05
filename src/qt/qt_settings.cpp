@@ -476,6 +476,7 @@ Settings::accept()
         main_window->emitVmmSignal();
         lpt_devices_reset();
         serial_devices_reset();
+        ui_sb_update_panes(); /* 86Box-Next: a modem attached or removed */
         midi_config_changed();
 
         video_copy = (video_grayscale || invert_display) ? video_transform_copy : memcpy;

@@ -7,6 +7,7 @@ add_subdirectory(mem)
 add_subdirectory(sound)
 add_subdirectory(usb)
 add_subdirectory(pcmcia)
+add_subdirectory(modem)
 
 if(BUILD_TESTING)
     add_library(pcjx_floppy_engine OBJECT

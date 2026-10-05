@@ -118,6 +118,11 @@ extern void sound_add_handler(void (*get_buffer)(int32_t *buffer,
                                                  uint16_t len, void *priv),
                               void *priv);
 
+/* 86Box-Next: whether this exact handler is registered (since the last reset). */
+extern int sound_has_handler(void (*get_buffer)(int32_t *buffer,
+                                                uint16_t len, void *priv),
+                             void *priv);
+
 extern void sound_in_add_handler(void (*put_buffer)(int16_t *buffer,
                                                      int len, void *priv),
                                  void *priv);

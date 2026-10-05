@@ -60,6 +60,7 @@ extern int          is_dynarec_active(void);
 #include "qt_mainwindow.hpp"
 #include "qt_soundgain.hpp"
 #include "qt_pccard_menu.hpp"
+#include "qt_modem_menu.hpp"
 #include "qt_usb_manager.hpp"
 #include "qt_preferences.hpp"
 #include "qt_iconindicators.hpp"
@@ -127,6 +128,7 @@ struct Pixmaps {
     PixmapSetDisabled    sound;
     PixmapSetDisabled    pccard;   /* 86Box-Next */
     PixmapSetDisabled    usb;      /* 86Box-Next */
+    PixmapSetActive      modem;    /* 86Box-Next */
     PixmapSetDisabled    dynarec;
 };
 
@@ -363,6 +365,7 @@ struct MachineStatus::States {
         pixmaps.sound.load(QIcon(":/settings/qt/icons/sound.ico"));
         pixmaps.pccard.load(QIcon(":/settings/qt/icons/pcmcia.ico"));
         pixmaps.usb.load(QIcon(":/settings/qt/icons/usb.ico"));
+        pixmaps.modem.load(QIcon(":/settings/qt/icons/modem.ico"));
         pixmaps.dynarec.normal                          = QIcon(":/menuicons/qt/icons/recompiler.ico").pixmap(pixmap_size);
         pixmaps.dynarec.disabled                        = QIcon(":/menuicons/qt/icons/interpreter.ico").pixmap(pixmap_size);
 
@@ -404,6 +407,7 @@ struct MachineStatus::States {
     std::unique_ptr<ClickableLabel>            sound;
     std::unique_ptr<ClickableLabel>            pccard;   /* 86Box-Next */
     std::unique_ptr<ClickableLabel>            usb;      /* 86Box-Next */
+    std::unique_ptr<ClickableLabel>            modem;    /* 86Box-Next */
     std::unique_ptr<ClickableLabel>            dynarec;
     std::unique_ptr<QLabel>                    text;
 };
@@ -439,6 +443,28 @@ MachineStatus::updatePcCardIcon()
         any |= (pcmcia_card_type[s] > 0);
     d->pccard->setPixmap(any ? d->pixmaps.pccard.normal : d->pixmaps.pccard.disabled);
     d->pccard->setToolTip(pcCardMenu->toolTip());
+}
+
+/* 86Box-Next: the modem icon, with each modem's telephone line behind it. */
+void
+MachineStatus::setModemMenu(ModemMenu *menu)
+{
+    modemMenu = menu;
+    connect(menu, &ModemMenu::changed, this, &MachineStatus::updateModemIcon);
+}
+
+void
+MachineStatus::updateModemIcon()
+{
+    if (!d->modem || !modemMenu)
+        return;
+    const bool busy = ModemMenu::busy();
+    if (busy != modemBusy) {
+        modemBusy = busy;
+        d->modem->setPixmap(busy ? d->pixmaps.modem.active : d->pixmaps.modem.normal);
+    }
+    if (!modemMenu->menu()->isVisible())
+        d->modem->setToolTip(modemMenu->toolTip());
 }
 
 void
@@ -653,6 +679,9 @@ MachineStatus::refreshIcons()
         d->cassette.setPlay(!cassette->save);
     }
 
+    /* And whether a modem is in a call. */
+    updateModemIcon();
+
     /* Same for sound mute status. */
     if (d->sound)
         d->sound->setPixmap((sound_muted || fast_forward) ? d->pixmaps.sound.disabled : d->pixmaps.sound.normal);
@@ -807,6 +836,8 @@ MachineStatus::refresh(QStatusBar *sbar)
         sbar->removeWidget(d->pccard.get());
     if (d->usb)
         sbar->removeWidget(d->usb.get());
+    if (d->modem)
+        sbar->removeWidget(d->modem.get());
 
     if (cassette_enable) {
         d->cassette.label = std::make_unique<ClickableLabel>();
@@ -1127,6 +1158,22 @@ MachineStatus::refresh(QStatusBar *sbar)
                 d->usb->setToolTip(usbManager->toolTip());
         });
         sbar->addWidget(d->usb.get());
+    }
+
+    /* 86Box-Next: the modem icon, while a modem is plugged into a COM port: a
+       click opens each modem's line settings, which apply without a reset. */
+    d->modem.reset();
+    if (modemMenu && ModemMenu::any()) {
+        d->modem = std::make_unique<ClickableLabel>();
+        d->modem->setPixmap(d->pixmaps.modem.normal);
+        modemBusy = false;
+        connect(d->modem.get(), &ClickableLabel::clicked, this, [this](QPoint pos) {
+            QMenu *m = this->modemMenu->menu();
+            this->modemMenu->buildMenu(); /* so the size is the real one */
+            m->popup(pos - QPoint(0, m->sizeHint().height()));
+        });
+        sbar->addWidget(d->modem.get());
+        updateModemIcon();
     }
 
     d->sound = std::make_unique<ClickableLabel>();

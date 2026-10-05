@@ -1,0 +1,42 @@
+/*
+ * 86Box-Next  A fork of 86Box with extra features.
+ *
+ *             The modem menu, behind the modem icon in the status bar: what
+ *             each COM port modem's telephone line reaches, changed while
+ *             the machine runs.
+ *
+ *             Released under the GNU General Public License version 2 or
+ *             later.  See COPYING for more information.
+ */
+#ifndef QT_MODEM_MENU_HPP
+#define QT_MODEM_MENU_HPP
+
+#include <QObject>
+#include <QString>
+
+class QMenu;
+class QWidget;
+
+class ModemMenu : public QObject {
+    Q_OBJECT
+
+public:
+    explicit ModemMenu(QWidget *parent);
+
+    QMenu  *menu() const { return m_menu; }
+    QString toolTip() const;   /* each modem, its line and what it is doing */
+    static bool any();         /* a modem is plugged into some COM port */
+    static bool busy();        /* ...and one of them is in a call */
+    void        buildMenu();   /* also run before showing, to know its size */
+
+signals:
+    void changed();
+
+private:
+    void editHost(int com);
+
+    QWidget *m_parent;
+    QMenu   *m_menu;
+};
+
+#endif // QT_MODEM_MENU_HPP

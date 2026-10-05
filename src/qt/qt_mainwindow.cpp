@@ -24,6 +24,7 @@
 #include "qt_ioboard_controls.hpp"
 #include "qt_usb_manager.hpp"
 #include "qt_pccard_menu.hpp"
+#include "qt_modem_menu.hpp"
 #include "ui_qt_mainwindow.h"
 
 #include "qt_specifydimensions.h"
@@ -226,6 +227,8 @@ MainWindow::MainWindow(QWidget *parent)
     /* 86Box-Next: hot-plugging PC Cards, from the status bar. */
     pcCardMenu = new PcCardMenu(this);
     status->setPcCardMenu(pcCardMenu);
+    /* 86Box-Next: a COM port modem's telephone line, from the status bar. */
+    status->setModemMenu(new ModemMenu(this));
     /* 86Box-Next: host USB devices and the VM's USB controller, from the
        status bar too. */
     usbManager = new UsbManager(this);

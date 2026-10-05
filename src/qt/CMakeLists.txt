@@ -198,6 +198,8 @@ add_library(ui STATIC
     qt_settingspcmcia.hpp
     qt_pccard_menu.cpp
     qt_pccard_menu.hpp
+    qt_modem_menu.cpp
+    qt_modem_menu.hpp
     qt_settings_bus_tracking.cpp
     qt_settings_bus_tracking.hpp
     qt_settings_completer.cpp

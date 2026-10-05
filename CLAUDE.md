@@ -47,6 +47,16 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   activity trace (USB menu / BOX86NEXT_USB_TRACE=1) to usb_trace.txt.
   Tests: `tests/usb/` (plain C, no framework). Upstream's `src/usb.c` is the
   southbridge stub and is untouched.
+- COM port modems (`src/char/char_modem.c`, PeepeeBox's): Diamond SupraExpress 56e PRO and
+  ELSA MicroLink 56k, chosen as a COM port's device in Settings > Ports. AT engine with ATI
+  answers that funworld's modem table resolves to exactly one part; the line is dead or dials
+  a TCP host (any number), with a real call's timing and sounds (`modem_sound.c`, a pool of
+  speakers whose sound handlers are registered once per sound reset: `sound_has_handler()`).
+  `DEVICE_HOTPLUG`, so attaching, removing or reconfiguring one is a soft change (the soft
+  settings path refreshes the status bar). Status bar modem icon (`src/qt/qt_modem_menu.cpp`,
+  shown while a COM port is configured with a modem) sets each modem's line live through
+  `char_modem.h` (applied on the emulation thread; a call in progress gets NO CARRIER) and saves
+  it in the modem's section (`<name> #<COM+1>`). Tests: `tests/modem/` (FN_SYS's tables).
 - Upstream's CI workflows and Dependabot are disabled/removed in this repo; only
   `sync-upstream.yml` runs.
 - Build number in the title bar / About box: `.build-number` (git-ignored, repo root)

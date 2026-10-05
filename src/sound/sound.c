@@ -664,6 +664,19 @@ sound_add_handler(void (*get_buffer)(int32_t *buffer, uint16_t len, void *priv),
     sound_handlers_num++;
 }
 
+/* 86Box-Next: lets a hot-pluggable device that is closed and opened again
+   without a hard reset (which is what clears the table) find its handler
+   still there instead of adding a second one. */
+int
+sound_has_handler(void (*get_buffer)(int32_t *buffer, uint16_t len, void *priv), void *priv)
+{
+    for (int c = 0; c < sound_handlers_num; c++) {
+        if ((sound_handlers[c].get_buffer == get_buffer) && (sound_handlers[c].priv == priv))
+            return 1;
+    }
+    return 0;
+}
+
 void
 music_add_handler(void (*get_buffer)(int32_t *buffer, uint16_t len, void *priv), void *priv)
 {
