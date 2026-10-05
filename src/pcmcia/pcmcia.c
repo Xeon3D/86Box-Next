@@ -36,7 +36,12 @@
  *             own settings), inside the "PC Card slots" device, which closes
  *             them all at a hard reset.  A request from the UI thread is
  *             carried out on the emulation thread by the controller's poll,
- *             and the socket sees the card come or go (pcic_pd6722.c).
+ *             and the socket sees the card come or go (pcic_pd6722.c).  One
+ *             card for another is two events, as by hand: the old card out,
+ *             the socket empty for SWAP_POLLS, then the new one in.  Both at
+ *             once are one card detect change with a card still there, which
+ *             Windows 9x takes for no removal at all -- the old card's
+ *             drivers stay, and it handles no change in that socket again.
  *
  *             Released under the GNU General Public License version 2 or
  *             later.  See COPYING for more information.
@@ -92,6 +97,7 @@ static int           live_type[PCMCIA_SOCKETS];
 static void         *live_priv[PCMCIA_SOCKETS];
 static volatile int  want_type[PCMCIA_SOCKETS];
 static volatile int  want_pending[PCMCIA_SOCKETS];
+static int           swap_wait[PCMCIA_SOCKETS];   /* polls until the new card goes in */
 static uint8_t       scsi_bus[PCMCIA_SOCKETS];   /* 0xFF: none kept yet */
 
 static void
@@ -127,6 +133,7 @@ slots_init(UNUSED(const device_t *info))
     }
     for (int s = 0; s < PCMCIA_SOCKETS; s++) {
         want_pending[s] = 0;
+        swap_wait[s]    = 0;
         card_open(s, pcmcia_card_type[s]);
     }
     return &slots_running;
@@ -182,18 +189,29 @@ pcmcia_request_card(int s, int type)
     want_pending[s]     = 1;
 }
 
-/* On the emulation thread (the controller's poll): carry the requests out.
-   A card for another is the old one out and the new one in. */
+/* On the emulation thread (the controller's poll, every 10 ms): carry the
+   requests out.  A card for another is the old one out now, the new one in
+   after the socket has been seen empty. */
+#define SWAP_POLLS 200   /* 2 s: the guest's card services see the socket empty */
+
 void
 pcmcia_slots_poll(void)
 {
     if (!slots_running)
         return;
     for (int s = 0; s < PCMCIA_SOCKETS; s++) {
-        if (!want_pending[s])
-            continue;
-        want_pending[s] = 0;
-        if (want_type[s] != live_type[s])
+        if (want_pending[s]) {
+            want_pending[s] = 0;
+            if (want_type[s] != live_type[s]) {
+                if (live_type[s] && want_type[s]) {
+                    card_close(s);
+                    swap_wait[s] = SWAP_POLLS;
+                } else if (!swap_wait[s])
+                    card_open(s, want_type[s]);
+            }
+        }
+        /* Whatever was asked for meanwhile -- another card, or none -- goes in. */
+        if (swap_wait[s] && !--swap_wait[s])
             card_open(s, want_type[s]);
     }
 }

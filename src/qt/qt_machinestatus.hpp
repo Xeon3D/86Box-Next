@@ -70,6 +70,8 @@ public:
     static bool hasCassette();
     static bool hasIDE();
     static bool hasSCSI();
+    static bool hasAnySCSI();
+    static bool pcmciaHasSCSI();
     static void iterateFDD(const std::function<void(int i)> &cb);
     static void iterateCDROM(const std::function<void(int i)> &cb);
     static void iterateRDisk(const std::function<void(int i)> &cb);
@@ -101,6 +103,7 @@ private:
     QMenu                  *soundMenu;
     QMenu                  *dynarecMenu;
     class PcCardMenu       *pcCardMenu = nullptr;
+    bool                    pcCardScsi = false;   /* a SCSI PC Card was in a socket */
     class UsbManager       *usbManager = nullptr;
     class ModemMenu        *modemMenu  = nullptr;
     bool                    modemBusy  = false;
