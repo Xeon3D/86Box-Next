@@ -30,6 +30,7 @@ public:
 
     int  changed();
     void save(int soft);
+    int  socketCard(int s) const;   /* the card chosen now; 0 with the controller off */
 
 public slots:
     void onCurrentMachineChanged(int machineId);

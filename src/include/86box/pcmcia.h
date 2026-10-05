@@ -89,6 +89,11 @@ extern int         pcmcia_card_get_from_internal_name(const char *s);
 extern int         pcmcia_card_has_config(int card);
 extern int         pcmcia_card_is_network(int card);
 extern int         pcmcia_card_has_modem(int card);
+extern int         pcmcia_card_is_scsi(int card);
+
+/* A SCSI card's bus: its socket's, kept from the first time a SCSI card is
+   in it to the next hard reset (pcmcia.c); 0xFF when none is left. */
+extern uint8_t     pcmcia_scsi_bus(int socket);
 #ifdef EMU_DEVICE_H
 extern const device_t *pcmcia_card_get_device(int card);
 #endif
@@ -211,6 +216,7 @@ extern int pccard_cis_te100pc16(uint8_t *buf, const uint8_t mac[6]);
 extern int pccard_cis_3c589d(uint8_t *buf);
 extern int pccard_cis_sram(uint8_t *buf, uint32_t size);
 extern int pccard_cis_flash(uint8_t *buf, uint32_t size);
+extern int pccard_cis_apa1460(uint8_t *buf);
 /* A multi-function card's: into buf (512 bytes), with where each function's
    configuration registers are. */
 extern int pccard_cis_3c562d(uint8_t *buf, const uint8_t mac[6], uint32_t *lan_cfg, uint32_t *modem_cfg);

@@ -17,6 +17,7 @@ public:
     ~SettingsOtherPeripherals();
 
     int  changed();
+    int  pcmciaCard(int s) const;   /* the PC Card chosen for socket s now */
 
     void restore();
     void save(int soft);

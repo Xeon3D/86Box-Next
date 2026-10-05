@@ -427,6 +427,25 @@ test_3c589d(void)
     CHECK(!strcmp(id, "PCMCIA\\3Com_Corporation-3C589D-9CA6"), "3C589D: Windows 9x ID %s (NET3C589.INF's)", id);
 }
 
+/* The APA-1460: the Technical Reference's ranges, and the ID Windows 98's
+   SCSI.INF lists -- with the comma of "Adaptec, Inc." made an underscore. */
+static void
+test_apa1460(void)
+{
+    uint8_t    cis[256];
+    cis_info_t ci;
+    char       id[128];
+    const int  n = pccard_cis_apa1460(cis);
+
+    check_card("APA-1460", cis, n, &ci);
+    CHECK(!strcmp(ci.vers[0], "Adaptec, Inc.") && !strcmp(ci.vers[1], "APA-1460 SCSI Host Adapter"),
+          "APA-1460: VERS_1 as pcmcia-cs's config binds aha152x_cs (%s, %s)", ci.vers[0], ci.vers[1]);
+    CHECK(ci.config_base == 0x2000 && ci.rmask == 0x01, "APA-1460: COR alone, at 2000h (%X)", ci.config_base);
+    CHECK(ci.io_lines == 10 && ci.io_len == 32, "APA-1460: 32 ports on 10 lines (%d on %d)", ci.io_len, ci.io_lines);
+    pccard_cis_win9x_id(cis, n, id, sizeof(id));
+    CHECK(!strcmp(id, "PCMCIA\\Adaptec__Inc.-APA-1460_SCSI_Host_Adapter-BE89"), "APA-1460: Windows 9x ID %s (SCSI.INF's)", id);
+}
+
 static void
 test_sram(void)
 {
@@ -482,6 +501,7 @@ main(void)
     test_win9x_crc();
     test_te100();
     test_3c589d();
+    test_apa1460();
     test_sram();
     test_flash();
     printf("%d checks, %d failures\n", checks, failures);

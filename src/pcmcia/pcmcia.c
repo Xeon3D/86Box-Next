@@ -20,6 +20,14 @@
  *             net_cards_conf, after the four of the Network settings, so it
  *             takes none of those.
  *
+ *             A SCSI card (the APA-1460) has its socket's SCSI bus: the next
+ *             free one, kept for the socket from the hard reset that finds a
+ *             SCSI card set for it -- after the machine's, the sound cards'
+ *             and the SCSI cards' buses, socket A's before B's, as scsi_plan()
+ *             shows them -- or from the first time one is put into it, to the
+ *             next hard reset.  So the disks on that bus are there whenever
+ *             the card is, however often it comes and goes.
+ *
  *             PC Cards are hot-pluggable: the PC Card status bar icon puts a
  *             card into a socket or takes it out while the machine runs.  So
  *             the cards are not in the device list -- whose devices live from
@@ -44,6 +52,7 @@
 #include <86box/thread.h>
 #include <86box/timer.h>
 #include <86box/network.h>
+#include <86box/scsi.h>
 #include <86box/pcmcia.h>
 #include <86box/plat_unused.h>
 
@@ -52,6 +61,7 @@ extern const device_t threec589d_device;
 extern const device_t pccard_sram_device;
 extern const device_t pccard_flash_device;
 extern const device_t pccard_3c562d_device;
+extern const device_t apa1460_device;
 
 int  pcmcia_enabled;
 int  pcmcia_card_type[PCMCIA_SOCKETS];
@@ -62,15 +72,17 @@ static const struct {
     const device_t *dev;
     int             network;
     int             modem;   /* has a modem of its own (char_modem.c) */
+    int             scsi;    /* a SCSI host adapter: takes its socket's bus */
 } cards[] = {
     // clang-format off
-    { &device_none,          0, 0 },
-    { &threec589d_device,    1, 0 },
-    { &te100pc16_device,     1, 0 },
-    { &pccard_3c562d_device, 1, 1 },
-    { &pccard_sram_device,   0, 0 },
-    { &pccard_flash_device,  0, 0 },
-    { NULL,                  0, 0 }
+    { &device_none,          0, 0, 0 },
+    { &threec589d_device,    1, 0, 0 },
+    { &te100pc16_device,     1, 0, 0 },
+    { &pccard_3c562d_device, 1, 1, 0 },
+    { &apa1460_device,       0, 0, 1 },
+    { &pccard_sram_device,   0, 0, 0 },
+    { &pccard_flash_device,  0, 0, 0 },
+    { NULL,                  0, 0, 0 }
     // clang-format on
 };
 
@@ -80,6 +92,7 @@ static int           live_type[PCMCIA_SOCKETS];
 static void         *live_priv[PCMCIA_SOCKETS];
 static volatile int  want_type[PCMCIA_SOCKETS];
 static volatile int  want_pending[PCMCIA_SOCKETS];
+static uint8_t       scsi_bus[PCMCIA_SOCKETS];   /* 0xFF: none kept yet */
 
 static void
 card_close(int s)
@@ -107,6 +120,11 @@ static void *
 slots_init(UNUSED(const device_t *info))
 {
     slots_running = 1;
+    for (int s = 0; s < PCMCIA_SOCKETS; s++) {
+        scsi_bus[s] = 0xff;
+        if (pcmcia_card_is_scsi(pcmcia_card_type[s]))
+            pcmcia_scsi_bus(s);
+    }
     for (int s = 0; s < PCMCIA_SOCKETS; s++) {
         want_pending[s] = 0;
         card_open(s, pcmcia_card_type[s]);
@@ -227,6 +245,23 @@ int
 pcmcia_card_has_modem(int card)
 {
     return (card > 0) && (card < pcmcia_card_count()) && cards[card].modem;
+}
+
+int
+pcmcia_card_is_scsi(int card)
+{
+    return (card > 0) && (card < pcmcia_card_count()) && cards[card].scsi;
+}
+
+/* The socket's SCSI bus, taken now if it has none yet; 0xFF: none left. */
+uint8_t
+pcmcia_scsi_bus(int socket)
+{
+    if ((socket < 0) || (socket >= PCMCIA_SOCKETS))
+        return 0xff;
+    if (scsi_bus[socket] == 0xff)
+        scsi_bus[socket] = scsi_get_bus();
+    return scsi_bus[socket];
 }
 
 const device_t *

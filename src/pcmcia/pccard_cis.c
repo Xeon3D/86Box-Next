@@ -15,7 +15,8 @@
  *
  *             The Windows 9x ID of a single-function card is
  *             PCMCIA\<string 1>-<string 2>-<CRC>: the first two VERS_1
- *             strings, printable characters only, spaces made underscores,
+ *             strings, printable characters only, spaces and commas made
+ *             underscores (SCSI.INF's "Adaptec__Inc." is "Adaptec, Inc."),
  *             and a 16-bit checksum PCCARD.VXD takes through CONFIGMG's
  *             CM_Get_CRC_CheckSum over the bodies of the DEVICE, VERS_1
  *             (through its second string), CONFIG, CFTABLE_ENTRY and MANFID
@@ -305,7 +306,7 @@ pccard_cis_win9x_id(const uint8_t *cis, int len, char *out, int outlen)
             int k = 0;
             for (; (d < e) && *d && (*d != 0xff); d++)
                 if ((*d >= 0x20) && (*d < 0x7f) && (k < 63))
-                    ids[s][k++] = (*d == ' ') ? '_' : (char) *d;
+                    ids[s][k++] = ((*d == ' ') || (*d == ',')) ? '_' : (char) *d;
             ids[s][k] = '\0';
             if ((d < e) && (*d == 0))
                 d++;
@@ -513,5 +514,32 @@ pccard_cis_3c562d(uint8_t *buf, const uint8_t mac[6], uint32_t *lan_cfg, uint32_
         *lan_cfg = 0x1800;
     if (modem_cfg)
         *modem_cfg = 0x1900;
+    return c.len;
+}
+
+/* Adaptec APA-1460 SlimSCSI (scsi_apa1460.c), from its Technical Reference
+   (Adaptec 510671-00 rev. A, chapter 5): "Adaptec, Inc.", "APA-1460 SCSI
+   Host Adapter", "Version 0.01"; the Configuration Option Register at 2000h;
+   32 ports, 16-bit, on ten address lines at 340h or 140h; IRQ 9 to 12,
+   level.  The card's register is not a configuration index but SRESET, IOEN
+   (bit 3) and PRIMARY (bit 0, 340h), so the entries' indexes are the values
+   that enable each range: 09h for 340h (the default), 08h for 140h.
+   Windows 98's SCSI.INF knows it as
+   PCMCIA\Adaptec__Inc.-APA-1460_SCSI_Host_Adapter-BE89 (SPARROW.MPD). */
+int
+pccard_cis_apa1460(uint8_t *buf)
+{
+    static const char *vers[] = { "Adaptec, Inc.", "APA-1460 SCSI Host Adapter", "Version 0.01", "" };
+    pccard_cis_t       c;
+
+    pccard_cis_init(&c, buf, 256);
+    pccard_cis_tuple(&c, CISTPL_DEVICE, no_device, 3);
+    pccard_cis_vers1(&c, vers, 4);
+    pccard_cis_config(&c, 0x2000, 0x01, 0x09);                  /* COR */
+    pccard_cis_cftable_io(&c, 0x49, 0x0340, 32, 10, 1, 0x1e00);
+    pccard_cis_cftable_io(&c, 0x08, 0x0140, 32, 10, 1, 0x1e00);
+    pccard_cis_tuple(&c, CISTPL_NO_LINK, NULL, 0);
+    pccard_cis_end(&c);
+    pccard_cis_match_id(&c, 0xbe89);
     return c.len;
 }
