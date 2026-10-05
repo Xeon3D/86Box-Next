@@ -17,6 +17,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "isp.h"
 #include "isp_plat.h"
 
 typedef struct isp_nat isp_nat_t;
@@ -35,6 +36,11 @@ typedef struct isp_nat_config {
 extern isp_nat_t *isp_nat_new(const isp_nat_config_t *cfg, char *err, size_t err_len);
 extern void       isp_nat_free(isp_nat_t *nat);
 extern void       isp_nat_input(isp_nat_t *nat, const uint8_t *packet, size_t len);
+
+/* A host port to the guest (libslirp's hostfwd): 0 if bound, -1 if the host
+   port cannot be had. */
+extern int  isp_nat_add_forward(isp_nat_t *nat, const isp_forward_t *f);
+extern void isp_nat_remove_forward(isp_nat_t *nat, const isp_forward_t *f);
 
 /* One pass of the owner's loop: wait for libslirp's sockets or for `wake`,
    at most `timeout_ms` and no later than libslirp's next deadline, then let

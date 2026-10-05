@@ -988,6 +988,7 @@ pap_input(ppp_t *ppp, const uint8_t *pkt, size_t len)
 
     if (!ppp->authenticated)
         plog(ppp, "PAP: \"%s\" let in", user);
+    snprintf(ppp->peer_user, sizeof(ppp->peer_user), "%s", user);
     if (ppp->phase == PPP_PHASE_AUTHENTICATE) {
         ppp->authenticated = 1;
         ppp->phase         = PPP_PHASE_NETWORK;

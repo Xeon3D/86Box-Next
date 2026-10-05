@@ -1,8 +1,9 @@
 #
-# 86Box-Next: the virtual ISP -- a PPP server and a libslirp NAT per call --
-# behind the modems' "Internet" line (char_modem.c), and isp-server, the same
-# behind a TCP port.  The `isp` library depends on nothing of the emulator's,
-# so isp-server and the tests link it on its own.
+# 86Box-Next: isp-server, the virtual ISP -- a PPP server and a libslirp NAT
+# per call, with a status and control page in the browser.  A program of its
+# own: the emulator's modems reach it over their TCP line and are not linked
+# with any of this.  The `isp` library (the core) and `isp_web` (the page)
+# depend on nothing of the emulator's, so the tests link them on their own.
 #
 # libslirp by plain link flags rather than the PkgConfig::SLIRP imported
 # target, which is only visible below src/network, not to tests/.
@@ -18,7 +19,7 @@ add_library(isp STATIC
     ppp_session.c
 )
 target_include_directories(isp
-    PUBLIC  ${PROJECT_SOURCE_DIR}/src/include ${CMAKE_CURRENT_SOURCE_DIR}
+    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}
     PRIVATE ${ISP_SLIRP_INCLUDE_DIRS}
 )
 target_compile_options(isp PRIVATE ${ISP_SLIRP_CFLAGS_OTHER})
@@ -39,11 +40,10 @@ if(WIN32)
         target_link_libraries(isp PUBLIC iconv)
     endif()
     if(MINGW AND STATIC_BUILD)
-        # Whatever links this links libslirp and glib statically -- the
-        # emulator, isp-server and the tests alike.  And a static glib cleans
-        # up after each thread from a TLS callback, which is only called if
-        # the image has a TLS directory: MinGW only links one in when
-        # something refers to it.
+        # Whatever links this links libslirp and glib statically -- isp-server
+        # and the tests alike.  And a static glib cleans up after each thread
+        # from a TLS callback, which is only called if the image has a TLS
+        # directory: MinGW only links one in when something refers to it.
         target_link_options(isp INTERFACE "-static" "-Wl,-u,_tls_used")
     endif()
 else()
@@ -51,10 +51,26 @@ else()
     target_link_libraries(isp PUBLIC Threads::Threads)
 endif()
 
-target_link_libraries(86Box isp)
+# The page, isp_web_page.html, goes into the program as a C string.
+add_custom_command(
+    OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/isp_web_page.h
+    COMMAND ${CMAKE_COMMAND} -DIN=${CMAKE_CURRENT_SOURCE_DIR}/isp_web_page.html
+            -DOUT=${CMAKE_CURRENT_BINARY_DIR}/isp_web_page.h -P ${CMAKE_CURRENT_SOURCE_DIR}/embed.cmake
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/isp_web_page.html ${CMAKE_CURRENT_SOURCE_DIR}/embed.cmake
+    VERBATIM
+)
+add_library(isp_web OBJECT
+    isp_web.c
+    ${CMAKE_CURRENT_BINARY_DIR}/isp_web_page.h
+)
+target_include_directories(isp_web PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
+target_link_libraries(isp_web PUBLIC isp)
 
 add_executable(isp-server isp_server.c)
-target_link_libraries(isp-server PRIVATE isp)
+target_link_libraries(isp-server PRIVATE isp_web isp)
+if(WIN32)
+    target_link_libraries(isp-server PRIVATE shell32)
+endif()
 if(MINGW)
     # A console program, whatever the emulator's own link flags say.
     target_link_options(isp-server PRIVATE "-mconsole")

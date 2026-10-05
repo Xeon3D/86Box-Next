@@ -163,7 +163,6 @@ static const device_config_t c562_config[] = {
         .selection      = {
             { .description = "Not connected",             .value = 0 },
             { .description = "Dial out to a TCP/IP host", .value = 1 },
-            { .description = "Internet (built-in ISP)",   .value = 2 },
             { .description = ""                                      }
         },
         .bios           = { { 0 } }

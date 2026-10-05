@@ -15,9 +15,10 @@
  *
  * 86Box-Next: the line's bytes, exactly -- short sends, would-block, a full
  * receive ring, CTS, EOF and errors, DTR, +++ and ATH, two modems at once --
- * and calls to the built-in ISP (the real one, src/network/isp/, with libslirp)
- * by a scripted PPP client talking through the modem as a guest's UART would,
- * routed to a UDP socket on the host's loopback.
+ * and calls to isp-server -- its core, src/network/isp/, with libslirp, behind
+ * the fake sockets -- by a scripted PPP client talking through the modem as a
+ * guest's UART would, routed to a UDP socket on the host's loopback and from
+ * one guest to the other.
  */
 #include <stdarg.h>
 #include <stdint.h>
@@ -31,7 +32,7 @@
 #include <86box/thread.h>
 #include <86box/modem_sound.h>
 #include <86box/char_modem.h>
-#include <86box/isp.h>
+#include "isp.h" /* isp-server's core, behind the fake sockets */
 #ifndef _WIN32
 #    include <arpa/inet.h>
 #    include <fcntl.h>
@@ -120,13 +121,14 @@ uint32_t modem_sound_handshake_ms(int v90) { (void) v90; return 2000; }
 
 /* The config the device would have read out of the ini.  Blank identity strings,
    so the model table's own answers are what gets tested. */
-static int fake_line = 0; /* 0 dead, 1 a TCP host that always answers */
+static int fake_line     = 0;  /* 0 dead, 1 a TCP host that always answers */
+static int fake_cfg_line = -1; /* what "line" says when it is not fake_line */
 
 int
 device_get_config_int(const char *name)
 {
     if (!strcmp(name, "line"))
-        return fake_line;
+        return (fake_cfg_line >= 0) ? fake_cfg_line : fake_line;
     if (!strcmp(name, "host_port"))
         return 23;
     if (!strcmp(name, "connect_rate"))
@@ -151,8 +153,9 @@ uint32_t plat_get_ticks(void) { return fake_ticks; }
    (a short send), to report "would block" for a number of calls, to fail,
    and to deliver bytes, an EOF or an error. */
 typedef struct {
-    int      used;
-    int      closed;
+    int            used;
+    int            closed;
+    isp_session_t *isp; /* connected to isp-server's address: its core, in-process */
     uint8_t  sent[65536];
     size_t   sent_len;
     unsigned send_calls;
@@ -195,11 +198,34 @@ plat_netsocket_create(int t)
 void
 plat_netsocket_close(SOCKET s)
 {
-    fsock(s)->closed = 1;
-    fsock(s)->used   = 0;
+    fake_sock_t *f = fsock(s);
+
+    if (f->isp != NULL) {
+        isp_session_close(f->isp); /* the TCP connection drops: the call ends */
+        f->isp = NULL;
+    }
+    f->closed = 1;
+    f->used   = 0;
 }
 
-int plat_netsocket_connect(SOCKET s, const char *h, unsigned short p) { (void) s; (void) h; (void) p; return fake_line ? 0 : -1; }
+/* With fake_isp set, a connect to where isp-server listens reaches a session
+   of the ISP's own core: everything behind the modem's TCP line is real. */
+static int fake_isp = 0;
+
+int
+plat_netsocket_connect(SOCKET s, const char *h, unsigned short p)
+{
+    if (!fake_line)
+        return -1;
+    if (fake_isp && !strcmp(h, CHAR_MODEM_ISP_HOST) && (p == CHAR_MODEM_ISP_PORT)) {
+        char err[128];
+
+        fsock(s)->isp = isp_session_open(NULL, err, sizeof(err));
+        return (fsock(s)->isp != NULL) ? 0 : -1;
+    }
+    return 0;
+}
+
 int plat_netsocket_connected(SOCKET s) { (void) s; return fake_line ? 1 : -1; }
 
 int
@@ -209,6 +235,12 @@ plat_netsocket_send(SOCKET s, const unsigned char *d, unsigned int n, int *w)
 
     f->send_calls++;
     *w = 0;
+    if (f->isp != NULL) {
+        const size_t taken = isp_session_write(f->isp, d, n);
+
+        *w = (taken == 0);
+        return (taken == 0) ? -1 : (int) taken;
+    }
     if (f->send_error)
         return -1;
     if (f->send_block > 0) {
@@ -231,6 +263,16 @@ plat_netsocket_receive(SOCKET s, unsigned char *d, unsigned int n, int *w)
     fake_sock_t *f = fsock(s);
 
     *w = 0;
+    if (f->isp != NULL) {
+        const size_t got = isp_session_read(f->isp, d, n);
+
+        if (got > 0)
+            return (int) got;
+        if (isp_session_ended(f->isp))
+            return 0; /* isp-server hangs up: the connection closes */
+        *w = 1;
+        return -1;
+    }
     if (f->rx_pos < f->rx_len) {
         if (n > (f->rx_len - f->rx_pos))
             n = (unsigned int) (f->rx_len - f->rx_pos);
@@ -1001,8 +1043,9 @@ udp_round_trip(ppp_client_t *c, SOCKET hs, uint16_t hport, const char *msg)
     return (n == 4) && !memcmp(back, "pong", 4);
 }
 
-/* A call through the modem to the ISP, ended by the guest's own PPP: the ISP
-   hangs up, and the modem says so. */
+/* Calls through the modems to isp-server -- its core, in-process, behind the
+   fake sockets -- over the TCP line that "Dial the ISP" sets up.  Ended by the
+   guest's own PPP, the ISP hangs up, and the modem says so. */
 static void
 run_isp(void)
 {
@@ -1015,12 +1058,15 @@ run_isp(void)
     SOCKET       hs;
     uint16_t     hport;
 
-    printf("\n== the built-in ISP, through the modems ==\n");
+    printf("\n== isp-server, dialled through the modems ==\n");
     hs = udp_listener(&hport);
 
-    fake_line     = 0; /* no TCP host anywhere: everything here is the ISP */
+    fake_line     = 1;
+    fake_isp      = 1;
     fake_instance = 2;
+    fake_cfg_line = 2; /* saved by the day-old built-in ISP */
     d2            = char_modem_supra_com_device.init(&char_modem_supra_com_device);
+    fake_cfg_line = -1;
     u2.port       = tp;
     u2.dev        = d2;
     fake_instance = 3;
@@ -1029,25 +1075,22 @@ run_isp(void)
     u3.dev        = d3;
     fake_instance = 2;
 
-    char_modem_set_line(1, CHAR_MODEM_LINE_ISP, "", 23);
-    char_modem_set_line(2, CHAR_MODEM_LINE_ISP, "", 23);
-    expect("the line reads back as the ISP",
-           (char_modem_get_line(1, host, sizeof(host), &port) == CHAR_MODEM_LINE_ISP) ? "isp" : "not", "isp");
-    expect("...and is saved as 2", (saved_line == 2) ? "2" : "not", "2");
+    expect("a saved line 2 is the dial to isp-server",
+           ((char_modem_get_line(1, host, sizeof(host), &port) == CHAR_MODEM_LINE_TCP) &&
+            !strcmp(host, CHAR_MODEM_ISP_HOST) && (port == CHAR_MODEM_ISP_PORT)) ? "yes" : "no", "yes");
 
-    /* A bare ATD reaches nobody. */
+    /* What "Dial the ISP" in the modem menu does. */
+    char_modem_set_line(2, CHAR_MODEM_LINE_TCP, CHAR_MODEM_ISP_HOST, CHAR_MODEM_ISP_PORT);
+    expect("\"Dial the ISP\" is a TCP line to it, saved",
+           ((saved_line == CHAR_MODEM_LINE_TCP) && !strcmp(saved_host, CHAR_MODEM_ISP_HOST) &&
+            (saved_port == CHAR_MODEM_ISP_PORT)) ? "yes" : "no", "yes");
+
+    /* Any number: the ISP answers, with the call's whole ceremony. */
     tp  = u2.port;
     dev = d2;
     send_str("\r");
     drain(buf, sizeof(buf));
-    at("ATE0X4");
-    send_str("ATD\r");
-    drain(buf, sizeof(buf));
-    fake_ticks += 9000;
-    drain(buf, sizeof(buf));
-    expect("ATD with no number: NO CARRIER", buf, "NO CARRIER");
-
-    /* Any number: the ISP answers, with the call's whole ceremony. */
+    at("ATE0");
     send_str("ATDT0191 555 0000\r");
     drain(buf, sizeof(buf));
     expect("calling", (char_modem_get_state(1) == CHAR_MODEM_CALLING) ? "calling" : "not", "calling");
@@ -1083,6 +1126,17 @@ run_isp(void)
     expect("COM2: UDP to the host and back", udp_round_trip(&c2, hs, hport, "via COM2") ? "yes" : "no", "yes");
     expect("COM3: UDP to the host and back", udp_round_trip(&c3, hs, hport, "via COM3") ? "yes" : "no", "yes");
 
+    /* Guest LAN: one modem's guest reaches the other's. */
+    {
+        uint8_t got[64];
+        int     n;
+
+        ppp_client_send_udp(&c2, c3.my_ip, 4000, 4001, (const uint8_t *) "neighbour", 9);
+        n = ppp_client_recv_udp(&c3, 4001, got, sizeof(got), NULL, NULL, 3000);
+        expect("COM2's guest reaches COM3's at its address",
+               ((n == 9) && !memcmp(got, "neighbour", 9)) ? "yes" : "no", "yes");
+    }
+
     /* COM3's line is unplugged mid-call; COM2 carries on. */
     tp  = u3.port;
     dev = d3;
@@ -1112,7 +1166,28 @@ run_isp(void)
     expect("...PPP up", ppp_client_connect(&c2, 10000) ? "up" : "down", "up");
     expect("...on the address it had", (c2.my_ip == 0x0a56010f) ? "10.86.1.15" : ppp_client_ip_str(c2.my_ip), "10.86.1.15");
 
-    /* The emulator closes with the call up. */
+    /* The ISP operator hangs up on COM2 (the status page's button). */
+    expect("the ISP hangs up on the call", isp_hangup_call(1) ? "found" : "none", "found");
+    {
+        const uint32_t until = ppp_client_ms() + 8000;
+
+        /* The guest reads its line until it has acked the Terminate-Request;
+           only then does anything else read the modem's output. */
+        c2.terminated = 0;
+        while (!c2.terminated && ((int32_t) (ppp_client_ms() - until) < 0)) {
+            ppp_client_poll(&c2);
+            sleep_ms(10);
+        }
+        buf[0] = '\0';
+        while (dcd() && ((int32_t) (ppp_client_ms() - until) < 0)) {
+            drain(buf, sizeof(buf));
+            sleep_ms(10);
+        }
+        expect("...the guest is told, then NO CARRIER", (c2.terminated && strstr(buf, "NO CARRIER")) ? "yes" : "no", "yes");
+    }
+
+    /* The emulator closes with a call up. */
+    expect("COM2 dials once more", call_up("0191") ? "up" : "down", "up");
     char_modem_supra_com_device.close(d2);
     char_modem_elsa_com_device.close(d3);
     {
@@ -1123,6 +1198,8 @@ run_isp(void)
                ((s != NULL) && (isp_session_number(s) == 1)) ? "freed" : "held", "freed");
         isp_session_close(s);
     }
+    fake_isp  = 0;
+    fake_line = 0;
 #ifdef _WIN32
     closesocket(hs);
 #else

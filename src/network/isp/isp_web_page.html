@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>86Box-Next ISP</title>
+<style>
+:root {
+  --bg: #f4f5f7; --card: #ffffff; --text: #1d2330; --muted: #667085; --line: #e3e6eb;
+  --accent: #2f6fdb; --accent-text: #ffffff; --ok: #1f8a4c; --warn: #b26b00; --bad: #c0362c;
+  --chip: #eef1f5;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c; --card: #1c2027; --text: #e6e8ec; --muted: #9aa3b2; --line: #2c323b;
+    --accent: #5b8ff0; --accent-text: #0d1117; --ok: #4cc27f; --warn: #e0a64a; --bad: #ef6b5f;
+    --chip: #262b33;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+       font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { padding: 20px 24px 8px; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+h1 { font-size: 20px; margin: 0; font-weight: 650; }
+.sub { color: var(--muted); }
+.live { margin-left: auto; color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+.dot.lost { background: var(--bad); }
+main { padding: 8px 24px 32px; display: grid; gap: 16px; max-width: 1200px; }
+section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; overflow-x: auto; }
+h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+td.num { font-variant-numeric: tabular-nums; }
+tr:last-child td { border-bottom: none; }
+.empty { color: var(--muted); padding: 8px 0; }
+.chip { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--chip); font-size: 12px; }
+.s-on { color: var(--ok); } .s-neg { color: var(--warn); } .s-end { color: var(--muted); } .s-bad { color: var(--bad); }
+button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--text);
+         border-radius: 7px; padding: 5px 12px; cursor: pointer; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button.danger { color: var(--bad); }
+button:disabled { opacity: .5; cursor: default; }
+input, select { font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--line);
+                border-radius: 7px; padding: 5px 8px; }
+input[type=number] { width: 90px; }
+.form { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin-top: 12px; }
+.form label, .grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+.check { flex-direction: row !important; align-items: center; gap: 8px !important; color: var(--text) !important; font-size: 14px !important; }
+.hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.msg { min-height: 20px; margin-top: 10px; font-size: 13px; }
+.msg.err { color: var(--bad); } .msg.ok { color: var(--ok); }
+code { background: var(--chip); padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>86Box-Next ISP</h1>
+  <span class="sub" id="endpoint">&nbsp;</span>
+  <span class="live"><span class="dot" id="dot"></span><span id="livetext">connecting…</span></span>
+</header>
+<main>
+  <section>
+    <h2>Calls</h2>
+    <table>
+      <thead><tr>
+        <th>#</th><th>From</th><th>Guest address</th><th>State</th><th>User</th><th>On line</th>
+        <th>To guest</th><th>From guest</th><th>Errors</th><th>Speed</th><th>Port forwards</th><th></th>
+      </tr></thead>
+      <tbody id="calls"></tbody>
+    </table>
+    <div class="empty" id="nocalls">No calls.</div>
+  </section>
+
+  <section>
+    <h2>Port forwards</h2>
+    <table>
+      <thead><tr><th>Call</th><th>Protocol</th><th>Host port</th><th>Guest port</th><th>Listens on</th><th>Now</th><th></th></tr></thead>
+      <tbody id="fwds"></tbody>
+    </table>
+    <div class="empty" id="nofwds">None. A forward makes a host port reach a port on a guest: a BBS, a web or FTP server, a game host.</div>
+    <div class="form">
+      <label>Call <input type="number" id="f-n" min="1" value="1"></label>
+      <label>Protocol <select id="f-p"><option>tcp</option><option>udp</option></select></label>
+      <label>Host port <input type="number" id="f-h" min="1" max="65535" placeholder="2121"></label>
+      <label>Guest port <input type="number" id="f-g" min="1" max="65535" placeholder="21"></label>
+      <label class="check"><input type="checkbox" id="f-all"> every interface (the LAN too)</label>
+      <button class="primary" id="f-add">Add</button>
+    </div>
+    <div class="hint">Calls are numbered in the order they come in, lowest free number first; a forward stays with its number, so it applies to whichever call has it.</div>
+    <div class="msg" id="f-msg"></div>
+  </section>
+
+  <section>
+    <h2>Settings</h2>
+    <div class="grid">
+      <label class="check"><input type="checkbox" id="s-lan"> Guests can reach each other</label>
+      <label class="check"><input type="checkbox" id="s-thr"> Hold calls to modem speed</label>
+      <label>Speed (bit/s)
+        <select id="s-rate">
+          <option>57600</option><option>53333</option><option>48000</option><option>33600</option>
+          <option>28800</option><option>19200</option><option>14400</option><option>9600</option><option>2400</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" id="s-pap"> Ask for a name and password (any will do)</label>
+      <label>LCP keepalive, seconds (0: none) <input type="number" id="s-echo" min="0" max="3600"></label>
+      <label>Address range <input id="s-net" placeholder="10.86.0.0" size="12"></label>
+      <label>Calls at most <input type="number" id="s-max" min="1" max="64"></label>
+    </div>
+    <div class="hint">Guest LAN and speed apply at once; addresses, authentication and keepalive to the next call.</div>
+    <div class="form"><button class="primary" id="s-save">Save</button></div>
+    <div class="msg" id="s-msg"></div>
+  </section>
+</main>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+let configured = {};   /* call number -> "tcp:2121:21 udp:*:5000:5000" */
+let maxCalls = 16;
+let settingsLoaded = false;
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+}
+function bytes(n) {
+  if (n < 1024) return n + " B";
+  if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+  return (n / 1048576).toFixed(2) + " MB";
+}
+function duration(s) {
+  const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, x = s % 60;
+  return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(x).padStart(2, "0");
+}
+function setRows(tbody, html) {
+  if (tbody.dataset.html !== html) {
+    tbody.innerHTML = html;
+    tbody.dataset.html = html;
+  }
+}
+function stateClass(id) { return id === 3 ? "s-on" : id === 5 ? "s-end" : "s-neg"; }
+function parseSpec(spec) {
+  return (spec || "").split(/[\s,;]+/).filter(Boolean).map(item => {
+    const p = item.split(":");
+    const all = p[1] === "*";
+    const q = all ? p.slice(2) : p.slice(1);
+    return { proto: p[0], all: all, host: +q[0], guest: +q[1], text: item };
+  });
+}
+async function post(path, data) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", "X-ISP-Request": "1" },
+    body: new URLSearchParams(data)
+  });
+  const j = await r.json().catch(() => ({ error: "no answer" }));
+  if (!r.ok || j.error) throw new Error(j.error || ("HTTP " + r.status));
+  return j;
+}
+function say(el, text, ok) { el.textContent = text; el.className = "msg " + (ok ? "ok" : "err"); }
+
+function render(st) {
+  $("endpoint").innerHTML = "Modems dial <code>" + esc(st.server.listen) + ":" + st.server.port +
+                            "</code> &middot; any number, any name and password";
+  maxCalls = st.settings.max;
+  configured = {};
+  for (const f of st.forwards) configured[f.number] = f.spec;
+
+  /* Rows are rebuilt only when what they hold changes shape; the counters are
+     written into the cells, so a button is never replaced under the mouse. */
+  const rows = st.calls.map(c => {
+    const fw = c.forwards.length ? c.forwards.map(f =>
+      '<span class="chip ' + (f.state === "failed" ? "s-bad" : f.state === "bound" ? "s-on" : "") + '">' +
+      esc(f.spec) + "</span>").join(" ") : "";
+    return "<tr><td class=num>" + c.number + "</td><td>" + esc(c.label) + "</td><td>" + esc(c.ip) +
+      "</td><td class='" + stateClass(c.state_id) + "'>" + esc(c.state) + "</td><td>" + esc(c.user) +
+      "</td><td class=num data-f=t></td><td class=num data-f=down></td><td class=num data-f=up></td>" +
+      "<td class=num data-f=err></td><td class=num>" + (c.rate ? c.rate : "line speed") + "</td><td>" + fw +
+      "</td><td><button class=danger data-hang=" + c.number + (c.state_id === 5 ? " disabled" : "") +
+      ">Hang up</button></td></tr>";
+  });
+  setRows($("calls"), rows.join(""));
+  st.calls.forEach((c, i) => {
+    const tr = $("calls").rows[i];
+    tr.querySelector("[data-f=t]").textContent = duration(c.seconds);
+    tr.querySelector("[data-f=down]").textContent = bytes(c.to_guest);
+    tr.querySelector("[data-f=up]").textContent = bytes(c.from_guest);
+    tr.querySelector("[data-f=err]").textContent = c.bad + c.dropped;
+  });
+  $("nocalls").style.display = st.calls.length ? "none" : "";
+
+  const live = {};
+  for (const c of st.calls) for (const f of c.forwards) live[c.number + " " + f.spec] = f.state;
+  const frows = [];
+  for (const n of Object.keys(configured).sort((a, b) => a - b))
+    for (const f of parseSpec(configured[n])) {
+      const now = live[n + " " + f.text] || "no call";
+      frows.push("<tr><td class=num>" + n + "</td><td>" + f.proto.toUpperCase() + "</td><td class=num>" + f.host +
+        "</td><td class=num>" + f.guest + "</td><td>" + (f.all ? "every interface" : "127.0.0.1") +
+        "</td><td class='" + (now === "bound" ? "s-on" : now === "failed" ? "s-bad" : "s-end") + "'>" +
+        (now === "failed" ? "host port taken" : now) + "</td><td><button data-unfwd='" + n + " " + esc(f.text) +
+        "'>Remove</button></td></tr>");
+    }
+  setRows($("fwds"), frows.join(""));
+  $("nofwds").style.display = frows.length ? "none" : "";
+
+  if (!settingsLoaded) {
+    const s = st.settings;
+    $("s-lan").checked = !!s.lan; $("s-thr").checked = !!s.throttle; $("s-pap").checked = !!s.pap;
+    $("s-echo").value = s.echo; $("s-net").value = s.net; $("s-max").value = s.max;
+    const r = $("s-rate");
+    if (![...r.options].some(o => +o.value === s.rate)) r.add(new Option(s.rate));
+    r.value = s.rate;
+    settingsLoaded = true;
+  }
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/status", { cache: "no-store" });
+    render(await r.json());
+    $("dot").className = "dot"; $("livetext").textContent = "live";
+  } catch (e) {
+    $("dot").className = "dot lost"; $("livetext").textContent = "isp-server is not answering";
+  }
+}
+
+document.addEventListener("click", async ev => {
+  const t = ev.target;
+  if (t.dataset.hang) {
+    t.disabled = true;
+    try { await post("/api/hangup", { n: t.dataset.hang }); } catch (e) { alert(e.message); }
+    refresh();
+  } else if (t.dataset.unfwd) {
+    const [n, item] = t.dataset.unfwd.split(" ");
+    const rest = parseSpec(configured[n]).map(f => f.text).filter(x => x !== item).join(" ");
+    try { await post("/api/forwards", { n: n, spec: rest }); say($("f-msg"), "Removed.", true); }
+    catch (e) { say($("f-msg"), e.message, false); }
+    refresh();
+  }
+});
+
+$("f-add").onclick = async () => {
+  const n = +$("f-n").value, h = +$("f-h").value, g = +$("f-g").value;
+  if (!(n >= 1 && n <= maxCalls)) return say($("f-msg"), "Call numbers run from 1 to " + maxCalls + ".", false);
+  if (!(h >= 1 && h <= 65535 && g >= 1 && g <= 65535)) return say($("f-msg"), "Ports run from 1 to 65535.", false);
+  const item = $("f-p").value + ":" + ($("f-all").checked ? "*:" : "") + h + ":" + g;
+  const spec = ((configured[n] || "") + " " + item).trim();
+  try { await post("/api/forwards", { n: n, spec: spec }); say($("f-msg"), "Added: host port " + h + " to guest port " + g + " on call " + n + ".", true); }
+  catch (e) { say($("f-msg"), e.message, false); }
+  refresh();
+};
+
+$("s-save").onclick = async () => {
+  try {
+    await post("/api/settings", {
+      lan: $("s-lan").checked ? 1 : 0, throttle: $("s-thr").checked ? 1 : 0, rate: $("s-rate").value,
+      pap: $("s-pap").checked ? 1 : 0, echo: $("s-echo").value, net: $("s-net").value, max: $("s-max").value
+    });
+    say($("s-msg"), "Saved.", true);
+  } catch (e) { say($("s-msg"), e.message, false); }
+  settingsLoaded = false;
+  refresh();
+};
+
+refresh();
+setInterval(refresh, 1000);
+</script>
+</body>
+</html>
