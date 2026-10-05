@@ -30,8 +30,10 @@
 #    include <netinet/in.h>
 #    include <sys/socket.h>
 #    include <unistd.h>
+typedef int SOCKET;
+#    define closesocket close
 #endif
-#include <86box/isp.h>
+#include "isp.h"
 #include "isp_plat.h"
 #include "ppp_framing.h"
 #include "ppp_session.h"
@@ -823,6 +825,204 @@ test_isp(void)
 #endif
 }
 
+/* ---------------------------------------------------------------- control */
+
+static const isp_call_info_t *
+find_call(isp_call_info_t *calls, int n, int number)
+{
+    for (int i = 0; i < n; i++)
+        if (calls[i].number == number)
+            return &calls[i];
+    return NULL;
+}
+
+/* Waits for a call's forward to leave "pending"; its state. */
+static int
+forward_state(int number, int idx)
+{
+    static isp_call_info_t calls[8];
+    const uint32_t         until = ppp_client_ms() + 3000;
+
+    while ((int32_t) (ppp_client_ms() - until) < 0) {
+        const int              n = isp_list_calls(calls, 8);
+        const isp_call_info_t *c = find_call(calls, n, number);
+
+        if ((c != NULL) && (c->n_forwards > idx) && (c->forward_state[idx] != ISP_FORWARD_PENDING))
+            return c->forward_state[idx];
+        sleep_ms(10);
+    }
+    return ISP_FORWARD_PENDING;
+}
+
+static void
+test_control(void)
+{
+    const isp_session_callbacks_t cb = { NULL, isp_log, NULL };
+    static isp_call_info_t        calls[8];
+    isp_settings_t                old, st;
+    char                          err[128];
+    direct_t                      d1, d2;
+    ppp_client_t                  c1, c2;
+    SOCKET                        hs;
+    uint16_t                      hport;
+    int                           n;
+
+    printf("\n== isp: the status page's view and controls ==\n");
+    hs = udp_listener(&hport);
+    isp_get_settings(&old);
+    st             = old;
+    st.require_pap = 1;
+    isp_set_settings(&st);
+
+    d1.s = isp_session_open(&cb, err, sizeof(err));
+    d2.s = isp_session_open(&cb, err, sizeof(err));
+    if ((d1.s == NULL) || (d2.s == NULL)) {
+        check("two sessions open", 0);
+        return;
+    }
+    isp_session_set_label(d1.s, "COM2 of the Win98 box");
+    memset(&c1, 0, sizeof(c1));
+    memset(&c2, 0, sizeof(c2));
+    c1.write = c2.write = direct_write;
+    c1.read = c2.read = direct_read;
+    c1.idle = c2.idle = direct_idle;
+    c1.opaque  = &d1;
+    c2.opaque  = &d2;
+    c1.user    = "alice";
+    c2.user    = "bob";
+    ppp_client_init(&c1);
+    ppp_client_init(&c2);
+
+    n = isp_list_calls(calls, 8);
+    check("two calls listed, waiting for PPP",
+          (n == 2) && (calls[0].state == ISP_CALL_WAITING) && (calls[1].state == ISP_CALL_WAITING));
+    check("...with the label the frontend gave", !strcmp(calls[0].label, "COM2 of the Win98 box"));
+
+    check("both authenticate with PAP and come up", ppp_client_connect(&c1, 10000) && ppp_client_connect(&c2, 10000));
+    sleep_ms(300);
+    n = isp_list_calls(calls, 8);
+    {
+        const isp_call_info_t *a = find_call(calls, n, isp_session_number(d1.s));
+        const isp_call_info_t *b = find_call(calls, n, isp_session_number(d2.s));
+
+        check("listed on line, with their addresses",
+              a && b && (a->state == ISP_CALL_ONLINE) && (b->state == ISP_CALL_ONLINE) &&
+              (a->guest_ip == c1.my_ip) && (b->guest_ip == c2.my_ip));
+        check("...the names they gave PAP", a && b && !strcmp(a->user, "alice") && !strcmp(b->user, "bob"));
+        check("...and the bytes each way", a && (a->bytes_from_guest > 0) && (a->bytes_to_guest > 0));
+    }
+
+    /* Guest LAN, on by default: guest 1 reaches guest 2 at its address. */
+    {
+        uint8_t got[64];
+        int     len;
+
+        ppp_client_send_udp(&c1, c2.my_ip, 4100, 4200, (const uint8_t *) "hi neighbour", 12);
+        len = ppp_client_recv_udp(&c2, 4200, got, sizeof(got), NULL, NULL, 2000);
+        check("guest LAN: one guest reaches the other", (len == 12) && !memcmp(got, "hi neighbour", 12));
+
+        st           = old;
+        st.guest_lan = 0;
+        isp_set_settings(&st);
+        ppp_client_send_udp(&c1, c2.my_ip, 4100, 4200, (const uint8_t *) "anyone?", 7);
+        len = ppp_client_recv_udp(&c2, 4200, got, sizeof(got), NULL, NULL, 1000);
+        check("...and not when it is switched off", len < 0);
+        isp_set_settings(&old);
+    }
+
+    /* A UDP port forward: the host's port reaches the guest's. */
+    {
+        uint16_t           fport;
+        SOCKET             probe = udp_listener(&fport); /* a free port, then let go */
+        isp_forward_t      f     = { 1, 0, 0, 7777 };
+        struct sockaddr_in to;
+        uint8_t            got[64];
+        int                len;
+
+        closesocket(probe);
+        f.host_port = fport;
+        check("forwards set on a call by number", isp_set_call_forwards(isp_session_number(d1.s), &f, 1));
+        check("...bound once the thread takes them up", forward_state(isp_session_number(d1.s), 0) == ISP_FORWARD_BOUND);
+        memset(&to, 0, sizeof(to));
+        to.sin_family      = AF_INET;
+        to.sin_addr.s_addr = htonl(0x7f000001);
+        to.sin_port        = htons(fport);
+        sendto(hs, "knock knock", 11, 0, (struct sockaddr *) &to, sizeof(to));
+        len = ppp_client_recv_udp(&c1, 7777, got, sizeof(got), NULL, NULL, 2000);
+        check("...and the host's port reaches the guest's", (len == 11) && !memcmp(got, "knock knock", 11));
+
+        /* The same host port for the other call: taken. */
+        isp_set_call_forwards(isp_session_number(d2.s), &f, 1);
+        check("the same host port on another call: failed, not hung",
+              forward_state(isp_session_number(d2.s), 0) == ISP_FORWARD_FAILED);
+        isp_set_call_forwards(isp_session_number(d2.s), NULL, 0);
+        isp_set_call_forwards(isp_session_number(d1.s), NULL, 0);
+    }
+
+    /* Throttled to 19200 bit/s: 4000 bytes take about two seconds. */
+    {
+        struct sockaddr_in from;
+        socklen_t          flen = sizeof(from);
+        char               buf[1200];
+        int                got  = 0;
+        uint32_t           t0, ms;
+
+        st              = old;
+        st.throttle     = 1;
+        st.default_rate = 19200;
+        isp_set_settings(&st);
+        ppp_client_send_udp(&c1, c1.isp_ip, 5555, hport, (const uint8_t *) "send", 4);
+        for (int i = 0; (i < 3000) && (recvfrom(hs, buf, sizeof(buf), 0, (struct sockaddr *) &from, &flen) <= 0); i++)
+            sleep_ms(1);
+        memset(buf, 'x', sizeof(buf));
+        t0 = ppp_client_ms();
+        for (int i = 0; i < 4; i++)
+            sendto(hs, buf, 1000, 0, (struct sockaddr *) &from, flen);
+        for (int i = 0; i < 4; i++) {
+            uint8_t back[1200];
+
+            if (ppp_client_recv_udp(&c1, 5555, back, sizeof(back), NULL, NULL, 10000) == 1000)
+                got++;
+        }
+        ms = ppp_client_ms() - t0;
+        printf("    4000 bytes at 19200 bit/s: %u ms\n", ms);
+        check("throttled: modem speed, not line speed", (got == 4) && (ms >= 1500) && (ms <= 5000));
+        n = isp_list_calls(calls, 8);
+        check("...and the status says so", find_call(calls, n, isp_session_number(d1.s)) &&
+                                                (find_call(calls, n, isp_session_number(d1.s))->rate == 19200));
+        isp_set_settings(&old);
+    }
+
+    /* The operator hangs up call 1: the guest is told, the call ends. */
+    check("hang up a call by number", isp_hangup_call(isp_session_number(d1.s)));
+    {
+        const uint32_t until = ppp_client_ms() + 8000;
+
+        while (!isp_session_ended(d1.s) && ((int32_t) (ppp_client_ms() - until) < 0)) {
+            ppp_client_poll(&c1);
+            sleep_ms(10);
+        }
+        check("...the guest got a Terminate-Request and the call ended", c1.terminated && isp_session_ended(d1.s));
+    }
+    check("the other call is still up", udp_round_trip(&c2, hs, hport, "still up"));
+    check("no such call to hang up", !isp_hangup_call(200));
+
+    isp_session_close(d1.s);
+    isp_session_close(d2.s);
+    check("closed calls leave the list", isp_list_calls(calls, 8) == 0);
+    closesocket(hs);
+
+    /* The forward notation. */
+    {
+        isp_forward_t f[4];
+        char          back[128];
+        const int     k = isp_forwards_parse("tcp:2121:21, udp:*:5000:5001 bogus tcp:0:1", f, 4);
+
+        isp_forwards_format(f, k, back, sizeof(back));
+        check("forwards parse and print back", (k == 2) && !strcmp(back, "tcp:2121:21 udp:*:5000:5001"));
+    }
+}
+
 int
 main(void)
 {
@@ -834,6 +1034,7 @@ main(void)
     test_framing();
     test_session();
     test_isp();
+    test_control();
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "all checks passed", failures,
            (failures == 1) ? "" : "s");

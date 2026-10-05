@@ -82,23 +82,29 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   it in the modem's section (`<name> #<COM+1>`). Tests: `tests/modem/` (FN_SYS's tables).
   The modem's bytes to the line go through a queue (`MODEM_TXQ_*`): short sends and would-block
   lose nothing, CTS drops at the high-water mark, an overrun past CTS ends the call; a full
-  receive ring is not a hangup. Lines are backends (`modem_line_ops_t`: TCP, ISP) behind the
-  unchanged call state machine (CONNECT before DCD).
-- Virtual ISP (`src/network/isp/`, `86box/isp.h`): line 2, "Internet (built-in ISP)", on the
-  COM modems and the 3C562D (Settings, status bar modem menu). Any number reaches it; one session
-  per call: PPP server (`ppp_framing.c` RFC 1662, `ppp_session.c` RFC 1661 LCP passive until the
-  guest's first request, optional PAP accepting anything, IPCP with address and DNS; rejects
-  PFC/ACFC/callback/VJ/NBNS, Protocol-Rejects CCP/IPX/NBF) and a libslirp instance per session
-  (`isp_nat_slirp.c`: synthetic Ethernet/ARP, wall-clock timers, select()/poll() -- not
-  WSAEventSelect, which loses FD_CONNECT -- and no "readable" fallback, which makes libslirp send
-  the guest ICMP unreachables). Session N gets 10.86.N.0/24: guest .15, gateway .2 (= host
-  loopback), DNS .3. Each session has its own thread; the modem only copies bytes through locked
-  queues. `isp-server.exe` (same dir, console) is the same ISP on a TCP port (default
-  127.0.0.1:2323) for the modem's TCP line. Tests: `tests/isp/` (framing, PPP automaton, sessions
-  through libslirp to a host UDP socket; `isp_probe` drives a running isp-server, `--internet
-  NAME` adds DNS + HTTP) and `tests/modem/` (transport, two modems, ISP calls through the UART).
-  `cmake --build build-static --target isp_tests modem_tests isp_probe`, then
-  `ctest --test-dir build-static -R "Isp|Modem"` (build-static is configured with BUILD_TESTING=ON).
+  receive ring is not a hangup. The line is a backend (`modem_line_ops_t`, TCP) behind the
+  unchanged call state machine (CONNECT before DCD). "Dial the ISP (isp-server on this PC)" in
+  the modem menu sets the TCP line to `CHAR_MODEM_ISP_HOST:PORT` (127.0.0.1:2323); a saved line
+  2 (the built-in ISP that lived for a day) is read as that.
+- isp-server (`src/network/isp/`, its own exe; the emulator does not link it): the virtual ISP
+  modems dial over their TCP line. Any number reaches it; one session per call: PPP server
+  (`ppp_framing.c` RFC 1662, `ppp_session.c` RFC 1661 LCP passive until the guest's first request,
+  optional PAP accepting anything, IPCP with address and DNS; rejects PFC/ACFC/callback/VJ/NBNS,
+  Protocol-Rejects CCP/IPX/NBF) and a libslirp instance per session (`isp_nat_slirp.c`: synthetic
+  Ethernet/ARP, wall-clock timers, select()/poll() -- not WSAEventSelect, which loses FD_CONNECT --
+  and no "readable" fallback, which makes libslirp send the guest ICMP unreachables). Session N
+  gets 10.86.N.0/24: guest .15, gateway .2 (= host loopback), DNS .3; guests reach each other
+  (guest LAN, `isp.c` routes between sessions). Each session has its own thread; other threads only
+  copy bytes or snapshots under its lock (global lock before session lock). Its GUI is a web page
+  on 127.0.0.1:2324 (`isp_web.c`, `isp_web_page.html` embedded by `embed.cmake`), opened at start
+  (`--no-open` to skip -- always use it when testing): calls, hang-up, per-call-number port
+  forwards (libslirp hostfwd), settings (guest LAN, modem-speed throttle, PAP, keepalive, range);
+  Host-header check and an `X-ISP-Request` header on changes against rebinding/CSRF. Settings and
+  forwards persist in `isp-server.ini` next to the exe (`--config`). Tests: `tests/isp/` (framing,
+  PPP automaton, sessions and controls through libslirp to host sockets; `isp_web_test.c` the
+  page's API; `isp_probe` drives a running isp-server, `--internet NAME` adds DNS + HTTP, `--hold
+  SECS` keeps a call up), `tests/modem/` (transport, two modems, calls to isp-server's core behind
+  the fake sockets) and `tests/network/` (`net_slirp.c` behind a stub card).
 - Upstream's CI workflows and Dependabot are disabled/removed in this repo; only
   `sync-upstream.yml` runs.
 - Build number in the title bar / About box: `.build-number` (git-ignored, repo root)
@@ -123,5 +129,7 @@ Static (the default, and what gets staged): MSYS2 UCRT64 with `qt6-static`, `lib
 `MSYSTEM_PREFIX=C:/msys64/ucrt64 cmake -S . -B build-static -G Ninja -DCMAKE_BUILD_TYPE=Release -DQT=ON -DUSE_QT6=ON -DSTATIC_BUILD=ON && cmake --build build-static`
 A dynamic `build/` (`-DSTATIC_BUILD=OFF`) links faster while iterating; run it with
 `C:\msys64\ucrt64\bin` on PATH, or Windows loads a mismatched Qt6Core.
-Tests: `mingw-w64-ucrt-x86_64-gtest` is installed and build-static has `-DBUILD_TESTING=ON`;
-build a suite's target, then `ctest --test-dir build-static -R <Name>`.
+Tests live in their own tree, `build-tests` (`-DBUILD_TESTING=ON -DQT=OFF -DSTATIC_BUILD=ON`,
+GTest from `mingw-w64-ucrt-x86_64-gtest`): build a suite's target there, then
+`ctest --test-dir build-tests -R <Name>` (ours: `Isp|Modem|Network`). Keep build-static's
+BUILD_TESTING off: some upstream tests (pcjx, fdc_read_id) do not build, which breaks a full build.

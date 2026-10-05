@@ -2,7 +2,7 @@
  * 86Box-Next: isp_probe -- two scripted guests against a running isp-server,
  * over TCP, the way two modems dialling it would reach it.
  *
- *   isp_probe [--host 127.0.0.1] [--port 2323] [--internet NAME]
+ *   isp_probe [--host 127.0.0.1] [--port 2323] [--internet NAME] [--hold SECS]
  *
  * Both negotiate PPP and must get different addresses; each sends UDP to the
  * host through its gateway and gets the answer; one hangs up (LCP Terminate)
@@ -175,6 +175,7 @@ main(int argc, char **argv)
     const char  *host     = "127.0.0.1";
     int          port     = 2323;
     const char  *internet = NULL;
+    int          hold     = 0;
     line_t       l1, l2;
     ppp_client_t c1, c2;
     SOCKET       hs;
@@ -188,8 +189,10 @@ main(int argc, char **argv)
             port = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--internet") && (i + 1 < argc))
             internet = argv[++i];
+        else if (!strcmp(argv[i], "--hold") && (i + 1 < argc))
+            hold = atoi(argv[++i]);
         else {
-            printf("isp_probe [--host H] [--port P] [--internet NAME]\n");
+            printf("isp_probe [--host H] [--port P] [--internet NAME] [--hold SECS]\n");
             return 2;
         }
     }
@@ -278,6 +281,20 @@ main(int argc, char **argv)
            ppp_client_ip_str(ip1), ppp_client_ip_str(ip2));
     check("...on the lowest freed address", c1.my_ip == ((ip1 < ip2) ? ip1 : ip2));
     check("...and reaches the host", udp_round_trip(&c1, hs, hport, "third"));
+
+    /* --hold: stay on line a while, for a look at the status page. */
+    if (hold > 0) {
+        const uint32_t until = ppp_client_ms() + (uint32_t) hold * 1000u;
+
+        printf("    holding the call for %d s\n", hold);
+        fflush(stdout);
+        while ((int32_t) (ppp_client_ms() - until) < 0) {
+            ppp_client_poll(&c1);
+            if (l1.eof)
+                break;
+            sleep_ms(20);
+        }
+    }
     closesocket(l1.s);
     closesocket(hs);
 

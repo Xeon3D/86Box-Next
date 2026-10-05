@@ -349,6 +349,26 @@ isp_nat_input(isp_nat_t *nat, const uint8_t *packet, size_t len)
     slirp_input(nat->slirp, nat->frame, (int) (len + ETH_HLEN));
 }
 
+int
+isp_nat_add_forward(isp_nat_t *nat, const isp_forward_t *f)
+{
+    struct in_addr host;
+    struct in_addr guest;
+
+    host.s_addr  = htonl(f->all_interfaces ? INADDR_ANY : INADDR_LOOPBACK);
+    guest.s_addr = htonl(nat->cfg.guest);
+    return (slirp_add_hostfwd(nat->slirp, f->udp, host, f->host_port, guest, f->guest_port) == 0) ? 0 : -1;
+}
+
+void
+isp_nat_remove_forward(isp_nat_t *nat, const isp_forward_t *f)
+{
+    struct in_addr host;
+
+    host.s_addr = htonl(f->all_interfaces ? INADDR_ANY : INADDR_LOOPBACK);
+    (void) slirp_remove_hostfwd(nat->slirp, f->udp, host, f->host_port);
+}
+
 static void
 nat_run_timers(isp_nat_t *nat, uint32_t *timeout_ms)
 {

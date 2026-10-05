@@ -23,12 +23,18 @@
 extern "C" {
 #endif
 
-/* Saved in the configuration as these numbers: never renumber. */
+/* Saved in the configuration as these numbers: never renumber.  (2 was the
+   ISP built into the emulator for a day; char_modem.c reads it as a dial to
+   isp-server, CHAR_MODEM_ISP_HOST:CHAR_MODEM_ISP_PORT.) */
 enum {
-    CHAR_MODEM_LINE_DEAD = 0, /* not connected                                */
-    CHAR_MODEM_LINE_TCP  = 1, /* dialling reaches a TCP/IP host               */
-    CHAR_MODEM_LINE_ISP  = 2  /* dialling reaches the built-in ISP (86box/isp.h) */
+    CHAR_MODEM_LINE_DEAD = 0, /* not connected                  */
+    CHAR_MODEM_LINE_TCP  = 1  /* dialling reaches a TCP/IP host */
 };
+
+/* Where isp-server (src/network/isp/) listens by default: the modem menu's
+   "Dial the ISP". */
+#define CHAR_MODEM_ISP_HOST "127.0.0.1"
+#define CHAR_MODEM_ISP_PORT 2323
 
 enum {
     CHAR_MODEM_ABSENT = -1,

@@ -1,6 +1,7 @@
 # 86Box-Next: the COM port modems' AT engine, identification and line, against
-# stubbed sockets, clock and speaker -- and calls to the built-in ISP, the
-# real one, through the modem.  No test framework; non-zero on failure.
+# stubbed sockets, clock and speaker -- and calls through the modem to
+# isp-server's core (src/network/isp), behind the stubbed sockets.  No test
+# framework; non-zero on failure.
 if(BUILD_TESTING)
     add_executable(modem_tests
         modem_test.c

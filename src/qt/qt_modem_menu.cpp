@@ -5,7 +5,8 @@
  *             each COM port with a modem on it, and each PC Card with a modem
  *             of its own (the 3C562D) (char_modem.c): leave its telephone
  *             line unplugged, have dialling reach a TCP/IP host, or have it
- *             reach the built-in ISP and through it the Internet.  The
+ *             dial the ISP -- isp-server, on this PC, and through it the
+ *             Internet (a TCP host too, preset to where it listens).  The
  *             change is made at once, without a reset -- a call in progress
  *             ends with NO CARRIER -- and kept in the modem's configuration
  *             (a PC Card's: the card's), where Settings shows it too.
@@ -46,13 +47,21 @@ slotText(int slot)
     return QString::fromUtf8(buf);
 }
 
+/* The line points at isp-server where it listens by default. */
+static bool
+isIsp(int line, const QString &host, int port)
+{
+    return (line == CHAR_MODEM_LINE_TCP) && (host == QStringLiteral(CHAR_MODEM_ISP_HOST)) &&
+           (port == CHAR_MODEM_ISP_PORT);
+}
+
 static QString
 lineText(int line, const QString &host, int port)
 {
+    if (isIsp(line, host, port))
+        return QObject::tr("dials the ISP (isp-server)");
     if ((line == CHAR_MODEM_LINE_TCP) && !host.isEmpty())
         return QObject::tr("dials %1:%2").arg(host).arg(port);
-    if (line == CHAR_MODEM_LINE_ISP)
-        return QObject::tr("dials the Internet");
     return QObject::tr("line not connected");
 }
 
@@ -140,6 +149,7 @@ ModemMenu::buildMenu()
             continue;
 
         const QString qhost = QString::fromUtf8(host);
+        const bool    isp   = isIsp(line, qhost, port);
         QMenu        *sub   = m_menu->addMenu(QIcon(":/settings/qt/icons/modem.ico"),
                                               tr("%1: %2").arg(slotText(i), QString::fromUtf8(name)));
         auto         *grp   = new QActionGroup(sub);
@@ -158,13 +168,13 @@ ModemMenu::buildMenu()
             emit changed();
         });
 
-        QAction *tcp = sub->addAction(qhost.isEmpty() ? tr("Dial out to a TCP/IP host...")
-                                                      : tr("Dial out to %1:%2").arg(qhost).arg(port));
+        QAction *tcp = sub->addAction((qhost.isEmpty() || isp) ? tr("Dial out to a TCP/IP host...")
+                                                               : tr("Dial out to %1:%2").arg(qhost).arg(port));
         tcp->setCheckable(true);
-        tcp->setChecked((line == CHAR_MODEM_LINE_TCP) && !qhost.isEmpty());
+        tcp->setChecked((line == CHAR_MODEM_LINE_TCP) && !qhost.isEmpty() && !isp);
         grp->addAction(tcp);
-        connect(tcp, &QAction::triggered, this, [this, i, qhost, port]() {
-            if (qhost.isEmpty()) {
+        connect(tcp, &QAction::triggered, this, [this, i, qhost, port, isp]() {
+            if (qhost.isEmpty() || isp) {
                 editHost(i);
                 return;
             }
@@ -173,18 +183,15 @@ ModemMenu::buildMenu()
             emit changed();
         });
 
-        /* Any number reaches the built-in ISP: PPP, an address, the host's
-           Internet.  The TCP host is kept for when it is chosen again. */
-        QAction *isp = sub->addAction(tr("Internet (built-in ISP)"));
-        isp->setCheckable(true);
-        isp->setChecked(line == CHAR_MODEM_LINE_ISP);
-        grp->addAction(isp);
-        connect(isp, &QAction::triggered, this, [this, i]() {
-            char h[128] = "";
-            int  p      = 23;
-            if (char_modem_get_line(i, h, sizeof(h), &p) < 0)
-                return;
-            char_modem_set_line(i, CHAR_MODEM_LINE_ISP, h, p);
+        /* isp-server, the virtual ISP (src/network/isp/), where it listens
+           unless told otherwise: any number gets PPP, an address and the
+           host's Internet.  It has to be running. */
+        QAction *dialIsp = sub->addAction(tr("Dial the ISP (isp-server on this PC)"));
+        dialIsp->setCheckable(true);
+        dialIsp->setChecked(isp);
+        grp->addAction(dialIsp);
+        connect(dialIsp, &QAction::triggered, this, [this, i]() {
+            char_modem_set_line(i, CHAR_MODEM_LINE_TCP, CHAR_MODEM_ISP_HOST, CHAR_MODEM_ISP_PORT);
             config_save();
             emit changed();
         });

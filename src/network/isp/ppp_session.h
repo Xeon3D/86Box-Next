@@ -163,6 +163,8 @@ struct ppp {
     uint32_t ip_dropped;
     uint32_t prot_rejects;
 
+    char peer_user[64]; /* the name the guest gave PAP, for the status pages */
+
     char why[96]; /* why the link went down, for finished() */
 };
 
