@@ -358,7 +358,7 @@ test_3c562d(void)
     uart = (fake_t) { 0 };
     pccard_mfc_init(&card, 0, "3C562D", c562, len);
     pccard_mfc_add(&card, &lan_fn, lan_cfg, 0x23);
-    pccard_mfc_add(&card, &uart_fn, modem_cfg, 0x63);
+    pccard_mfc_add(&card, &uart_fn, modem_cfg, 0x23);
     card.card.reset(card.card.priv);
 
     walk_function(0, &v);
@@ -390,10 +390,13 @@ test_3c562d(void)
     CHECK(lan.last_off == 0x0e && lan.regs[14] == 0x01, "3C562D: LAN at 300h by A7-A0");
     card.card.io_write(0x10e, 0x02, card.card.priv);
     CHECK(lan.regs[14] == 0x02, "3C562D: and its alias at 10Eh (only A7-A0 compared)");
-    configure(0x1900, 0x27, 0x3e8, 8);
+    /* MDMGATEW.INF's override: COR 47h, I/O base 0 only -- the modem compares
+       A7-A0 too. */
+    card.card.attr_write(0x1900 + 0x0a, 0xe8, card.card.priv);
+    card.card.attr_write(0x1900, 0x47, card.card.priv);
     card.card.io_write(0x3eb, 0x03, card.card.priv);
-    CHECK(uart.last_off == 3 && uart.regs[3] == 0x03, "3C562D: modem at 3E8h");
-    CHECK(card.card.io_read(0x2eb, card.card.priv) == 0xff, "3C562D: the modem compares A15-A0 (nothing at 2EBh)");
+    CHECK(uart.last_off == 3 && uart.regs[3] == 0x03, "3C562D: modem at 3E8h with only I/O base 0 written");
+    CHECK(card.card.io_read(0x2eb, card.card.priv) == 0x03, "3C562D: the modem compares A7-A0 (2EBh aliases it)");
 }
 
 int

@@ -131,7 +131,7 @@ c562_init(UNUSED(const device_t *info))
         .reset    = c562_modem_reset,
         .priv     = dev
     };
-    pccard_mfc_add(&dev->mfc, &dev->modem_fn, modem_cfg, 0x63);
+    pccard_mfc_add(&dev->mfc, &dev->modem_fn, modem_cfg, 0x23);
 
     pcmcia_insert(dev->socket, &dev->mfc.card);
     return dev;

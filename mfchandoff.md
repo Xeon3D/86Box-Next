@@ -21,9 +21,43 @@ LAN at 110h-11Fh (socket B I/O window 0) and the modem at 2E8h-2EFh (window 1, C
   "ATI4", CR LF, "3Com EtherLink III LAN+33.6 Modem PC Card"... coming back through RBR byte by
   byte with the right LSR/IIR. But the test program (`ATPROBE.EXE`, below) got that many bytes
   from `ReadFile`, **all 00h**. Without its own `SetCommState` it gets nothing at all (Windows'
-  default DCB holds transmission: only the driver's two probe bytes reached THR). Most likely a
-  bug in the probe or its DCB, not in the card -- next step is to settle that (the probe's hex
-  logging of each ReadFile, with the 9600 8N1 no-flow DCB restored; or HyperTerminal by hand).
+  default DCB holds transmission: only the driver's two probe bytes reached THR). **Cause found:
+  the probe itself** -- `gcc -m32` emitted CMOVcc (P6 only) and the test machine is a Pentium
+  MMX: Windows reported "invalid instruction 0F 45" in ATPROBE. `build.sh` now uses
+  `-march=pentium-mmx` (no cmov in the binary); DCB restored, hex logging kept. **Rerun: still
+  zeros** -- e.g. ATI0 gives 20 bytes (the right count: echo + 33600 + OK), every one 00h, via
+  ReadFile (SetCommState ok; COM4's DCB before it: flags 3011h, baud 0). So the zeroing is
+  between the UART (right bytes in RBR) and ReadFile. Next: the same probe on a COM2 modem
+  (COM port, not the card) to tell a card/UART-detached bug from a Windows/probe one.
+- WINIPCFG now works (`WINIPCFG /BATCH C:\IPCFG.TXT`): three Ethernet adapters, adapter 2 has
+  10.0.2.15 from SLiRP; pings answer. Only socket B (the 3C562D) has a link now (socket A
+  emptied, [Network] has no cards linked): **the 3C562D's LAN is proven.**
+- Comparison run: `pcictest\86box.cfg` got `[Ports (COM & LPT)] serial1_device = modem_supra`
+  (backup before it: `86box.cfg.mfc-bak`). The same probe on COM1 reads the Supra perfectly
+  ("AT | OK", "SupraExpress 56e PRO"...), COM4 (the card) still all 00h. **So the bug is on the
+  card side** (the detached UART / PC Card path), even though RBR read back right in the
+  build-69 register trace. Remove the COM1 modem from the cfg when done.
+- **MDMGATEW.INF overrides the modem function too** (`ADDREG_3COMA.reg`, Override 0000-0004):
+  8 ports, 8-aligned, at 3E8h / 2E8h / 3F8h / 2F8h or anywhere; IRQ any; PC Card record:
+  **ConfigBase 0x1900, COR 0x47, Present 0x23** (I/O base 0 only: the modem also compares
+  A7-A0). Our CIS/`pccard_mfc_add` had the modem at mask 63h (A15-A0 against base 0+1, but
+  Windows writes only base 0): fixed to 23h / index 7 (build 70; mfc_test updated, 52 pass).
+  **Still zeros.** A register trace (build 71, temporary pclog in `c562_modem_read/write`)
+  with the fixed probe shows Windows' serial driver getting exactly the right bytes from RBR
+  (`ATI4` echo, "3Com EtherLink III LAN..."), with IIR C4h/C1h, LSR 61h/60h and an ISR-like
+  sequence (IIR, RBR+LSR pairs, IER 0Fh -> 0Dh). So the card and UART deliver; the bytes become
+  00h **inside Windows**, between serial.vxd and ReadFile, only for the card's COM4 (COM1's
+  Supra modem reads fine with the same probe).
+  Leads for next time:
+  - COM4's DCB at open has baud 0 (COM1: 1200): MDMGATEW's sections may lack the usual `DCB`
+    value; compare the two ports' registry entries (`creg.py`, Enum\PCMCIA\...DEV1-E4C0 and the
+    modem class key: PortDriver Serial.vxd, Contention *vcd, DeviceType 03).
+  - Whether the bytes really come through serial.vxd's ISR (the shared, level PC Card IRQ):
+    log the guest CS:EIP of the RBR reads (as build 58 did for power writes: `ss+ESP`,
+    `mmutranslate_noabrt`, `cpu.h`) and match it with `stackmatch.py` against SERIAL.VXD.
+  - Try HyperTerminal on COM4 by hand (the owner can), or Unimodem's "More Info"
+    (Control Panel > Modems > Diagnostics), which reads ATI answers itself.
+- The owner removed the 3C589D from socket A, so a ping now proves the 3C562D's LAN.
 - Not yet done: the modem in the PC Card status bar / COM modem status icon (it is "unlisted",
   see below); CLAUDE.md; merge; restage the rigs.
 

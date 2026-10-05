@@ -464,8 +464,9 @@ pccard_cis_flash(uint8_t *buf, uint32_t size)
        Linux puts it at xx00-xx7Fh), configuration 7 = function enable,
        address decode and IREQ enable as a raw index too; sixteen ports; the
        station address in 3Com's tuple 88h, each byte pair swapped;
-     function 1, the modem's 16550: registers at 1900h with I/O base 0 and 1,
-       configuration 27h, eight ports, 8-bit.
+     function 1, the modem's 16550: registers at 1900h, COR, CCSR and I/O base
+       0 like the LAN's (MDMGATEW.INF's override for it says so), configuration
+       7, eight ports, 8-bit.
 
    Windows 98 names the functions PCMCIA\3COM_CORPORATION-3C562D/3C563D-DEV0-
    and -DEV1-E4C0 (NET3C562.INF, MDMGATEW.INF): the checksum covers the
@@ -502,8 +503,8 @@ pccard_cis_3c562d(uint8_t *buf, const uint8_t mac[6], uint32_t *lan_cfg, uint32_
     pccard_cis_mfc_link(&c, link, 1, c.len);
     pccard_cis_linktarget(&c);
     pccard_cis_tuple(&c, CISTPL_FUNCID, fn_serial, 2);
-    pccard_cis_config(&c, 0x1900, 0x63, 0x27);
-    pccard_cis_cftable_io(&c, 0x67, 0x0000, 8, 3, 0, 0xdeb8);
+    pccard_cis_config(&c, 0x1900, 0x23, 0x07);
+    pccard_cis_cftable_io(&c, 0x47, 0x0000, 8, 3, 0, 0xdeb8);
     pccard_cis_end(&c);
 
     c.filler = filler;
