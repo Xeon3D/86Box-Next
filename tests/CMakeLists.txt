@@ -13,6 +13,7 @@ add_subdirectory(usb)
 add_subdirectory(pcmcia)
 add_subdirectory(modem)
 add_subdirectory(isp)
+add_subdirectory(network)
 
 if(BUILD_TESTING)
     add_library(pcjx_floppy_engine OBJECT
