@@ -141,10 +141,13 @@ mfc_io_func(const pccard_mfc_t *m, uint16_t port, uint16_t *off)
         if (!(reg[REG_COR] & COR_ENABLE) || !len || !m->func[f]->io_read)
             continue;
         if (reg[REG_COR] & COR_DECODE) {
-            const uint16_t base = (uint16_t) (reg[REG_IOBASE] | (reg[REG_IOBASE + 1] << 8));
-            if ((port < base) || (port >= base + len))
+            /* Without I/O base 1 the function compares A7-A0 only. */
+            const uint16_t mask = (m->cfg_rmask[f] & 0x40) ? 0xffff : 0x00ff;
+            const uint16_t base = (uint16_t) (reg[REG_IOBASE] | (reg[REG_IOBASE + 1] << 8)) & mask;
+            const uint16_t p    = port & mask;
+            if ((p < base) || (p >= base + len))
                 continue;
-            *off = port - base;
+            *off = p - base;
         } else
             *off = port & (len - 1);
         return f;
@@ -234,12 +237,13 @@ pccard_mfc_init(pccard_mfc_t *m, int socket, const char *name, uint8_t *cis, int
 }
 
 int
-pccard_mfc_add(pccard_mfc_t *m, const pccard_func_t *f, uint32_t cfg_base)
+pccard_mfc_add(pccard_mfc_t *m, const pccard_func_t *f, uint32_t cfg_base, uint16_t rmask)
 {
     if (m->nfunc >= PCCARD_MFC_MAX)
         return -1;
-    m->func[m->nfunc]     = f;
-    m->cfg_base[m->nfunc] = cfg_base;
+    m->func[m->nfunc]      = f;
+    m->cfg_base[m->nfunc]  = cfg_base;
+    m->cfg_rmask[m->nfunc] = rmask;
     return m->nfunc++;
 }
 

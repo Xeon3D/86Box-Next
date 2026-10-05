@@ -186,37 +186,79 @@ win9x_crc(uint16_t c, const uint8_t *p, int n)
     return c;
 }
 
+/* The tuples PCCARD.VXD's checksum walk sees, in order: the primary chain
+   to its END, then -- on a multi-function card -- the chain of function 0
+   (the parent devnode's), found the way it follows CISTPL_LONGLINK_MFC: the
+   link address taken as a byte index first, then halved (as an attribute
+   memory address), wherever a LINKTARGET "CIS" is.  Offsets into out, the
+   count returned. */
+static int
+linktarget_at(const uint8_t *cis, int len, uint32_t i)
+{
+    return (i + 5 <= (uint32_t) len) && (cis[i] == CISTPL_LINKTARGET) && (cis[i + 1] >= 3) && (cis[i + 2] == 'C')
+        && (cis[i + 3] == 'I') && (cis[i + 4] == 'S');
+}
+
+static int
+crc_walk(const uint8_t *cis, int len, int *out, int max)
+{
+    int      n = 0, i = 0, mfc = -1, chains = 0;
+
+    while (chains < 2) {
+        if ((i + 1 >= len) || (cis[i] == CISTPL_END)) {
+            uint32_t link = 0;
+
+            if ((mfc < 0) || chains)
+                break;
+            for (int k = 0; k < 4; k++)
+                link |= (uint32_t) cis[mfc + 4 + k] << (8 * k);   /* function 0's entry */
+            if (linktarget_at(cis, len, link))
+                i = (int) link;
+            else if (linktarget_at(cis, len, link >> 1))
+                i = (int) (link >> 1);
+            else
+                break;
+            chains++;
+            continue;
+        }
+        if (cis[i] == CISTPL_NULL) {
+            i++;
+            continue;
+        }
+        if ((cis[i] == CISTPL_LONGLINK_MFC) && !chains && (cis[i + 1] >= 6) && (cis[i + 2] >= 1) && (cis[i + 3] == 0x00))
+            mfc = i;
+        if (n < max)
+            out[n++] = i;
+        i += 2 + cis[i + 1];
+    }
+    return n;
+}
+
 uint16_t
 pccard_cis_win9x_crc(const uint8_t *cis, int len)
 {
+    int      t[128];
+    const int nt       = crc_walk(cis, len, t, 128);
     uint32_t cfg_base = 0;
     uint16_t c        = 0;
 
     /* The configuration registers' address, first: a tuple running over
        them is cut short where they start. */
-    for (int i = 0; (i + 1 < len) && (cis[i] != CISTPL_END);) {
-        if (cis[i] == CISTPL_NULL) {
-            i++;
-            continue;
-        }
+    for (int k = 0; k < nt; k++) {
+        const int i = t[k];
         if ((cis[i] == CISTPL_CONFIG) && (cis[i + 1] >= 4)) {
             const int rasz = cis[i + 2] & 3;
-            for (int k = 0; k <= rasz; k++)
-                cfg_base |= (uint32_t) cis[i + 4 + k] << (8 * k);
+            for (int b = 0; b <= rasz; b++)
+                cfg_base |= (uint32_t) cis[i + 4 + b] << (8 * b);
             break;
         }
-        i += 2 + cis[i + 1];
     }
 
-    for (int i = 0; (i + 1 < len) && (cis[i] != CISTPL_END);) {
+    for (int k = 0; k < nt; k++) {
+        const int     i    = t[k];
         const uint8_t code = cis[i];
-        int           n;
+        const int     n    = cis[i + 1];
 
-        if (code == CISTPL_NULL) {
-            i++;
-            continue;
-        }
-        n = cis[i + 1];
         if ((code == CISTPL_DEVICE) || (code == CISTPL_VERS_1) || (code == CISTPL_CONFIG) || (code == CISTPL_CFTABLE_ENTRY)
             || (code == CISTPL_MANFID)) {
             const uint8_t *d   = &cis[i + 2];
@@ -238,7 +280,6 @@ pccard_cis_win9x_crc(const uint8_t *cis, int len)
             }
             c = win9x_crc(c, d, m);
         }
-        i += 2 + n;
     }
     return c;
 }
@@ -410,5 +451,66 @@ pccard_cis_flash(uint8_t *buf, uint32_t size)
     pccard_cis_tuple(&c, CISTPL_FUNCID, fn_memory, 2);
     pccard_cis_tuple(&c, CISTPL_NO_LINK, NULL, 0);
     pccard_cis_end(&c);
+    return c.len;
+}
+
+/* 3Com 3C562D/3C563D EtherLink III LAN+33.6 Modem PC Card
+   (pccard_3c562.c): a multi-function card.  The primary chain names the
+   card and links to two function chains:
+
+     function 0, the LAN (net_3c509b.c's EtherLink III): registers at 1800h
+       -- where NET3C562.INF's override says they are -- COR, CCSR and I/O
+       base 0 (0x23, the override's too: the LAN compares A7-A0, which is why
+       Linux puts it at xx00-xx7Fh), configuration 7 = function enable,
+       address decode and IREQ enable as a raw index too; sixteen ports; the
+       station address in 3Com's tuple 88h, each byte pair swapped;
+     function 1, the modem's 16550: registers at 1900h with I/O base 0 and 1,
+       configuration 27h, eight ports, 8-bit.
+
+   Windows 98 names the functions PCMCIA\3COM_CORPORATION-3C562D/3C563D-DEV0-
+   and -DEV1-E4C0 (NET3C562.INF, MDMGATEW.INF): the checksum covers the
+   primary chain and function 0's, so the filler is function 0's CONFIG's.
+   No dump of a real 3C562 CIS was found; this is built from the INFs and the
+   Linux/BSD drivers. */
+int
+pccard_cis_3c562d(uint8_t *buf, const uint8_t mac[6], uint32_t *lan_cfg, uint32_t *modem_cfg)
+{
+    static const char   *vers[]     = { "3Com Corporation", "3C562D/3C563D", "EtherLink III LAN+336 Modem PC Card", "Ver 1.0" };
+    static const uint8_t fn_multi[] = { 0x00, 0x00 };
+    static const uint8_t fn_serial[] = { 0x02, 0x00 };
+    const uint8_t        node[6]    = { mac[1], mac[0], mac[3], mac[2], mac[5], mac[4] };
+    pccard_cis_t         c;
+    int                  link;
+
+    pccard_cis_init(&c, buf, 512);
+    pccard_cis_tuple(&c, CISTPL_DEVICE, no_device, 3);
+    pccard_cis_vers1(&c, vers, 4);
+    pccard_cis_manfid(&c, 0x0101, 0x0562);
+    pccard_cis_tuple(&c, CISTPL_FUNCID, fn_multi, 2);
+    link = pccard_cis_longlink_mfc(&c, 2);
+    pccard_cis_end(&c);
+
+    pccard_cis_mfc_link(&c, link, 0, c.len);
+    pccard_cis_linktarget(&c);
+    pccard_cis_tuple(&c, CISTPL_FUNCID, fn_network, 2);
+    pccard_cis_config(&c, 0x1800, 0x23, 0x07);
+    pccard_cis_cftable_io(&c, 0x47, 0x0000, 16, 4, 1, 0xdeb8);
+    pccard_cis_tuple(&c, 0x88, node, 6);
+    pccard_cis_end(&c);
+    const int filler = c.filler;
+
+    pccard_cis_mfc_link(&c, link, 1, c.len);
+    pccard_cis_linktarget(&c);
+    pccard_cis_tuple(&c, CISTPL_FUNCID, fn_serial, 2);
+    pccard_cis_config(&c, 0x1900, 0x63, 0x27);
+    pccard_cis_cftable_io(&c, 0x67, 0x0000, 8, 3, 0, 0xdeb8);
+    pccard_cis_end(&c);
+
+    c.filler = filler;
+    pccard_cis_match_id(&c, 0xe4c0);
+    if (lan_cfg)
+        *lan_cfg = 0x1800;
+    if (modem_cfg)
+        *modem_cfg = 0x1900;
     return c.len;
 }

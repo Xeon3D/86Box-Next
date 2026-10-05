@@ -147,8 +147,13 @@ static const char *modem_res_text[] = {
    docs/research/33-modem.md walks all thirty. */
 enum {
     MODEM_MODEL_SUPRA = 0,
-    MODEM_MODEL_ELSA  = 1
+    MODEM_MODEL_ELSA  = 1,
+    MODEM_MODEL_3C562 = 2  /* 86Box-Next: the 3Com 3C562D PC Card's modem */
 };
+
+/* 86Box-Next: in a device's local, a modem that is no COM port's -- a PC
+   Card's, opened with char_open_unlisted() -- and so not in modems[]. */
+#define MODEM_UNLISTED 0x100
 
 typedef struct {
     const char *name;        /* MD_NAME.CSV, verbatim                        */
@@ -186,6 +191,22 @@ static const modem_model_t modem_models[] = {
             [2] = "OK",
             [4] = "ELSA MicroLink 56k",
             [7] = "ELSA AG, Aachen"
+        }
+    },
+    /* 86Box-Next: the modem function of the 3Com 3C562D/3C563D LAN+33.6
+       Modem PC Card (src/pcmcia/pccard_3c562.c).  A Rockwell V.34 data
+       pump; the answers are plausible ones, nothing reads them. */
+    [MODEM_MODEL_3C562] = {
+        .name       = "3Com 3C562D LAN+33.6 Modem",
+        .ident_at   = 3, .ident = "3Com 3C562D/3C563D 33.6 Modem",
+        .fmw_at     = 7, .fmw   = "V2.31",
+        .country_at = 5,
+        .info       = {
+            [0] = "33600",
+            [1] = "255",
+            [2] = "OK",
+            [4] = "3Com EtherLink III LAN+33.6 Modem PC Card",
+            [6] = "RC336ACi"
         }
     }
     // clang-format on
@@ -1212,15 +1233,17 @@ modem_init(const device_t *info)
     modem_t    *dev = (modem_t *) calloc(1, sizeof(modem_t));
     const char *s;
 
-    dev->model = &modem_models[(info->local < (int) (sizeof(modem_models) / sizeof(modem_models[0])))
-                                   ? info->local
+    const int model = info->local & ~MODEM_UNLISTED;
+
+    dev->model = &modem_models[(model < (int) (sizeof(modem_models) / sizeof(modem_models[0])))
+                                   ? model
                                    : MODEM_MODEL_SUPRA];
     dev->sock  = (SOCKET) -1;
     dev->snd   = modem_sound_init(device_get_config_int("speaker"));
     modem_load_defaults(dev);
 
     dev->info         = info;
-    dev->inst         = device_get_instance();
+    dev->inst         = (info->local & MODEM_UNLISTED) ? 0 : device_get_instance();
     dev->connect_rate = device_get_config_int("connect_rate");
 
     s = device_get_config_string("host");
@@ -1349,6 +1372,23 @@ const device_t char_modem_elsa_com_device = {
     .internal_name = "modem_elsa",
     .flags         = DEVICE_COM | DEVICE_HOTPLUG,
     .local         = MODEM_MODEL_ELSA,
+    .init          = modem_init,
+    .close         = modem_close,
+    .reset         = NULL,
+    .available     = NULL,
+    .speed_changed = NULL,
+    .force_redraw  = NULL,
+    .config        = modem_config
+};
+
+/* 86Box-Next: the 3C562D PC Card's modem, opened by the card on its UART with
+   char_open_unlisted(): its settings are the card's (pccard_3c562.c repeats
+   modem_config's entries), and the COM port status bar icon does not see it. */
+const device_t char_modem_3c562_device = {
+    .name          = "3Com 3C562D LAN+33.6 Modem",
+    .internal_name = "modem_3c562",
+    .flags         = 0,
+    .local         = MODEM_MODEL_3C562 | MODEM_UNLISTED,
     .init          = modem_init,
     .close         = modem_close,
     .reset         = NULL,

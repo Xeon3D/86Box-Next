@@ -66,6 +66,7 @@ add_library(dev OBJECT
     ../pcmcia/net_te100pc16.c
     ../pcmcia/pccard_cis.c
     ../pcmcia/pccard_mfc.c
+    ../pcmcia/pccard_3c562.c
     ../pcmcia/sram_card.c
     ../pcmcia/flash_card.c
     mouse.c

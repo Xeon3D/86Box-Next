@@ -107,6 +107,10 @@ typedef struct serial_s {
     struct serial_device_s *sd;
 
     char_port_t char_port;
+
+    /* 86Box-Next: a detached UART's interrupt (serial_init_detached()). */
+    void (*irq_func)(void *priv, int level);
+    void *irq_priv;
 } serial_t;
 
 typedef struct serial_device_s {
@@ -159,6 +163,11 @@ extern void      serial_set_type(serial_t *dev, uint8_t type);
 extern void      serial_set_card_selected_feedback(serial_t *dev, uint8_t *reg_91);
 extern void      serial_reset_port(serial_t *dev);
 extern uint8_t   serial_read(uint16_t addr, void *priv);
+/* 86Box-Next: a UART that is no COM port (a PC Card modem's). */
+extern void      serial_write(uint16_t addr, uint8_t val, void *priv);
+extern serial_t *serial_init_detached(int type, void (*irq_func)(void *priv, int level), void *irq_priv);
+extern void      serial_reset_detached(serial_t *dev);
+extern void      serial_close_detached(serial_t *dev);
 extern void      serial_device_timeout(void *priv);
 extern void      serial_set_cts(serial_t *dev, uint8_t enabled);
 extern void      serial_set_dsr(serial_t *dev, uint8_t enabled);

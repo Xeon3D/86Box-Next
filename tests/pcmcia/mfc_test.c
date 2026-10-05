@@ -339,17 +339,75 @@ test_registers(void)
     CHECK(card.card.io_read(0x305, card.card.priv) == 0xff, "and no I/O");
 }
 
+/* The 3C562D's CIS (pccard_cis_3c562d()) on a card of fake functions: the
+   layout Windows 98's INFs expect, and its LAN's A7-A0 decode. */
+static void
+test_3c562d(void)
+{
+    static const uint8_t mac[6] = { 0x00, 0x20, 0xaf, 0x12, 0x34, 0x56 };
+    static uint8_t       c562[512];
+    uint32_t             lan_cfg, modem_cfg;
+    const int            len = pccard_cis_3c562d(c562, mac, &lan_cfg, &modem_cfg);
+    fn_view_t            v;
+    char                 id[128];
+
+    CHECK(lan_cfg == 0x1800 && modem_cfg == 0x1900, "3C562D: registers at %X and %X", lan_cfg, modem_cfg);
+    CHECK(len <= 512 && 2 * len <= (int) lan_cfg, "3C562D: the CIS (%d bytes) fits and is clear of the registers", len);
+
+    lan  = (fake_t) { 0 };
+    uart = (fake_t) { 0 };
+    pccard_mfc_init(&card, 0, "3C562D", c562, len);
+    pccard_mfc_add(&card, &lan_fn, lan_cfg, 0x23);
+    pccard_mfc_add(&card, &uart_fn, modem_cfg, 0x63);
+    card.card.reset(card.card.priv);
+
+    walk_function(0, &v);
+    CHECK(v.found_mfc && v.nfn == 2 && v.manfid == 0x0101, "3C562D: 3Com, two functions");
+    CHECK(v.linked && v.funcid == CISTPL_FUNCID_NETWORK, "3C562D: function 0 is the LAN");
+    CHECK(v.config_base == 0x1800 && v.rmask == 0x23 && v.last == 0x07,
+          "3C562D: LAN registers as NET3C562.INF's override has them (%X %02X %02X)", v.config_base, v.rmask, v.last);
+    walk_function(1, &v);
+    CHECK(v.linked && v.funcid == CISTPL_FUNCID_SERIAL && v.config_base == 0x1900 && v.io_len == 8,
+          "3C562D: function 1 is a serial port, 8 ports, registers at 1900h");
+
+    /* 3Com's station address tuple, byte pairs swapped (NetBSD, Linux). */
+    int found = 0;
+    for (int i = 0; i + 8 <= len; i++)
+        if ((c562[i] == 0x88) && (c562[i + 1] == 6)) {
+            found = (c562[i + 2] == mac[1]) && (c562[i + 3] == mac[0]) && (c562[i + 4] == mac[3])
+                 && (c562[i + 5] == mac[2]) && (c562[i + 6] == mac[5]) && (c562[i + 7] == mac[4]);
+            break;
+        }
+    CHECK(found, "3C562D: tuple 88h holds the station address, pairs swapped");
+
+    pccard_cis_win9x_id(c562, len, id, sizeof(id));
+    CHECK(!strcmp(id, "PCMCIA\\3Com_Corporation-3C562D/3C563D-E4C0"),
+          "3C562D: Windows 9x parent ID %s (its functions: -DEV0-/-DEV1-E4C0, NET3C562.INF / MDMGATEW.INF)", id);
+
+    /* The LAN compares A7-A0 only: base 0x00 at port 300h. */
+    configure(0x1800, 0x07, 0x300, 16);   /* writes I/O base 1 too, which the LAN hasn't */
+    card.card.io_write(0x30e, 0x01, card.card.priv);
+    CHECK(lan.last_off == 0x0e && lan.regs[14] == 0x01, "3C562D: LAN at 300h by A7-A0");
+    card.card.io_write(0x10e, 0x02, card.card.priv);
+    CHECK(lan.regs[14] == 0x02, "3C562D: and its alias at 10Eh (only A7-A0 compared)");
+    configure(0x1900, 0x27, 0x3e8, 8);
+    card.card.io_write(0x3eb, 0x03, card.card.priv);
+    CHECK(uart.last_off == 3 && uart.regs[3] == 0x03, "3C562D: modem at 3E8h");
+    CHECK(card.card.io_read(0x2eb, card.card.priv) == 0xff, "3C562D: the modem compares A15-A0 (nothing at 2EBh)");
+}
+
 int
 main(void)
 {
     build_cis();
     pccard_mfc_init(&card, 1, "MFC test card", cis, cis_len);
-    CHECK(pccard_mfc_add(&card, &lan_fn, LAN_CFG) == 0, "LAN is function 0");
-    CHECK(pccard_mfc_add(&card, &uart_fn, UART_CFG) == 1, "UART is function 1");
+    CHECK(pccard_mfc_add(&card, &lan_fn, LAN_CFG, 0x63) == 0, "LAN is function 0");
+    CHECK(pccard_mfc_add(&card, &uart_fn, UART_CFG, 0x63) == 1, "UART is function 1");
     card.card.reset(card.card.priv);
 
     test_cis();
     test_registers();
+    test_3c562d();
 
     printf("%d checks, %d failures\n", checks, failures);
     return failures != 0;

@@ -117,8 +117,9 @@ extern netcard_t *pcmcia_network_attach(int socket, void *card_drv, uint8_t *mac
      +0x12  I/O limit: the number of ports minus one
 
    A function answers I/O only while enabled, in the range at its I/O base
-   (with address decode on) or -- off -- at any port whose low address lines
-   select one of its registers; its interrupt requests the card's one IREQ
+   (with address decode on; A15-A0 when its CONFIG tuple's register mask has
+   I/O base 1, else A7-A0 against I/O base 0) or -- decode off -- at any port
+   whose low address lines select one of its registers; its interrupt requests the card's one IREQ
    while its COR enables it, and shows in its CCSR either way.
 
    A function's I/O handlers get the offset into its range. */
@@ -141,6 +142,7 @@ typedef struct pccard_mfc_t {
     int                  nfunc;
     const pccard_func_t *func[PCCARD_MFC_MAX];
     uint32_t             cfg_base[PCCARD_MFC_MAX];   /* attribute address of its registers */
+    uint16_t             cfg_rmask[PCCARD_MFC_MAX];  /* which are there (CONFIG's mask) */
     uint8_t              reg[PCCARD_MFC_MAX][10];    /* COR, CCSR, PRR, SCR, ESR, I/O base 0-3, limit */
     int                  intr[PCCARD_MFC_MAX];       /* the function's interrupt request */
     int                  ireq;                       /* the card's IREQ, as last told */
@@ -150,11 +152,12 @@ typedef struct pccard_mfc_t {
 
 /* Set up m for socket with the CIS in cis (cis_len bytes, kept by the
    caller), then add the functions in CIS order, each with the attribute
-   address of its configuration registers; then pcmcia_insert(socket,
+   address of its configuration registers and their mask as its CONFIG tuple
+   gives it; then pcmcia_insert(socket,
    &m->card).  A function raises and drops its interrupt request with
    pccard_mfc_irq(). */
 extern void pccard_mfc_init(pccard_mfc_t *m, int socket, const char *name, uint8_t *cis, int cis_len);
-extern int  pccard_mfc_add(pccard_mfc_t *m, const pccard_func_t *f, uint32_t cfg_base);
+extern int  pccard_mfc_add(pccard_mfc_t *m, const pccard_func_t *f, uint32_t cfg_base, uint16_t rmask);
 extern void pccard_mfc_irq(pccard_mfc_t *m, int func, int level);
 
 /* ------------------------------------------- Card Information Structure --- */
@@ -175,7 +178,9 @@ extern void pccard_mfc_irq(pccard_mfc_t *m, int func, int level);
 #define CISTPL_FUNCE         0x22
 #define CISTPL_END           0xff
 
+#define CISTPL_FUNCID_MULTI   0x00
 #define CISTPL_FUNCID_MEMORY  0x01
+#define CISTPL_FUNCID_SERIAL  0x02
 #define CISTPL_FUNCID_NETWORK 0x06
 
 typedef struct pccard_cis_t {
@@ -205,6 +210,9 @@ extern int pccard_cis_te100pc16(uint8_t *buf, const uint8_t mac[6]);
 extern int pccard_cis_3c589d(uint8_t *buf);
 extern int pccard_cis_sram(uint8_t *buf, uint32_t size);
 extern int pccard_cis_flash(uint8_t *buf, uint32_t size);
+/* A multi-function card's: into buf (512 bytes), with where each function's
+   configuration registers are. */
+extern int pccard_cis_3c562d(uint8_t *buf, const uint8_t mac[6], uint32_t *lan_cfg, uint32_t *modem_cfg);
 
 #ifdef __cplusplus
 }
