@@ -44,7 +44,13 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   section. Verified in Win98 (NET3C562.INF + MDMGATEW.INF, ping, ATI over ReadFile); caveat:
   Windows tends to give its modem COM4 at 2E8h, which the S3 cards' 8514/A register shadows
   (`vid_s3.c`, as on real hardware) -- reads come back 00h; move the modem's I/O in Device
-  Manager; see `mfchandoff.md`. A memory card's write-protect switch shows on the socket's WP
+  Manager; see `mfchandoff.md`. Adaptec APA-1460 SlimSCSI (`scsi_apa1460.c`): the AIC-6360 of
+  `scsi_aic6360.c` (`aic6360_chip_init()`: the chip without ISA I/O or IRQ), COR at 2000h as its
+  Technical Reference has it (SRESET/IOEN/PRIMARY, so CIS indexes 09h = 340h, 08h = 140h), PORTA/B
+  read FFh; Windows 98's SCSI.INF ID `...-BE89` (SPARROW.MPD). Its SCSI bus is its socket's
+  (`pcmcia_scsi_bus()`), kept from the hard reset (or first insertion) to the next, after every
+  other device's -- `scsi_plan()` lists it, so Settings > Hard disks names it. Verified in Win98: a
+  disk on its bus as E:, read and written. A memory card's write-protect switch shows on the socket's WP
   bit. CIS in
   `pccard_cis.c`: built there, with NO_LINK, and a 2-byte CONFIG filler subtuple solved at
   build time so Windows 9x's ID matches the INF's (its checksum: ARC by nibble tables with one

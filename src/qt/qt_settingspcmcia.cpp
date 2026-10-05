@@ -198,6 +198,12 @@ SettingsPcmcia::changed()
     return changed ? (SETTINGS_CHANGED | SETTINGS_REQUIRE_HARD_RESET) : 0;
 }
 
+int
+SettingsPcmcia::socketCard(int s) const
+{
+    return (hasIsaBus(machineId) && enable->isChecked()) ? sock[s].card->currentData().toInt() : 0;
+}
+
 void
 SettingsPcmcia::save(int soft)
 {

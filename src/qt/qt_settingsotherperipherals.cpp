@@ -632,3 +632,9 @@ SettingsOtherPeripherals::on_pushButtonConfigureKeyCard_clicked()
 {
     novell_keycard_cfg_changed |= DeviceConfig::ConfigureDevice(&novell_keycard_device);
 }
+
+int
+SettingsOtherPeripherals::pcmciaCard(int s) const
+{
+    return pcmcia->socketCard(s);
+}
