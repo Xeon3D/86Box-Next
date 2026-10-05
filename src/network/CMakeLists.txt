@@ -59,6 +59,9 @@ if (HAIKU)
     target_link_libraries(86Box network)
 endif()
 
+# 86Box-Next: the virtual ISP behind the modems' "Internet" line.
+add_subdirectory(isp)
+
 if(WIN32)
     target_link_libraries(86Box ws2_32)
 endif()

@@ -23,9 +23,11 @@
 extern "C" {
 #endif
 
+/* Saved in the configuration as these numbers: never renumber. */
 enum {
-    CHAR_MODEM_LINE_DEAD = 0, /* not connected                  */
-    CHAR_MODEM_LINE_TCP  = 1  /* dialling reaches a TCP/IP host */
+    CHAR_MODEM_LINE_DEAD = 0, /* not connected                                */
+    CHAR_MODEM_LINE_TCP  = 1, /* dialling reaches a TCP/IP host               */
+    CHAR_MODEM_LINE_ISP  = 2  /* dialling reaches the built-in ISP (86box/isp.h) */
 };
 
 enum {
