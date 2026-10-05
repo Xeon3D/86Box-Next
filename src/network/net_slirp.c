@@ -17,6 +17,11 @@
  *          Copyright 2017-2019 Fred N. van Kempen.
  *          Copyright 2020 RichardG.
  */
+#ifdef _WIN32
+/* 86Box-Next: the Windows poll loop uses select(); a guest with a browser
+   open has more sockets than Winsock's default set of 64. */
+#    define FD_SETSIZE 1024
+#endif
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -71,7 +76,18 @@ typedef struct net_slirp_t {
     int            during_tx;
     int            recv_on_tx;
 #ifdef _WIN32
-    HANDLE         sock_event;
+    /* 86Box-Next: a loopback UDP socket connected to itself stands in for
+       the TX and stop events, so that select() can wait on it with the
+       sockets; and what libslirp asked to have watched this pass. */
+    SOCKET           wake;
+    volatile int     stop;
+    SOCKET          *poll_fd;
+    int             *poll_ev;
+    size_t           poll_n;
+    size_t           poll_cap;
+    fd_set           rd;
+    fd_set           wr;
+    fd_set           ex;
 #else
     uint32_t       pfd_len;
     uint32_t       pfd_size;
@@ -214,19 +230,44 @@ net_slirp_add_poll(slirp_os_socket fd, int events, void *opaque)
 net_slirp_add_poll(int fd, int events, void *opaque)
 #    endif
 {
-    net_slirp_t *slirp   = (net_slirp_t *) opaque;
-    long         bitmask = 0;
-    if (events & SLIRP_POLL_IN)
-        bitmask |= FD_READ | FD_ACCEPT;
-    if (events & SLIRP_POLL_OUT)
-        bitmask |= FD_WRITE | FD_CONNECT;
-    if (events & SLIRP_POLL_HUP)
-        bitmask |= FD_CLOSE;
-    if (events & SLIRP_POLL_PRI)
-        bitmask |= FD_OOB;
+    /* 86Box-Next: select(), not WSAEventSelect.  Every WSAEventSelect call
+       clears what the socket has recorded, and this runs for every socket on
+       every pass: an FD_CONNECT recorded between one pass's look and the next
+       registration was lost, and a connect completes only once -- the guest's
+       SYN went unanswered.  select() reports a state and loses nothing. */
+    net_slirp_t *slirp = (net_slirp_t *) opaque;
+    const SOCKET s     = (SOCKET) fd;
 
-    WSAEventSelect(fd, slirp->sock_event, bitmask);
-    return fd;
+    if ((slirp->rd.fd_count >= FD_SETSIZE) || (slirp->wr.fd_count >= FD_SETSIZE) ||
+        (slirp->ex.fd_count >= FD_SETSIZE))
+        return -1; /* full: not watched this pass */
+    if (slirp->poll_n >= slirp->poll_cap) {
+        const size_t cap = slirp->poll_cap + 16;
+        SOCKET      *fds = realloc(slirp->poll_fd, cap * sizeof(SOCKET));
+        int         *evs;
+
+        if (fds == NULL)
+            return -1;
+        slirp->poll_fd = fds;
+        if ((evs = realloc(slirp->poll_ev, cap * sizeof(int))) == NULL)
+            return -1;
+        slirp->poll_ev  = evs;
+        slirp->poll_cap = cap;
+    }
+    slirp->poll_fd[slirp->poll_n] = s;
+    slirp->poll_ev[slirp->poll_n] = events;
+
+    if (events & SLIRP_POLL_IN)
+        FD_SET(s, &slirp->rd);
+    /* A connect that fails shows in the exception set, one that succeeds in
+       the write set. */
+    if (events & SLIRP_POLL_OUT) {
+        FD_SET(s, &slirp->wr);
+        FD_SET(s, &slirp->ex);
+    }
+    if (events & SLIRP_POLL_PRI)
+        FD_SET(s, &slirp->ex);
+    return (int) slirp->poll_n++;
 }
 #else
 static int
@@ -271,34 +312,29 @@ net_slirp_add_poll(int fd, int events, void *opaque)
 static int
 net_slirp_get_revents(int idx, void *opaque)
 {
-    net_slirp_t     *slirp = (net_slirp_t *) opaque;
-    int              ret   = 0;
-    WSANETWORKEVENTS ev;
-    if (WSAEnumNetworkEvents(idx, slirp->sock_event, &ev) != 0) {
-        return ret;
+    /* 86Box-Next: only what select() found.  This used to report "readable"
+       when nothing had happened, but libslirp takes a UDP recvfrom() that
+       would block for an error and answers it with an ICMP port unreachable
+       to the guest: every pass, for every UDP socket, DNS included. */
+    net_slirp_t *slirp = (net_slirp_t *) opaque;
+    int          ret   = 0;
+    SOCKET       s;
+    int          ev;
+
+    if ((idx < 0) || ((size_t) idx >= slirp->poll_n))
+        return 0;
+    s  = slirp->poll_fd[idx];
+    ev = slirp->poll_ev[idx];
+    if (FD_ISSET(s, &slirp->rd))
+        ret |= SLIRP_POLL_IN; /* data, a connection to accept, or the far end closing */
+    if (FD_ISSET(s, &slirp->wr))
+        ret |= SLIRP_POLL_OUT;
+    if (FD_ISSET(s, &slirp->ex)) {
+        if (ev & SLIRP_POLL_PRI)
+            ret |= SLIRP_POLL_PRI;
+        if (ev & SLIRP_POLL_OUT)
+            ret |= SLIRP_POLL_ERR;
     }
-
-#    define WSA_TO_POLL(_wsaev, _pollev)                \
-        do {                                            \
-            if (ev.lNetworkEvents & (_wsaev)) {         \
-                ret |= (_pollev);                       \
-                if (ev.iErrorCode[_wsaev##_BIT] != 0) { \
-                    ret |= SLIRP_POLL_ERR;              \
-                }                                       \
-            }                                           \
-        } while (0)
-
-    WSA_TO_POLL(FD_READ, SLIRP_POLL_IN);
-    WSA_TO_POLL(FD_ACCEPT, SLIRP_POLL_IN);
-    WSA_TO_POLL(FD_WRITE, SLIRP_POLL_OUT);
-    WSA_TO_POLL(FD_CONNECT, SLIRP_POLL_OUT);
-    WSA_TO_POLL(FD_OOB, SLIRP_POLL_PRI);
-    WSA_TO_POLL(FD_CLOSE, SLIRP_POLL_IN);
-    WSA_TO_POLL(FD_CLOSE, SLIRP_POLL_HUP);
-
-    if (ret == 0)
-        ret |= SLIRP_POLL_IN;
-
     return ret;
 }
 #else
@@ -355,7 +391,11 @@ void
 net_slirp_in_available(void *priv)
 {
     net_slirp_t *slirp = (net_slirp_t *) priv;
+#ifdef _WIN32
+    (void) send(slirp->wake, "t", 1, 0);
+#else
     net_event_set(&slirp->tx_event);
+#endif
 }
 
 static void
@@ -384,44 +424,54 @@ net_slirp_thread(void *priv)
     /* Start polling. */
     slirp_log("SLiRP: polling started.\n");
 
-    HANDLE events[3];
-    events[NET_EVENT_STOP] = net_event_get_handle(&slirp->stop_event);
-    events[NET_EVENT_TX]   = net_event_get_handle(&slirp->tx_event);
-    events[NET_EVENT_RX]   = slirp->sock_event;
-    bool run               = true;
-    while (run) {
-        uint32_t timeout = -1;
+    while (!slirp->stop) {
+        uint32_t       timeout = UINT32_MAX;
+        struct timeval tv;
+        int            ret;
+        int            woken = 0;
+
+        FD_ZERO(&slirp->rd);
+        FD_ZERO(&slirp->wr);
+        FD_ZERO(&slirp->ex);
+        FD_SET(slirp->wake, &slirp->rd);
+        slirp->poll_n = 0;
 #    if SLIRP_CHECK_VERSION(4, 9, 0)
         slirp_pollfds_fill_socket(slirp->slirp, &timeout, net_slirp_add_poll, slirp);
 #    else
         slirp_pollfds_fill(slirp->slirp, &timeout, net_slirp_add_poll, slirp);
 #    endif
-        if (timeout < 0)
-            timeout = INFINITE;
 
-        int ret = WaitForMultipleObjects(3, events, FALSE, (DWORD) timeout);
-        switch (ret - WAIT_OBJECT_0) {
-            case NET_EVENT_STOP:
-                run = false;
-                break;
+        tv.tv_sec  = (long) (timeout / 1000);
+        tv.tv_usec = (long) ((timeout % 1000) * 1000);
+        ret        = select(0, &slirp->rd, &slirp->wr, &slirp->ex, (timeout == UINT32_MAX) ? NULL : &tv);
+        if (ret < 0) {
+            /* Nothing is known to be ready: tell libslirp so, with empty sets. */
+            FD_ZERO(&slirp->rd);
+            FD_ZERO(&slirp->wr);
+            FD_ZERO(&slirp->ex);
+        } else if (FD_ISSET(slirp->wake, &slirp->rd)) {
+            char buf[64];
 
-            case NET_EVENT_TX:
-                {
-                    slirp->during_tx = 1;
-                    int packets = network_tx_popv(slirp->card, slirp->pkt_tx_v, SLIRP_PKT_BATCH);
-                    if (!(net_cards_conf[slirp->card->card_num].link_state & NET_LINK_DOWN)) {
-                        for (int i = 0; i < packets; i++)
-                            net_slirp_in(slirp, slirp->pkt_tx_v[i].data, slirp->pkt_tx_v[i].len);
-                    }
-                    slirp->during_tx = 0;
+            while (recv(slirp->wake, buf, sizeof(buf), 0) > 0)
+                ;
+            woken = 1;
+        }
+        if (slirp->stop)
+            break;
 
-                    net_slirp_rx_deferred_packets(slirp);
-                }
-                break;
+        slirp_pollfds_poll(slirp->slirp, ret < 0, net_slirp_get_revents, slirp);
 
-            default:
-                slirp_pollfds_poll(slirp->slirp, ret == WAIT_FAILED, net_slirp_get_revents, slirp);
-                break;
+        /* Woken by the card: what it has queued for the network. */
+        if (woken) {
+            slirp->during_tx = 1;
+            int packets = network_tx_popv(slirp->card, slirp->pkt_tx_v, SLIRP_PKT_BATCH);
+            if (!(net_cards_conf[slirp->card->card_num].link_state & NET_LINK_DOWN)) {
+                for (int i = 0; i < packets; i++)
+                    net_slirp_in(slirp, slirp->pkt_tx_v[i].data, slirp->pkt_tx_v[i].len);
+            }
+            slirp->during_tx = 0;
+
+            net_slirp_rx_deferred_packets(slirp);
         }
     }
 
@@ -475,6 +525,34 @@ net_slirp_thread(void *priv)
     }
 
     slirp_log("SLiRP: polling stopped.\n");
+}
+#endif
+
+#ifdef _WIN32
+/* 86Box-Next: the poll thread's wake-up.  Bound to loopback and connected to
+   itself, so it hears only itself; nonblocking.  slirp_new() has started
+   Winsock by the time this is called. */
+static SOCKET
+net_slirp_wake_socket(void)
+{
+    struct sockaddr_in sa;
+    int                len = sizeof(sa);
+    u_long             yes = 1;
+    SOCKET             s   = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+
+    if (s == INVALID_SOCKET)
+        return INVALID_SOCKET;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family      = AF_INET;
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if ((bind(s, (struct sockaddr *) &sa, sizeof(sa)) != 0) ||
+        (getsockname(s, (struct sockaddr *) &sa, &len) != 0) ||
+        (connect(s, (struct sockaddr *) &sa, sizeof(sa)) != 0)) {
+        closesocket(s);
+        return INVALID_SOCKET;
+    }
+    ioctlsocket(s, FIONBIO, &yes);
+    return s;
 }
 #endif
 
@@ -600,11 +678,22 @@ net_slirp_init(const netcard_t *card, const uint8_t *mac_addr, UNUSED(void *priv
         slirp->pkt_tx_v[i].data = calloc(1, NET_MAX_FRAME);
     }
     slirp->pkt.data = calloc(1, NET_MAX_FRAME);
+#ifdef _WIN32
+    slirp->wake = net_slirp_wake_socket();
+    if (slirp->wake == INVALID_SOCKET) {
+        slirp_log("SLiRP: no loopback socket to wake the poll thread with\n");
+        snprintf(netdrv_errbuf, NET_DRV_ERRBUF_SIZE, "SLiRP initialization failed (loopback socket)");
+        slirp_cleanup(slirp->slirp);
+        for (int i = 0; i < SLIRP_PKT_BATCH; i++)
+            free(slirp->pkt_tx_v[i].data);
+        free(slirp->pkt.data);
+        free(slirp);
+        return NULL;
+    }
+#else
     net_event_init(&slirp->rx_event);
     net_event_init(&slirp->tx_event);
     net_event_init(&slirp->stop_event);
-#ifdef _WIN32
-    slirp->sock_event = CreateEvent(NULL, FALSE, FALSE, NULL);
 #endif
 
     const char *nic_name = network_card_get_internal_name(net_cards_conf[net_card_current].device_num);
@@ -647,15 +736,26 @@ net_slirp_close(void *priv)
 
     slirp_log("SLiRP: closing\n");
     /* Tell the polling thread to shut down. */
+#ifdef _WIN32
+    slirp->stop = 1;
+    (void) send(slirp->wake, "s", 1, 0);
+#else
     net_event_set(&slirp->stop_event);
+#endif
 
     /* Wait for the thread to finish. */
     slirp_log("SLiRP: waiting for thread to end...\n");
     thread_wait(slirp->poll_tid);
 
+#ifdef _WIN32
+    closesocket(slirp->wake);
+    free(slirp->poll_fd);
+    free(slirp->poll_ev);
+#else
     net_event_close(&slirp->stop_event);
     net_event_close(&slirp->tx_event);
     net_event_close(&slirp->rx_event);
+#endif
     slirp_cleanup(slirp->slirp);
     for (int i = 0; i < SLIRP_PKT_BATCH; i++) {
         free(slirp->pkt_tx_v[i].data);

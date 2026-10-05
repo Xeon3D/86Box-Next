@@ -28,7 +28,10 @@
  *          X2/X4, or a blind dial that waits out S7 for NO CARRIER).  With a
  *          host configured, dialling any number opens a TCP connection to it
  *          and the modem becomes a transparent pipe -- what a guest PPP
- *          stack wants.  A call takes as long as a real one: dial tone, the
+ *          stack wants.  86Box-Next: or the line is "Internet", and any number
+ *          reaches the built-in ISP (src/network/isp/): PPP, an address and
+ *          DNS for the guest, and a NAT out to the host's Internet, one
+ *          session per call.  A call takes as long as a real one: dial tone, the
  *          digits, ringback, then V.34 / V.90 training before CONNECT, all
  *          of it heard on the speaker (modem_sound.c) unless ATM0 or the
  *          device's Speaker option silences it.
@@ -56,6 +59,7 @@
 #include <86box/modem_sound.h>
 #include <86box/thread.h>
 #include <86box/char_modem.h>
+#include <86box/isp.h>
 #include <86box/pcmcia.h>
 
 #ifdef ENABLE_CHAR_MODEM_LOG
@@ -79,15 +83,28 @@ char_modem_log(void *priv, const char *fmt, ...)
 #define MODEM_OUT_SIZE 4096 /* modem -> DTE ring */
 #define MODEM_CMD_SIZE 256
 
+/* DTE -> line.  The line does not always take a byte the moment the UART
+   delivers it (a TCP send can block or go short; the ISP's queue can fill),
+   so bytes wait here, in order, and CTS drops while too many do.  The DTE's
+   driver may still have a FIFO's worth in flight when it sees CTS fall, and
+   the status lines are sampled every 64 character times: the high-water mark
+   leaves room for far more than that.  A DTE that sends on regardless runs
+   into the end, and the call fails -- loudly, rather than by corrupting the
+   PPP stream a byte at a time. */
+#define MODEM_TXQ_SIZE 16384
+#define MODEM_TXQ_HIGH 8192 /* CTS off       */
+#define MODEM_TXQ_LOW  2048 /* CTS on again  */
+
 enum { /* what is on the other side of the RJ11 */
        MODEM_LINE_DEAD = 0, /* nothing: dialling fails the way it would */
-       MODEM_LINE_TCP  = 1  /* a TCP host stands in for the whole PSTN */
+       MODEM_LINE_TCP  = 1, /* a TCP host stands in for the whole PSTN */
+       MODEM_LINE_ISP  = 2  /* 86Box-Next: the built-in ISP answers any number */
 };
 
 enum { /* line state machine */
        MODEM_ST_IDLE = 0,
        MODEM_ST_DIALING,    /* off hook, waiting out the dial  */
-       MODEM_ST_CONNECTING, /* TCP connect in flight           */
+       MODEM_ST_CONNECTING, /* the far end is being reached    */
        MODEM_ST_ANSWERING,  /* carrier found: training, then CONNECT */
        MODEM_ST_ONLINE
 };
@@ -271,9 +288,12 @@ typedef struct {
     int     country;  /* AT*NC / AT+GCI                                   */
     int     online;   /* data mode rather than command mode               */
 
-    /* Line side. */
-    int      state;
-    SOCKET   sock;
+    /* Line side.  `call` is the far end of the call in progress, NULL with
+       none: a TCP host (`sock`) or an ISP session (`isp`). */
+    int                           state;
+    const struct modem_line_ops  *call;
+    SOCKET                        sock;
+    isp_session_t                *isp;
     uint32_t deadline; /* plat_get_ticks() value the current wait ends at  */
     int      said_connect; /* ANSWERING: the CONNECT line has been queued  */
     int      dtr;
@@ -281,6 +301,12 @@ typedef struct {
     /* +++ escape detection. */
     uint32_t last_data;
     int      pluses;
+
+    /* DTE -> line queue, and whether it has CTS held off. */
+    uint8_t  txq[MODEM_TXQ_SIZE];
+    uint32_t txq_head;
+    uint32_t txq_tail;
+    int      cts_held;
 
     /* The speaker, and the schedule of a real call. */
     modem_sound_t *snd;
@@ -393,19 +419,246 @@ modem_result(modem_t *dev, int code)
 
 /* ------------------------------------------------------------------- line */
 
+/* The far end of a call.  Whatever it is, the call itself -- dialling,
+   ringing, training, CONNECT, DCD, hanging up -- is the modem's. */
+typedef struct modem_line_ops {
+    int (*open)(modem_t *dev);      /* 0: reaching it; -1: nobody there    */
+    int (*connected)(modem_t *dev); /* 1: answered; 0: not yet; -1: failed */
+    /* Bytes taken, or -1 with *wouldblock set (try again) or clear (gone). */
+    int (*send)(modem_t *dev, const uint8_t *buf, int len, int *wouldblock);
+    /* Bytes, 0 when the far end has hung up, or -1 as above. */
+    int (*recv)(modem_t *dev, uint8_t *buf, int len, int *wouldblock);
+    void (*close)(modem_t *dev);
+} modem_line_ops_t;
+
+/* A TCP host. */
+static int
+modem_tcp_open(modem_t *dev)
+{
+    dev->sock = plat_netsocket_create(NET_SOCKET_TCP);
+    if (!CHAR_FD_VALID(dev->sock) ||
+        (plat_netsocket_connect(dev->sock, dev->host, (unsigned short) dev->host_port) != 0)) {
+        if (CHAR_FD_VALID(dev->sock)) {
+            plat_netsocket_close(dev->sock);
+            dev->sock = (SOCKET) -1;
+        }
+        return -1;
+    }
+    return 0;
+}
+
+static int
+modem_tcp_connected(modem_t *dev)
+{
+    return plat_netsocket_connected(dev->sock);
+}
+
+static int
+modem_tcp_send(modem_t *dev, const uint8_t *buf, int len, int *wouldblock)
+{
+    *wouldblock = 0;
+    return plat_netsocket_send(dev->sock, buf, (unsigned int) len, wouldblock);
+}
+
+static int
+modem_tcp_recv(modem_t *dev, uint8_t *buf, int len, int *wouldblock)
+{
+    *wouldblock = 0;
+    return plat_netsocket_receive(dev->sock, buf, (unsigned int) len, wouldblock);
+}
+
+static void
+modem_tcp_close(modem_t *dev)
+{
+    if (CHAR_FD_VALID(dev->sock)) {
+        plat_netsocket_close(dev->sock);
+        dev->sock = (SOCKET) -1;
+    }
+}
+
+static const modem_line_ops_t modem_line_tcp = {
+    .open      = modem_tcp_open,
+    .connected = modem_tcp_connected,
+    .send      = modem_tcp_send,
+    .recv      = modem_tcp_recv,
+    .close     = modem_tcp_close
+};
+
+/* 86Box-Next: the built-in ISP.  A session is there the moment it is opened;
+   it says nothing until the guest starts PPP, which is after CONNECT.  Its
+   log lines come from its own thread. */
+static void
+modem_isp_log(void *opaque, const char *msg)
+{
+    modem_t *dev = (modem_t *) opaque;
+
+    (void) dev; /* the log call compiles away when logging is off */
+    (void) msg;
+    char_modem_log(dev->log, "%s\n", msg);
+}
+
+static int
+modem_isp_open(modem_t *dev)
+{
+    const isp_session_callbacks_t cb = { NULL, modem_isp_log, dev };
+    char                          err[128];
+
+    dev->isp = isp_session_open(&cb, err, sizeof(err));
+    if (dev->isp == NULL) {
+        char_modem_log(dev->log, "ISP: %s\n", err);
+        return -1;
+    }
+    return 0;
+}
+
+static int
+modem_isp_connected(modem_t *dev)
+{
+    return (dev->isp != NULL) ? 1 : -1;
+}
+
+static int
+modem_isp_send(modem_t *dev, const uint8_t *buf, int len, int *wouldblock)
+{
+    const size_t n = isp_session_write(dev->isp, buf, (size_t) len);
+
+    *wouldblock = (n == 0);
+    return (n == 0) ? -1 : (int) n;
+}
+
+static int
+modem_isp_recv(modem_t *dev, uint8_t *buf, int len, int *wouldblock)
+{
+    const size_t n = isp_session_read(dev->isp, buf, (size_t) len);
+
+    *wouldblock = 0;
+    if (n > 0)
+        return (int) n;
+    if (isp_session_ended(dev->isp))
+        return 0; /* PPP is over: the ISP hangs up */
+    *wouldblock = 1;
+    return -1;
+}
+
+static void
+modem_isp_close(modem_t *dev)
+{
+    isp_session_close(dev->isp);
+    dev->isp = NULL;
+}
+
+static const modem_line_ops_t modem_line_isp = {
+    .open      = modem_isp_open,
+    .connected = modem_isp_connected,
+    .send      = modem_isp_send,
+    .recv      = modem_isp_recv,
+    .close     = modem_isp_close
+};
+
+#ifdef ENABLE_CHAR_MODEM_LOG
+/* For the log, which is all that names the line. */
+static const char *
+modem_line_name(const modem_t *dev)
+{
+    switch (dev->line) {
+        case MODEM_LINE_TCP:
+            return dev->host;
+        case MODEM_LINE_ISP:
+            return "the built-in ISP";
+        default:
+            return "dead";
+    }
+}
+#endif
+
+static uint32_t
+modem_txq_used(const modem_t *dev)
+{
+    return (dev->txq_head - dev->txq_tail + MODEM_TXQ_SIZE) % MODEM_TXQ_SIZE;
+}
+
+/* CTS, with hysteresis, from how full the queue to the line is. */
+static void
+modem_txq_cts(modem_t *dev)
+{
+    const uint32_t used = modem_txq_used(dev);
+
+    if (!dev->cts_held && (used >= MODEM_TXQ_HIGH)) {
+        dev->cts_held = 1;
+        char_update_status(dev->port);
+    } else if (dev->cts_held && (used <= MODEM_TXQ_LOW)) {
+        dev->cts_held = 0;
+        char_update_status(dev->port);
+    }
+}
+
 static void
 modem_hangup(modem_t *dev)
 {
     if (dev->state != MODEM_ST_IDLE)
         modem_sound_event(dev->snd, MODEM_SOUND_HANGUP, NULL, 0);
-    if (CHAR_FD_VALID(dev->sock)) {
-        plat_netsocket_close(dev->sock);
-        dev->sock = (SOCKET) -1;
+    if (dev->call != NULL) {
+        dev->call->close(dev);
+        dev->call = NULL;
     }
-    dev->state  = MODEM_ST_IDLE;
-    dev->online = 0;
-    dev->pluses = 0;
+    dev->state    = MODEM_ST_IDLE;
+    dev->online   = 0;
+    dev->pluses   = 0;
+    dev->txq_head = 0;
+    dev->txq_tail = 0;
+    dev->cts_held = 0;
     char_update_status(dev->port);
+}
+
+/* The carrier is gone: hang up and say so. */
+static void
+modem_carrier_lost(modem_t *dev, const char *why)
+{
+    (void) why;
+    char_modem_log(dev->log, "carrier lost: %s\n", why);
+    modem_hangup(dev);
+    modem_result(dev, RES_NO_CARRIER);
+}
+
+/* Hand the line what it will take of the queue, in order.  A short send
+   advances by what went; a full line is tried again on the next poll. */
+static void
+modem_txq_flush(modem_t *dev)
+{
+    while ((dev->call != NULL) && (dev->state == MODEM_ST_ONLINE) && (dev->txq_tail != dev->txq_head)) {
+        const uint32_t chunk      = (dev->txq_head > dev->txq_tail) ? (dev->txq_head - dev->txq_tail)
+                                                                    : (MODEM_TXQ_SIZE - dev->txq_tail);
+        int            wouldblock = 0;
+        const int      ret        = dev->call->send(dev, &dev->txq[dev->txq_tail], (int) chunk, &wouldblock);
+
+        if (ret > 0)
+            dev->txq_tail = (dev->txq_tail + (uint32_t) ret) % MODEM_TXQ_SIZE;
+        else if ((ret == 0) || wouldblock)
+            break; /* the line is full for now */
+        else {
+            modem_carrier_lost(dev, "send failed");
+            return;
+        }
+    }
+    modem_txq_cts(dev);
+}
+
+/* One byte for the line, behind the ones already waiting. */
+static void
+modem_txq_put(modem_t *dev, uint8_t val)
+{
+    const uint32_t next = (dev->txq_head + 1) % MODEM_TXQ_SIZE;
+
+    if (dev->call == NULL)
+        return; /* no call: the byte goes nowhere, as down a dead line */
+    if (next == dev->txq_tail) {
+        /* The DTE has sent this many bytes past CTS: end the call rather
+           than drop one and corrupt the stream. */
+        modem_carrier_lost(dev, "the DTE ignored CTS and overran the transmit queue");
+        return;
+    }
+    dev->txq[dev->txq_head] = val;
+    dev->txq_head           = next;
 }
 
 /* The carrier is up: start the CONNECT sequence described above. */
@@ -440,23 +693,23 @@ modem_dial(modem_t *dev, const char *number)
     char_modem_log(dev->log, "dial \"%s\"\n", number);
     dev->refused   = 0;
     dev->answer_at = now + modem_sound_dial_ms(number, dev->s[8], dev->pulse) + modem_sound_ring_ms();
-    if (dev->line == MODEM_LINE_TCP) {
+    if (dev->line != MODEM_LINE_DEAD) {
         modem_sound_country(dev->snd, (dev->country == 16) || (dev->country == 0xB4), dev->connect_rate > 33600);
         modem_sound_event(dev->snd, MODEM_SOUND_DIAL, number, (dev->s[8] & 0xff) | (dev->pulse << 8));
     }
 
-    if (dev->line == MODEM_LINE_TCP) {
-        dev->sock = plat_netsocket_create(NET_SOCKET_TCP);
-        if (!CHAR_FD_VALID(dev->sock) ||
-            (plat_netsocket_connect(dev->sock, dev->host, (unsigned short) dev->host_port) != 0)) {
-            if (CHAR_FD_VALID(dev->sock)) {
-                plat_netsocket_close(dev->sock);
-                dev->sock = (SOCKET) -1;
-            }
+    if (dev->line != MODEM_LINE_DEAD) {
+        const modem_line_ops_t *ops = (dev->line == MODEM_LINE_ISP) ? &modem_line_isp : &modem_line_tcp;
+
+        /* The ISP answers any number, but there has to be one: a bare ATD
+           rings nowhere. */
+        if (((dev->line == MODEM_LINE_ISP) && (strpbrk(number, "0123456789*#") == NULL)) ||
+            (ops->open(dev) != 0)) {
             dev->state    = MODEM_ST_DIALING;
             dev->deadline = dev->answer_at + 5000;   /* it rings, and nobody answers */
             return;
         }
+        dev->call     = ops;
         dev->state    = MODEM_ST_CONNECTING;
         dev->deadline = now + (dev->s[7] * 1000u);
         return;
@@ -488,7 +741,7 @@ modem_poll_line(modem_t *dev)
             break;
 
         case MODEM_ST_CONNECTING: {
-            const int connected = dev->refused ? -1 : plat_netsocket_connected(dev->sock);
+            const int connected = dev->refused ? -1 : dev->call->connected(dev);
 
             if (connected == 1) {
                 /* The far end is there; it picks up after its first ring. */
@@ -907,33 +1160,28 @@ modem_data_byte(modem_t *dev, uint8_t val)
 
     /* The escape sequence: three copies of S2 with a guard time either side and
        nothing else in between. */
-    if (val == dev->s[2]) {
-        if ((dev->pluses > 0) || ((now - dev->last_data) >= guard)) {
-            dev->pluses++;
-            dev->last_data = now;
-            if (dev->pluses <= 3)
-                return;
-        }
+    if ((val == dev->s[2]) && (dev->pluses < 3) &&
+        ((dev->pluses > 0) || ((now - dev->last_data) >= guard))) {
+        dev->pluses++;
+        dev->last_data = now;
+        return;
     }
+    /* A fourth falls through: it and the three held back are data. */
 
     if (dev->pluses > 0) {
-        /* Broken by other traffic -- the pluses were data after all. */
-        for (int i = 0; i < dev->pluses; i++) {
-            int wouldblock = 0;
+        /* Broken by other traffic -- the pluses were data after all, and go
+           ahead of this byte. */
+        const int n = dev->pluses;
 
-            if (CHAR_FD_VALID(dev->sock))
-                (void) plat_netsocket_send(dev->sock, &dev->s[2], 1, &wouldblock);
-        }
         dev->pluses = 0;
+        for (int i = 0; i < n; i++)
+            modem_txq_put(dev, dev->s[2]);
+        if (!dev->online)
+            return; /* the call failed under them */
     }
 
     dev->last_data = now;
-
-    if (CHAR_FD_VALID(dev->sock)) {
-        int wouldblock = 0;
-
-        (void) plat_netsocket_send(dev->sock, &val, 1, &wouldblock);
-    }
+    modem_txq_put(dev, val);
 }
 
 /* ------------------------------------------------- the line, from the UI */
@@ -967,8 +1215,12 @@ modem_set_line(modem_t *dev, int line, const char *host, int port)
     snprintf(dev->host, sizeof(dev->host), "%s", host);
 
     /* A host with nothing in it is a dead line however the selector is set --
-       otherwise every dial would stall on a connect to port 0. */
-    dev->line = ((line == MODEM_LINE_TCP) && (dev->host[0] != '\0')) ? MODEM_LINE_TCP : MODEM_LINE_DEAD;
+       otherwise every dial would stall on a connect to port 0.  The ISP needs
+       no host. */
+    if (line == MODEM_LINE_ISP)
+        dev->line = MODEM_LINE_ISP;
+    else
+        dev->line = ((line == MODEM_LINE_TCP) && (dev->host[0] != '\0')) ? MODEM_LINE_TCP : MODEM_LINE_DEAD;
 }
 
 /* Take up a line change from the status bar.  A call in progress is on the
@@ -990,7 +1242,7 @@ modem_apply_pending(modem_t *dev)
     dev->pending = 0;
     modem_unlock();
 
-    char_modem_log(dev->log, "line now %s\n", (dev->line == MODEM_LINE_TCP) ? dev->host : "dead");
+    char_modem_log(dev->log, "line now %s\n", modem_line_name(dev));
     if (changed && (dev->state != MODEM_ST_IDLE)) {
         modem_hangup(dev);
         modem_result(dev, RES_NO_CARRIER);
@@ -1084,7 +1336,17 @@ char_modem_set_line(int com, int line, const char *host, int port)
             host = "";
         if ((port < 1) || (port > 65535))
             port = 23;
-        dev->pend_line = (line == CHAR_MODEM_LINE_TCP) ? MODEM_LINE_TCP : MODEM_LINE_DEAD;
+        switch (line) {
+            case CHAR_MODEM_LINE_TCP:
+                dev->pend_line = MODEM_LINE_TCP;
+                break;
+            case CHAR_MODEM_LINE_ISP:
+                dev->pend_line = MODEM_LINE_ISP;
+                break;
+            default:
+                dev->pend_line = MODEM_LINE_DEAD;
+                break;
+        }
         dev->pend_port = port;
         snprintf(dev->pend_host, sizeof(dev->pend_host), "%s", host);
         dev->pending = 1;
@@ -1119,32 +1381,35 @@ modem_read(uint8_t *buf, size_t len, void *priv)
         modem_result(dev, RES_OK);
     }
 
+    /* Whatever the line would not take before. */
+    modem_txq_flush(dev);
+
     /* Anything the carrier is delivering goes in front of the ring -- but only
        as much as the ring can hold.  The far end can push a TCP window's worth
        in a millisecond; the UART drains 5.7 KB/s.  Taking it all and dropping
        the overflow (what this did before) corrupts HDLC frames and the guest's
-       TCP pays a retransmission timeout for each.  Leaving it in the socket is
-       what a real modem's flow control does: the peer's kernel holds it. */
-    if (dev->online && CHAR_FD_VALID(dev->sock)) {
+       TCP pays a retransmission timeout for each.  Leaving it at the far end
+       is what a real modem's flow control does: the peer's kernel, or the
+       ISP's queue, holds it.  A full ring asks for nothing, and is not a
+       hangup: only an actual receive can report one. */
+    if (dev->online && (dev->call != NULL)) {
         uint8_t   net[256];
-        int       wouldblock = 0;
-        const int used       = (int) ((dev->out_head - dev->out_tail + MODEM_OUT_SIZE) % MODEM_OUT_SIZE);
-        int       room       = MODEM_OUT_SIZE - 1 - used;
-        int       ret        = 0;
+        const int used = (int) ((dev->out_head - dev->out_tail + MODEM_OUT_SIZE) % MODEM_OUT_SIZE);
+        int       room = MODEM_OUT_SIZE - 1 - used;
 
         if (room > (int) sizeof(net))
             room = (int) sizeof(net);
-        if (room > 0)
-            ret = plat_netsocket_receive(dev->sock, net, room, &wouldblock);
-        else
-            wouldblock = 1; /* nothing asked for; not a hangup */
+        if (room > 0) {
+            int       wouldblock = 0;
+            const int ret        = dev->call->recv(dev, net, room, &wouldblock);
 
-        if (ret > 0) {
-            for (int i = 0; i < ret; i++)
-                modem_out_byte(dev, net[i]);
-        } else if ((ret == 0) || ((ret < 0) && !wouldblock)) {
-            modem_hangup(dev);
-            modem_result(dev, RES_NO_CARRIER);
+            if (ret > 0) {
+                for (int i = 0; i < ret; i++)
+                    modem_out_byte(dev, net[i]);
+            } else if (ret == 0)
+                modem_carrier_lost(dev, "the far end hung up");
+            else if (!wouldblock)
+                modem_carrier_lost(dev, "receive failed");
         }
     }
 
@@ -1167,6 +1432,9 @@ modem_write(uint8_t *buf, size_t len, void *priv)
         else
             modem_command_byte(dev, buf[i]);
     }
+    /* All of it is taken: what the line cannot have yet waits in the queue,
+       and CTS tells the DTE when to stop. */
+    modem_txq_flush(dev);
 
     return len;
 }
@@ -1177,9 +1445,9 @@ modem_status(void *priv)
     modem_t *dev    = (modem_t *) priv;
     uint32_t status = 0;
 
-    /* An external modem that is switched on always has CTS: nothing here ever
-       needs to throttle the DTE. */
-    status |= CHAR_COM_CTS;
+    /* CTS is on unless the line has fallen behind: see MODEM_TXQ_HIGH. */
+    if (!dev->cts_held)
+        status |= CHAR_COM_CTS;
 
     if ((dev->dsr_mode == 0) || (dev->state != MODEM_ST_IDLE))
         status |= CHAR_COM_DSR;
@@ -1289,8 +1557,7 @@ modem_init(const device_t *info)
 
     char_modem_log(dev->log, "init(): %s, ATI%d \"%s\", ATI%d \"%s\", line %s\n",
                    dev->model->name, dev->model->ident_at, dev->ident,
-                   dev->model->fmw_at, dev->firmware,
-                   (dev->line == MODEM_LINE_TCP) ? dev->host : "dead");
+                   dev->model->fmw_at, dev->firmware, modem_line_name(dev));
 
     if (modem_mutex == NULL)
         modem_mutex = thread_create_mutex();
@@ -1317,6 +1584,7 @@ static const device_config_t modem_config[] = {
         .selection      = {
             { .description = "Not connected",             .value = MODEM_LINE_DEAD },
             { .description = "Dial out to a TCP/IP host", .value = MODEM_LINE_TCP  },
+            { .description = "Internet (built-in ISP)",   .value = MODEM_LINE_ISP  },
             { .description = ""                                                    }
         },
         .bios           = { { 0 } }

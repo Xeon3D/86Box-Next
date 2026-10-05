@@ -4,7 +4,8 @@
  *             The modem menu, behind the modem icon in the status bar.  For
  *             each COM port with a modem on it, and each PC Card with a modem
  *             of its own (the 3C562D) (char_modem.c): leave its telephone
- *             line unplugged, or have dialling reach a TCP/IP host.  The
+ *             line unplugged, have dialling reach a TCP/IP host, or have it
+ *             reach the built-in ISP and through it the Internet.  The
  *             change is made at once, without a reset -- a call in progress
  *             ends with NO CARRIER -- and kept in the modem's configuration
  *             (a PC Card's: the card's), where Settings shows it too.
@@ -50,6 +51,8 @@ lineText(int line, const QString &host, int port)
 {
     if ((line == CHAR_MODEM_LINE_TCP) && !host.isEmpty())
         return QObject::tr("dials %1:%2").arg(host).arg(port);
+    if (line == CHAR_MODEM_LINE_ISP)
+        return QObject::tr("dials the Internet");
     return QObject::tr("line not connected");
 }
 
@@ -143,7 +146,7 @@ ModemMenu::buildMenu()
 
         QAction *dead = sub->addAction(tr("Line not connected"));
         dead->setCheckable(true);
-        dead->setChecked((line != CHAR_MODEM_LINE_TCP) || qhost.isEmpty());
+        dead->setChecked((line == CHAR_MODEM_LINE_DEAD) || ((line == CHAR_MODEM_LINE_TCP) && qhost.isEmpty()));
         grp->addAction(dead);
         connect(dead, &QAction::triggered, this, [this, i]() {
             char h[128] = "";
@@ -166,6 +169,22 @@ ModemMenu::buildMenu()
                 return;
             }
             char_modem_set_line(i, CHAR_MODEM_LINE_TCP, qhost.toUtf8().constData(), port);
+            config_save();
+            emit changed();
+        });
+
+        /* Any number reaches the built-in ISP: PPP, an address, the host's
+           Internet.  The TCP host is kept for when it is chosen again. */
+        QAction *isp = sub->addAction(tr("Internet (built-in ISP)"));
+        isp->setCheckable(true);
+        isp->setChecked(line == CHAR_MODEM_LINE_ISP);
+        grp->addAction(isp);
+        connect(isp, &QAction::triggered, this, [this, i]() {
+            char h[128] = "";
+            int  p      = 23;
+            if (char_modem_get_line(i, h, sizeof(h), &p) < 0)
+                return;
+            char_modem_set_line(i, CHAR_MODEM_LINE_ISP, h, p);
             config_save();
             emit changed();
         });
