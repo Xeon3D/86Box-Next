@@ -66,6 +66,7 @@ static int  saved_port = -1;
 int  device_get_instance(void) { return 2; }
 void device_context_inst(const device_t *d, int inst) { (void) d; (void) inst; }
 void device_context_restore(void) { }
+const device_t *device_context_get_device(void) { return NULL; }
 
 void
 device_set_config_int(const char *name, int val)

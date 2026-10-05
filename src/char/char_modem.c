@@ -56,6 +56,7 @@
 #include <86box/modem_sound.h>
 #include <86box/thread.h>
 #include <86box/char_modem.h>
+#include <86box/pcmcia.h>
 
 #ifdef ENABLE_CHAR_MODEM_LOG
 int char_modem_do_log = ENABLE_CHAR_MODEM_LOG;
@@ -147,8 +148,15 @@ static const char *modem_res_text[] = {
    docs/research/33-modem.md walks all thirty. */
 enum {
     MODEM_MODEL_SUPRA = 0,
-    MODEM_MODEL_ELSA  = 1
+    MODEM_MODEL_ELSA  = 1,
+    MODEM_MODEL_3C562 = 2  /* 86Box-Next: the 3Com 3C562D PC Card's modem */
 };
+
+/* 86Box-Next: in a device's local, a modem that is no COM port's -- a PC
+   Card's, opened with char_open_unlisted() inside the card's device context
+   (instance = socket + 1), whose settings are the card's.  The status bar
+   finds it in the socket's slot of modems[]. */
+#define MODEM_UNLISTED 0x100
 
 typedef struct {
     const char *name;        /* MD_NAME.CSV, verbatim                        */
@@ -186,6 +194,22 @@ static const modem_model_t modem_models[] = {
             [2] = "OK",
             [4] = "ELSA MicroLink 56k",
             [7] = "ELSA AG, Aachen"
+        }
+    },
+    /* 86Box-Next: the modem function of the 3Com 3C562D/3C563D LAN+33.6
+       Modem PC Card (src/pcmcia/pccard_3c562.c).  A Rockwell V.34 data
+       pump; the answers are plausible ones, nothing reads them. */
+    [MODEM_MODEL_3C562] = {
+        .name       = "3Com 3C562D LAN+33.6 Modem",
+        .ident_at   = 3, .ident = "3Com 3C562D/3C563D 33.6 Modem",
+        .fmw_at     = 7, .fmw   = "V2.31",
+        .country_at = 5,
+        .info       = {
+            [0] = "33600",
+            [1] = "255",
+            [2] = "OK",
+            [4] = "3Com EtherLink III LAN+33.6 Modem PC Card",
+            [6] = "RC336ACi"
         }
     }
     // clang-format on
@@ -266,10 +290,13 @@ typedef struct {
     uint32_t       answer_at;  /* when the far end picks up                   */
     int            refused;    /* the connect failed: ring on, then give up   */
 
-    /* Where it is plugged in, so the status bar can find it and its settings
-       can be written back to its own section. */
-    const device_t *info;
-    int             inst;      /* COM port + 1 */
+    /* Where it is plugged in, so the status bar can find it (slot: a COM port,
+       or SERIAL_MAX + a PC Card socket), and the device section its settings
+       are written back to: its own for a COM port modem, the card's for a PC
+       Card's. */
+    int             slot;      /* -1: none */
+    const device_t *cfg_dev;
+    int             cfg_inst;
 
     /* The line as configured (`line` above is what is in effect: a TCP line
        with no host is dead), and a change from the status bar waiting to be
@@ -911,9 +938,11 @@ modem_data_byte(modem_t *dev, uint8_t val)
 
 /* ------------------------------------------------- the line, from the UI */
 
-/* The modems plugged in, by COM port.  The UI thread reads and queues; the
-   emulation thread opens, closes and applies. */
-static modem_t *modems[SERIAL_MAX];
+/* The modems plugged in, by slot: the COM ports, then the PC Card sockets.
+   The UI thread reads and queues; the emulation thread opens, closes and
+   applies. */
+#define MODEM_SLOTS (SERIAL_MAX + PCMCIA_SOCKETS)
+static modem_t *modems[MODEM_SLOTS];
 static mutex_t *modem_mutex = NULL;
 
 static void
@@ -969,9 +998,25 @@ modem_apply_pending(modem_t *dev)
 }
 
 int
+char_modem_slots(void)
+{
+    return MODEM_SLOTS;
+}
+
+/* "COM1", or "PC Card A" for a PC Card's modem. */
+void
+char_modem_slot_label(int com, char *buf, size_t len)
+{
+    if (com < SERIAL_MAX)
+        snprintf(buf, len, "COM%d", com + 1);
+    else
+        snprintf(buf, len, "PC Card %c", 'A' + (com - SERIAL_MAX));
+}
+
+int
 char_modem_present(int com)
 {
-    return (com >= 0) && (com < SERIAL_MAX) && (modems[com] != NULL);
+    return (com >= 0) && (com < MODEM_SLOTS) && (modems[com] != NULL);
 }
 
 const char *
@@ -1046,7 +1091,7 @@ char_modem_set_line(int com, int line, const char *host, int port)
 
         /* Into its own section, so it is there after a restart and in the
            Settings dialog. */
-        device_context_inst(dev->info, dev->inst);
+        device_context_inst(dev->cfg_dev, dev->cfg_inst);
         device_set_config_int("line", dev->pend_line);
         device_set_config_string("host", dev->pend_host);
         device_set_config_int("host_port", dev->pend_port);
@@ -1196,8 +1241,8 @@ modem_close(void *priv)
     modem_t *dev = (modem_t *) priv;
 
     modem_lock();
-    if ((dev->inst >= 1) && (dev->inst <= SERIAL_MAX) && (modems[dev->inst - 1] == dev))
-        modems[dev->inst - 1] = NULL;
+    if ((dev->slot >= 0) && (modems[dev->slot] == dev))
+        modems[dev->slot] = NULL;
     modem_unlock();
 
     modem_hangup(dev);
@@ -1212,15 +1257,23 @@ modem_init(const device_t *info)
     modem_t    *dev = (modem_t *) calloc(1, sizeof(modem_t));
     const char *s;
 
-    dev->model = &modem_models[(info->local < (int) (sizeof(modem_models) / sizeof(modem_models[0])))
-                                   ? info->local
+    const int model = info->local & ~MODEM_UNLISTED;
+
+    dev->model = &modem_models[(model < (int) (sizeof(modem_models) / sizeof(modem_models[0])))
+                                   ? model
                                    : MODEM_MODEL_SUPRA];
     dev->sock  = (SOCKET) -1;
     dev->snd   = modem_sound_init(device_get_config_int("speaker"));
     modem_load_defaults(dev);
 
-    dev->info         = info;
-    dev->inst         = device_get_instance();
+    dev->cfg_inst = device_get_instance();
+    if (info->local & MODEM_UNLISTED) {
+        dev->cfg_dev = device_context_get_device();
+        dev->slot    = ((dev->cfg_inst >= 1) && (dev->cfg_inst <= PCMCIA_SOCKETS)) ? (SERIAL_MAX + dev->cfg_inst - 1) : -1;
+    } else {
+        dev->cfg_dev = info;
+        dev->slot    = ((dev->cfg_inst >= 1) && (dev->cfg_inst <= SERIAL_MAX)) ? (dev->cfg_inst - 1) : -1;
+    }
     dev->connect_rate = device_get_config_int("connect_rate");
 
     s = device_get_config_string("host");
@@ -1242,8 +1295,8 @@ modem_init(const device_t *info)
     if (modem_mutex == NULL)
         modem_mutex = thread_create_mutex();
     modem_lock();
-    if ((dev->inst >= 1) && (dev->inst <= SERIAL_MAX))
-        modems[dev->inst - 1] = dev;
+    if (dev->slot >= 0)
+        modems[dev->slot] = dev;
     modem_unlock();
 
     return dev;
@@ -1349,6 +1402,24 @@ const device_t char_modem_elsa_com_device = {
     .internal_name = "modem_elsa",
     .flags         = DEVICE_COM | DEVICE_HOTPLUG,
     .local         = MODEM_MODEL_ELSA,
+    .init          = modem_init,
+    .close         = modem_close,
+    .reset         = NULL,
+    .available     = NULL,
+    .speed_changed = NULL,
+    .force_redraw  = NULL,
+    .config        = modem_config
+};
+
+/* 86Box-Next: the 3C562D PC Card's modem, opened by the card on its UART with
+   char_open_unlisted(): its settings are the card's (pccard_3c562.c repeats
+   modem_config's entries); the status bar's modem icon lists it under its
+   socket. */
+const device_t char_modem_3c562_device = {
+    .name          = "3Com 3C562D LAN+33.6 Modem",
+    .internal_name = "modem_3c562",
+    .flags         = 0,
+    .local         = MODEM_MODEL_3C562 | MODEM_UNLISTED,
     .init          = modem_init,
     .close         = modem_close,
     .reset         = NULL,

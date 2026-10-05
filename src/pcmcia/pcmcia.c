@@ -51,6 +51,7 @@ extern const device_t te100pc16_device;
 extern const device_t threec589d_device;
 extern const device_t pccard_sram_device;
 extern const device_t pccard_flash_device;
+extern const device_t pccard_3c562d_device;
 
 int  pcmcia_enabled;
 int  pcmcia_card_type[PCMCIA_SOCKETS];
@@ -60,14 +61,16 @@ char pcmcia_net_host[PCMCIA_SOCKETS][128];
 static const struct {
     const device_t *dev;
     int             network;
+    int             modem;   /* has a modem of its own (char_modem.c) */
 } cards[] = {
     // clang-format off
-    { &device_none,         0 },
-    { &threec589d_device,   1 },
-    { &te100pc16_device,    1 },
-    { &pccard_sram_device,  0 },
-    { &pccard_flash_device, 0 },
-    { NULL,                 0 }
+    { &device_none,          0, 0 },
+    { &threec589d_device,    1, 0 },
+    { &te100pc16_device,     1, 0 },
+    { &pccard_3c562d_device, 1, 1 },
+    { &pccard_sram_device,   0, 0 },
+    { &pccard_flash_device,  0, 0 },
+    { NULL,                  0, 0 }
     // clang-format on
 };
 
@@ -218,6 +221,12 @@ int
 pcmcia_card_is_network(int card)
 {
     return (card > 0) && (card < pcmcia_card_count()) && cards[card].network;
+}
+
+int
+pcmcia_card_has_modem(int card)
+{
+    return (card > 0) && (card < pcmcia_card_count()) && cards[card].modem;
 }
 
 const device_t *

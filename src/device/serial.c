@@ -126,6 +126,12 @@ serial_transmit_period(serial_t *dev)
 void
 serial_do_irq(serial_t *dev, int set)
 {
+    /* 86Box-Next: a detached UART (a PC Card's) hands its interrupt to its
+       owner instead of the PIC. */
+    if (dev->irq_func) {
+        dev->irq_func(dev->irq_priv, set);
+        return;
+    }
     if (dev->irq != 0xff) {
         if (set || (dev->irq_state != !!set))
             picint_common(1 << dev->irq, !!(dev->type >= SERIAL_16450), set, &dev->irq_state);
@@ -1199,6 +1205,69 @@ serial_init(const device_t *info)
         next_inst++;
 
     return dev;
+}
+
+/* 86Box-Next: a UART that is no COM port -- a PC Card modem's.  It has no
+   I/O handler of its own (its owner calls serial_read() / serial_write() with
+   the register offset), takes no com_ports[] slot, and its interrupt goes to
+   irq_func(irq_priv, level).  A char device goes on its char_port the way
+   serial_devices_init() puts one on a COM port's.  serial_reset_detached()
+   is the RESET pin; serial_close_detached() frees it. */
+serial_t *
+serial_init_detached(int type, void (*irq_func)(void *priv, int level), void *irq_priv)
+{
+    serial_t *dev = (serial_t *) calloc(1, sizeof(serial_t));
+
+    dev->type           = (uint8_t) type;
+    dev->inst           = 0xff;
+    dev->irq            = 0xff;
+    dev->irq_func       = irq_func;
+    dev->irq_priv       = irq_priv;
+    dev->char_port.type = CHAR_PORT_COM;
+    dev->dlab           = 96;
+    dev->fcr            = 0x06;
+    dev->clock_src      = 1843200.0;
+    timer_add(&dev->transmit_timer, serial_transmit_timer, dev, 0);
+    timer_add(&dev->timeout_timer, serial_timeout_timer, dev, 0);
+    timer_add(&dev->receive_timer, serial_receive_timer, dev, 0);
+    serial_transmit_period(dev);
+    serial_update_speed(dev);
+
+    dev->rcvr_fifo = fifo64_init();
+    fifo_set_priv(dev->rcvr_fifo, dev);
+    fifo_set_d_empty_evt(dev->rcvr_fifo, serial_rcvr_d_empty_evt);
+    fifo_set_d_overrun_evt(dev->rcvr_fifo, serial_rcvr_d_overrun_evt);
+    fifo_set_d_ready_evt(dev->rcvr_fifo, serial_rcvr_d_ready_evt);
+    fifo_reset_evt(dev->rcvr_fifo);
+    fifo_set_len(dev->rcvr_fifo, 16);
+
+    dev->xmit_fifo = fifo64_init();
+    fifo_set_priv(dev->xmit_fifo, dev);
+    fifo_set_d_empty_evt(dev->xmit_fifo, serial_xmit_d_empty_evt);
+    fifo_reset_evt(dev->xmit_fifo);
+    fifo_set_len(dev->xmit_fifo, 16);
+
+    serial_reset_port(dev);
+    return dev;
+}
+
+void
+serial_reset_detached(serial_t *dev)
+{
+    serial_reset(dev);
+}
+
+void
+serial_close_detached(serial_t *dev)
+{
+    if (dev == NULL)
+        return;
+    timer_disable(&dev->transmit_timer);
+    timer_disable(&dev->timeout_timer);
+    timer_disable(&dev->receive_timer);
+    fifo_close(dev->rcvr_fifo);
+    fifo_close(dev->xmit_fifo);
+    free(dev);
 }
 
 void

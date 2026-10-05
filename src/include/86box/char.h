@@ -140,6 +140,8 @@ extern const int       char_get_from_internal_name(const char *internal_name, in
 extern const device_t *char_get_device(const int id);
 
 extern void        *char_init(char_port_t *port, const device_t *device, int instance);
+/* 86Box-Next: see char.c. */
+extern void        *char_open_unlisted(char_port_t *port, const device_t *device);
 extern char_port_t *char_attach(uint32_t flags,
                                 size_t (*read)(uint8_t *buf, size_t len, void *priv),
                                 size_t (*write)(uint8_t *buf, size_t len, void *priv),
@@ -161,5 +163,6 @@ extern const device_t char_loopback_lpt_device;
 extern const device_t char_fujinet_com_device;
 extern const device_t char_modem_supra_com_device;
 extern const device_t char_modem_elsa_com_device;
+extern const device_t char_modem_3c562_device;   /* 86Box-Next: a PC Card's */
 
 #endif /*EMU_CHAR_H*/

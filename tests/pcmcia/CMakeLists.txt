@@ -34,4 +34,17 @@ if(BUILD_TESTING)
         ${PROJECT_BINARY_DIR}/src/include
     )
     add_test(NAME Pcmcia.flash COMMAND pcmcia_flash_tests)
+
+    # Multi-function cards: the MFC CIS walked by cistpl.c's rules, the
+    # functions' configuration registers, I/O routing and the shared IREQ.
+    add_executable(pcmcia_mfc_tests
+        mfc_test.c
+        ../../src/pcmcia/pccard_mfc.c
+        ../../src/pcmcia/pccard_cis.c
+    )
+    target_include_directories(pcmcia_mfc_tests PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/include
+        ${PROJECT_BINARY_DIR}/src/include
+    )
+    add_test(NAME Pcmcia.mfc COMMAND pcmcia_mfc_tests)
 endif()

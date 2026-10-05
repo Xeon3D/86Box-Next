@@ -430,7 +430,13 @@ void
 MachineStatus::setPcCardMenu(PcCardMenu *menu)
 {
     pcCardMenu = menu;
-    connect(menu, &PcCardMenu::changed, this, &MachineStatus::updatePcCardIcon);
+    connect(menu, &PcCardMenu::changed, this, [this]() {
+        updatePcCardIcon();
+        /* A card with a modem of its own went in or came out: the modem icon
+           comes or goes with it. */
+        if (modemMenu && (ModemMenu::any() != (d->modem != nullptr)))
+            ui_sb_update_panes();
+    });
 }
 
 void
@@ -1160,8 +1166,9 @@ MachineStatus::refresh(QStatusBar *sbar)
         sbar->addWidget(d->usb.get());
     }
 
-    /* 86Box-Next: the modem icon, while a modem is plugged into a COM port: a
-       click opens each modem's line settings, which apply without a reset. */
+    /* 86Box-Next: the modem icon, while a modem is plugged into a COM port or
+       a PC Card with a modem is in a socket: a click opens each modem's line
+       settings, which apply without a reset. */
     d->modem.reset();
     if (modemMenu && ModemMenu::any()) {
         d->modem = std::make_unique<ClickableLabel>();

@@ -132,6 +132,24 @@ char_init(char_port_t *port, const device_t *device, int instance)
     return priv;
 }
 
+/* 86Box-Next: a char device on a port that is no COM port (a PC Card's
+   UART), outside the device list: its owner closes it with
+   device->close(priv).  It runs in the caller's device context, so its
+   settings are the owner's. */
+void *
+char_open_unlisted(char_port_t *port, const device_t *device)
+{
+    void *priv;
+
+    if (!port || !device || !device->init)
+        return NULL;
+
+    active_port = port;
+    priv        = device->init(device);
+    active_port = NULL;
+    return priv;
+}
+
 char_port_t *
 char_attach(uint32_t flags,
             size_t (*read)(uint8_t *buf, size_t len, void *priv),
