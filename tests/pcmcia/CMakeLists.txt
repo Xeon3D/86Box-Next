@@ -22,4 +22,16 @@ if(BUILD_TESTING)
         ${PROJECT_BINARY_DIR}/src/include
     )
     add_test(NAME Pcmcia.cis COMMAND pcmcia_cis_tests)
+
+    # The flash card under TrueFFS's Intel MTD.
+    add_executable(pcmcia_flash_tests
+        flash_test.c
+        ../../src/pcmcia/flash_card.c
+        ../../src/pcmcia/pccard_cis.c
+    )
+    target_include_directories(pcmcia_flash_tests PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/include
+        ${PROJECT_BINARY_DIR}/src/include
+    )
+    add_test(NAME Pcmcia.flash COMMAND pcmcia_flash_tests)
 endif()

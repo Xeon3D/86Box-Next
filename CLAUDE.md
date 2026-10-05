@@ -29,7 +29,10 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   socket+1) inside its "PC Card slots" device, not the device list, applying UI requests in
   the controller's 10 ms poll -- so a card must close everything it made (TE100: its DP8390).
   Cards (`pcmcia.c`'s list): 3Com 3C589D (`net_3c509b.c`'s PC Card mode), TRENDnet TE100-PC16
-  (`net_te100pc16.c`), SRAM memory card (`sram_card.c`, contents in nvr/). CIS in
+  (`net_te100pc16.c`), SRAM memory card (`sram_card.c`, contents in nvr/), Intel Series 2
+  flash card (`flash_card.c`: 28F008SA pairs, JEDEC 89A2 so Windows 9x makes it
+  `PCMCIA\MTD-A289` for TrueFFS; program/erase need 12 V on the socket's Vpp; WIP, see
+  `flashhandoff.md`). A memory card's write-protect switch shows on the socket's WP bit. CIS in
   `pccard_cis.c`: built there, with NO_LINK, and a 2-byte CONFIG filler subtuple solved at
   build time so Windows 9x's ID matches the INF's (its checksum: ARC by nibble tables with one
   wrong entry, from PCCARD.VXD/CONFIGMG.VXD). Config in `[PCMCIA]`; a card's own settings are
