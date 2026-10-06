@@ -22,6 +22,7 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFocusEvent>
+#include <QFontDatabase>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -151,8 +152,8 @@ SoundCanvasConfigDialog::SoundCanvasConfigDialog(QWidget *parent)
     right->addWidget(new QLabel(tr("ROM images:")));
     roms = new QTreeWidget;
     roms->setRootIsDecorated(false);
-    roms->setHeaderLabels({ tr("ROM"), tr("File in use"), tr("Accepted names"), tr("Size") });
-    roms->setMinimumWidth(640);
+    roms->setHeaderLabels({ tr("ROM"), tr("File in use"), tr("MD5"), tr("Accepted names"), tr("Size") });
+    roms->setMinimumWidth(900);
     roms->header()->setStretchLastSection(false);
     roms->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
     right->addWidget(roms, 1);
@@ -272,8 +273,23 @@ SoundCanvasConfigDialog::showModel(int model)
                 item->setText(1, tr("missing"));
                 break;
         }
-        item->setText(2, QString::fromUtf8(r.names));
-        item->setText(3, size_text(r.size));
+
+        /* The checksum: the file's own, or for an image not found the known dumps' (all of them in
+           the tooltip, as a board's firmware revisions each have one). */
+        const QStringList known = QString::fromUtf8(r.known).split('\n', Qt::SkipEmptyParts);
+        QString           md5   = QString::fromUtf8(r.md5);
+        if (md5.isEmpty() && !known.isEmpty()) {
+            md5 = known.first().section(' ', 1, 1);
+            if (known.size() > 1)
+                md5 += tr(" (or %n other(s))", nullptr, known.size() - 1);
+            item->setForeground(2, palette().color(QPalette::Disabled, QPalette::Text));
+        }
+        item->setText(2, md5);
+        item->setFont(2, QFontDatabase::systemFont(QFontDatabase::FixedFont));
+        item->setToolTip(2, known.isEmpty() ? tr("No reference checksum is registered for this image: its name and size identify it.")
+                                            : tr("Known dumps:\n%1").arg(known.join('\n')));
+        item->setText(3, QString::fromUtf8(r.names));
+        item->setText(4, size_text(r.size));
     }
 
     const bool ok = emu88h_model_available(model);
@@ -1025,34 +1041,56 @@ SoundCanvasPanel::closeEvent(QCloseEvent *event)
 
 /* ---- Following the device ------------------------------------------------- */
 
-SoundCanvasPanelManager::SoundCanvasPanelManager(QWidget *mainWindow, QAction *showAction)
+SoundCanvasPanelManager::SoundCanvasPanelManager(QWidget *mainWindow)
     : QObject(mainWindow)
     , mainWindow(mainWindow)
-    , showAction(showAction)
 {
-    showAction->setEnabled(false);
-    connect(showAction, &QAction::triggered, this, [this] {
-        if (panel) {
-            panel->show();
-            panel->raise();
-            panel->activateWindow();
-        } else if (current) {
-            emu88h_retain(current);
-            panel = new SoundCanvasPanel(current, this->mainWindow);
-            panel->show();
-            panel->activateWindow();
-        }
-    });
     auto *timer = new QTimer(this);
     connect(timer, &QTimer::timeout, this, &SoundCanvasPanelManager::poll);
     timer->start(250);
 }
 
 void
+SoundCanvasPanelManager::showPanel()
+{
+    if (panel) {
+        panel->showNormal();
+        panel->raise();
+        panel->activateWindow();
+    } else if (current) {
+        emu88h_retain(current);
+        panel = new SoundCanvasPanel(current, mainWindow);
+        panel->show();
+        panel->activateWindow();
+    }
+}
+
+QString
+SoundCanvasPanelManager::toolTip() const
+{
+    if (!current)
+        return tr("Roland Sound Canvas: not running (are its ROMs in roms/soundcanvas?)");
+    QString state;
+    switch (emu88h_state(current)) {
+        case EMU88H_STATE_BOOTING:
+            state = tr(", booting");
+            break;
+        case EMU88H_STATE_OFF:
+            state = tr(", powered off");
+            break;
+        case EMU88H_STATE_FAILED:
+            state = tr(", failed to start");
+            break;
+        default:
+            break;
+    }
+    return tr("Roland Sound Canvas: %1%2\nClick to show its front panel").arg(QString::fromUtf8(emu88h_model_name(emu88h_model(current))), state);
+}
+
+void
 SoundCanvasPanelManager::poll()
 {
     emu88h *board = static_cast<emu88h *>(soundcanvas_get_board());
-    showAction->setEnabled(board != nullptr);
 
     if (panel && panel->board() != board)
         panel->close(); /* the device went, or was replaced */
@@ -1064,6 +1102,12 @@ SoundCanvasPanelManager::poll()
         if (current)
             emu88h_retain(current);
         pendingOpen = current != nullptr;
+        lastState   = -2;
+    }
+    const int state = current ? emu88h_state(current) : -1;
+    if (state != lastState) {
+        lastState = state;
+        emit changed();
     }
     /* A board that just started shows its panel once; closing it is the user's call then. */
     if (pendingOpen && !panel) {

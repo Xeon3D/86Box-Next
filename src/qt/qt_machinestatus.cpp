@@ -42,6 +42,7 @@ extern "C" {
 #include <86box/ui.h>
 #include <86box/machine_status.h>
 #include <86box/config.h>
+#include <86box/midi.h>
 
 extern volatile int fdcinited;
 extern bool         fast_forward;
@@ -61,6 +62,9 @@ extern int          is_dynarec_active(void);
 #include "qt_soundgain.hpp"
 #include "qt_pccard_menu.hpp"
 #include "qt_modem_menu.hpp"
+#ifdef USE_SOUNDCANVAS
+#    include "qt_soundcanvas.hpp"
+#endif
 #include "qt_usb_manager.hpp"
 #include "qt_preferences.hpp"
 #include "qt_iconindicators.hpp"
@@ -129,6 +133,7 @@ struct Pixmaps {
     PixmapSetDisabled    pccard;   /* 86Box-Next */
     PixmapSetDisabled    usb;      /* 86Box-Next */
     PixmapSetActive      modem;    /* 86Box-Next */
+    PixmapSetDisabled    soundCanvas; /* 86Box-Next */
     PixmapSetDisabled    dynarec;
 };
 
@@ -366,6 +371,7 @@ struct MachineStatus::States {
         pixmaps.pccard.load(QIcon(":/settings/qt/icons/pcmcia.ico"));
         pixmaps.usb.load(QIcon(":/settings/qt/icons/usb.ico"));
         pixmaps.modem.load(QIcon(":/settings/qt/icons/modem.ico"));
+        pixmaps.soundCanvas.load(QIcon(":/settings/qt/icons/midi.ico"));
         pixmaps.dynarec.normal                          = QIcon(":/menuicons/qt/icons/recompiler.ico").pixmap(pixmap_size);
         pixmaps.dynarec.disabled                        = QIcon(":/menuicons/qt/icons/interpreter.ico").pixmap(pixmap_size);
 
@@ -408,6 +414,7 @@ struct MachineStatus::States {
     std::unique_ptr<ClickableLabel>            pccard;   /* 86Box-Next */
     std::unique_ptr<ClickableLabel>            usb;      /* 86Box-Next */
     std::unique_ptr<ClickableLabel>            modem;    /* 86Box-Next */
+    std::unique_ptr<ClickableLabel>            soundCanvas; /* 86Box-Next */
     std::unique_ptr<ClickableLabel>            dynarec;
     std::unique_ptr<QLabel>                    text;
 };
@@ -454,6 +461,27 @@ MachineStatus::updatePcCardIcon()
         any |= (pcmcia_card_type[s] > 0);
     d->pccard->setPixmap(any ? d->pixmaps.pccard.normal : d->pixmaps.pccard.disabled);
     d->pccard->setToolTip(pcCardMenu->toolTip());
+}
+
+/* 86Box-Next: the Roland Sound Canvas's piano. */
+void
+MachineStatus::setSoundCanvas(SoundCanvasPanelManager *manager)
+{
+    soundCanvas = manager;
+#ifdef USE_SOUNDCANVAS
+    connect(manager, &SoundCanvasPanelManager::changed, this, &MachineStatus::updateSoundCanvasIcon);
+#endif
+}
+
+void
+MachineStatus::updateSoundCanvasIcon()
+{
+#ifdef USE_SOUNDCANVAS
+    if (!d->soundCanvas || !soundCanvas)
+        return;
+    d->soundCanvas->setPixmap(soundCanvas->present() ? d->pixmaps.soundCanvas.normal : d->pixmaps.soundCanvas.disabled);
+    d->soundCanvas->setToolTip(soundCanvas->toolTip());
+#endif
 }
 
 /* 86Box-Next: the modem icon, with each modem's telephone line behind it. */
@@ -868,6 +896,23 @@ MachineStatus::refresh(QStatusBar *sbar)
         sbar->removeWidget(d->usb.get());
     if (d->modem)
         sbar->removeWidget(d->modem.get());
+    if (d->soundCanvas)
+        sbar->removeWidget(d->soundCanvas.get());
+
+    /* 86Box-Next: the piano, first of all, while MIDI out is the Roland Sound Canvas: lit while
+       its board runs, a click shows its front panel. */
+    d->soundCanvas.reset();
+#ifdef USE_SOUNDCANVAS
+    if (soundCanvas && (midi_out_device_getdevice(midi_output_device_current) == &soundcanvas_device)) {
+        d->soundCanvas = std::make_unique<ClickableLabel>();
+        connect(d->soundCanvas.get(), &ClickableLabel::clicked, this, [this](QPoint) {
+            if (this->soundCanvas)
+                this->soundCanvas->showPanel();
+        });
+        sbar->addWidget(d->soundCanvas.get());
+        updateSoundCanvasIcon();
+    }
+#endif
 
     if (cassette_enable) {
         d->cassette.label = std::make_unique<ClickableLabel>();

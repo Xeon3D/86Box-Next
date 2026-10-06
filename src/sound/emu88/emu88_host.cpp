@@ -91,7 +91,7 @@ namespace
     }
 
     struct RomRow {
-        std::string label, names, file;
+        std::string label, names, file, md5, known;
         size_t      size   = 0;
         int         status = EMU88H_ROM_MISSING;
     };
@@ -122,16 +122,25 @@ namespace
                     if (!row.size)
                         row.size = spec.size;
                 }
-            if (!row.size)
-                for (const auto &entry : g_romRegistry)
-                    if (usedBy(entry, dev) && entry.slot == slot && entry.index == index) {
+            for (const auto &entry : g_romRegistry)
+                if (usedBy(entry, dev) && entry.slot == slot && entry.index == index) {
+                    if (!row.size)
                         row.size = entry.size;
-                        break;
-                    }
+                    /* Whichever digest identifies the row; one catalogued from a published
+                       reference has no MD5 to show. */
+                    row.known += entry.hash.isValid()   ? "MD5 " + entry.hash.toString()
+                               : entry.sha1.isValid()   ? "SHA-1 " + entry.sha1.toString()
+                                                        : "SHA-256 " + entry.sha256.toString();
+                    row.known += std::string("  ") + entry.version + '\n';
+                }
 
             const auto *found = inv.find(dev, slot, index);
             if (found) {
                 row.file   = baseLib::filesystem::getFilenameWithoutPath(found->path);
+                if (found->actualHash.isValid())
+                    row.md5 = found->actualHash.toString();
+                else if (found->entry && found->entry->hash.isValid())
+                    row.md5 = found->entry->hash.toString();
                 row.size   = found->size();
                 row.status = (found->entry && !found->hashMismatch) ? EMU88H_ROM_OK : EMU88H_ROM_UNVERIFIED;
             } else if (inv.has(dev, slot, index))
@@ -322,6 +331,8 @@ emu88h_model_roms(const int model, emu88h_rom_t *out, const int max)
         fill(out[i].label, sizeof(out[i].label), rows[i].label);
         fill(out[i].names, sizeof(out[i].names), rows[i].names);
         fill(out[i].file, sizeof(out[i].file), rows[i].file);
+        fill(out[i].md5, sizeof(out[i].md5), rows[i].md5);
+        fill(out[i].known, sizeof(out[i].known), rows[i].known);
         out[i].size   = static_cast<uint32_t>(rows[i].size);
         out[i].status = rows[i].status;
     }

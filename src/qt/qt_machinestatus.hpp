@@ -86,6 +86,7 @@ public:
     void    setPcCardMenu(class PcCardMenu *menu);   /* 86Box-Next */
     void    setUsbManager(class UsbManager *usb);     /* 86Box-Next */
     void    setModemMenu(class ModemMenu *menu);      /* 86Box-Next */
+    void    setSoundCanvas(class SoundCanvasPanelManager *manager); /* 86Box-Next */
 public slots:
     void refresh(QStatusBar *sbar);
     void message(const QString &msg);
@@ -95,6 +96,7 @@ public slots:
     void updateSoundIcon();
     void updatePcCardIcon();
     void updateModemIcon();
+    void updateSoundCanvasIcon();
 
 private:
     struct States;
@@ -107,6 +109,7 @@ private:
     class UsbManager       *usbManager = nullptr;
     class ModemMenu        *modemMenu  = nullptr;
     bool                    modemBusy  = false;
+    class SoundCanvasPanelManager *soundCanvas = nullptr;
 };
 
 #endif // QT_MACHINESTATUS_HPP

@@ -98,6 +98,8 @@ typedef struct {
     char     label[64];  /* "Wave ROM 2", "CM-32P: Program ROM" */
     char     names[192]; /* standard filenames, " / " between them */
     char     file[260];  /* the file in use, without its folder; empty when none */
+    char     md5[33];    /* that file's MD5, as it is on disk; empty when none */
+    char     known[1024];/* the known dumps for this image, a line each: "<digest> <revision>" */
     uint32_t size;       /* bytes */
     int      status;     /* EMU88H_ROM_* */
 } emu88h_rom_t;

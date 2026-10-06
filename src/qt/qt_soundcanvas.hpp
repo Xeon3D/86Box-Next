@@ -118,21 +118,29 @@ private:
     bool    dragMoved   = false;
 };
 
-/* Opens the panel when a Sound Canvas board starts, closes it when it goes. */
+/* Opens the panel when a Sound Canvas board starts, closes it when it goes; the status bar's
+   piano icon shows it again. */
 class SoundCanvasPanelManager : public QObject {
     Q_OBJECT
 
 public:
-    SoundCanvasPanelManager(QWidget *mainWindow, QAction *showAction);
+    explicit SoundCanvasPanelManager(QWidget *mainWindow);
+
+    bool    present() const { return current != nullptr; }
+    QString toolTip() const;
+    void    showPanel();
+
+signals:
+    void changed(); /* a board started or went, or its power state changed */
 
 private:
     void poll();
 
     QWidget                   *mainWindow;
-    QAction                   *showAction;
     QPointer<SoundCanvasPanel> panel;
     emu88h                    *current     = nullptr; /* retained */
     bool                       pendingOpen = false;
+    int                        lastState   = -2;
 };
 
 #endif

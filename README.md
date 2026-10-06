@@ -60,8 +60,8 @@ Extra features
 
 ### Sound
 * **Roland Sound Canvas** MIDI output: the boards of [88emu](https://github.com/dsp56300/gearmulator) (SC-55, SC-55mkII, SC-88, SC-88VL, SC-88Pro, SC-8820, SC-8850 and their relatives, the MT-32s and the CM-32L/CM-32P/CM-64), running their own firmware.
-  * Its Configure window lists the synthesizers and, for the selected one, every ROM image it needs, with a green lamp for each one found in `roms/soundcanvas` (any file name: known dumps are recognized by their contents) and a red one for each one missing.
-  * While the machine runs, the synthesizer's front panel opens in a window of its own: the display, the lamps, the buttons (mouse or keyboard) and the volume knob all work.
+  * Its Configure window lists the synthesizers and, for the selected one, every ROM image it needs, with its MD5 checksum and a green lamp for each one found in `roms/soundcanvas` (any file name: known dumps are recognized by their contents) and a red one for each one missing.
+  * While the machine runs, the synthesizer's front panel opens in a window of its own: the display, the lamps, the buttons (mouse or keyboard) and the volume knob all work. The piano icon at the left of the status bar brings it back.
 
 ### Input and arcade
 * Elo TouchSystems SmartSet serial touchscreen.

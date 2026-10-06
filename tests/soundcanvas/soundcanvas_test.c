@@ -92,6 +92,8 @@ test_empty_folder(void)
     for (int i = 0; i < n && i < 32; i++) {
         CHECK(roms[i].status == EMU88H_ROM_MISSING);
         CHECK(roms[i].file[0] == 0);
+        CHECK(roms[i].md5[0] == 0);
+        CHECK(!strncmp(roms[i].known, "MD5 ", 4)); /* every SC-55mkII image is a known dump */
         CHECK(roms[i].size > 0);
     }
     CHECK(!strcmp(roms[1].label, "Program ROM"));
@@ -141,8 +143,13 @@ test_board(const char *roms_dir)
         return;
     }
     n = emu88h_model_roms(EMU88H_SC55MK2, roms, 8);
-    for (int i = 0; i < n && i < 8; i++)
+    for (int i = 0; i < n && i < 8; i++) {
         CHECK(roms[i].status == EMU88H_ROM_OK || roms[i].status == EMU88H_ROM_UNVERIFIED);
+        CHECK(strlen(roms[i].md5) == 32);
+        /* A known dump's checksum is one of the known ones (unless stored word-swapped). */
+        if (roms[i].status == EMU88H_ROM_OK && strstr(roms[i].known, roms[i].md5) == NULL)
+            printf("note: %s %s is a word-swapped dump\n", roms[i].label, roms[i].file);
+    }
 
     h = emu88h_create(EMU88H_SC55MK2, 1, 1);
     CHECK(emu88h_state(h) == EMU88H_STATE_BOOTING);

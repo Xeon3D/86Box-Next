@@ -236,6 +236,10 @@ MainWindow::MainWindow(QWidget *parent)
        status bar too. */
     usbManager = new UsbManager(this);
     status->setUsbManager(usbManager);
+#ifdef USE_SOUNDCANVAS
+    /* 86Box-Next: the Roland Sound Canvas MIDI device's front panel, behind the piano icon. */
+    status->setSoundCanvas(new SoundCanvasPanelManager(this));
+#endif
     ui->actionMute_Unmute->setText(sound_muted ? tr("&Unmute") : tr("&Mute"));
     ui->stackedWidget->setMouseTracking(true);
     statusBar()->setVisible(!hide_status_bar);
@@ -341,12 +345,6 @@ MainWindow::MainWindow(QWidget *parent)
 
     /* 86Box-Next: the arcade I/O board's cabinet controls. */
     ioBoard = new IOBoardControls(this, ui->menubar, ui->menuAbout->menuAction(), ui->toolBar, ui->toolBar->actions().last());
-
-#ifdef USE_SOUNDCANVAS
-    /* 86Box-Next: the Roland Sound Canvas MIDI device's front panel. */
-    ui->menuSound->addSeparator();
-    new SoundCanvasPanelManager(this, ui->menuSound->addAction(tr("Roland Sound Canvas &panel")));
-#endif
 
     this->setWindowFlag(Qt::CustomizeWindowHint, true);
     this->setWindowFlag(Qt::MSWindowsFixedSizeDialogHint, vid_resize != 1);

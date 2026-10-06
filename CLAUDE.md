@@ -178,9 +178,11 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   The board outlives a device close for 3 s (hard resets re-create devices): the next init with
   the same options takes it back, so the synth keeps running through a PC reset.
   Qt (`src/qt/qt_soundcanvas.cpp`): Settings > Sound > MIDI Out > Configure opens
-  `SoundCanvasConfigDialog` (synth list with availability lamps, ROM table with lamps);
-  `SoundCanvasPanelManager` (Tools > Sound > "Roland Sound Canvas panel") polls
-  `soundcanvas_get_board()` and opens `SoundCanvasPanel` once per new board (no focus steal):
+  `SoundCanvasConfigDialog` (synth list with availability lamps, ROM table with lamps and each
+  file's MD5, the known dumps' in its tooltip); `SoundCanvasPanelManager` polls
+  `soundcanvas_get_board()` and opens `SoundCanvasPanel` once per new board (no focus steal);
+  the status bar's first icon, a piano (`midi.ico`, while MIDI out is the Sound Canvas, lit while
+  its board runs, `MachineStatus::setSoundCanvas()`), shows it again:
   88emuPlayer's artwork without the playlist (`src/qt/soundcanvas/*.png`, 2x, generated from
   88emu's assets; SVG faces pre-rendered to PNG -- the dynamic Qt has no Svg module), its
   controls and key bindings in the skin's 612 x 187 dp. Tests: `tests/soundcanvas/`
