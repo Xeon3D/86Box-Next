@@ -1,12 +1,9 @@
 # ⚠️ No support or instructions will be given for this fork.
+This was AI coded... grab an AI to sort it out. 
 
-# This was AI coded... grab an AI to sort it out.
-
-# Do not bug the 86Box devs about this. They have nothing to do with it, other than writing the base code this is messed up with.
+# Do not bug the 86Box devs about this. THIS PROJECT IS NOT IN ANY WAY AFFILIATED WITH THEM.
 
 ---
-
-(We need help in developing this emulator! See https://github.com/86Box/86Box/issues/7386 for details. Any and all help is appreciated.)
 
 86Box
 =====
