@@ -9,7 +9,7 @@
 86Box-Next
 ==========
 
-**86Box-Next is a fork of [86Box](https://github.com/86Box/86Box)**, the low level x86 emulator for IBM PC systems and compatibles from 1981 to the PCI era. It is merged with upstream 86Box every day. Everything 86Box does, this does too; below is what it adds.
+**86Box-Next is a fork of [86Box](https://github.com/86Box/86Box)**, the low level x86 emulator for IBM PC systems and compatibles from 1981 to the PCI era. It is merged with upstream 86Box every week. Everything 86Box does, this does too; below is what it adds.
 
 Windows x64 builds are on the [releases page](https://github.com/Xeon3D/86Box-Next/releases). They are static: one `86Box-Next.exe` and one `isp-server.exe`, no DLLs. The ROMs are not included: use the [86Box ROM set](https://github.com/86Box/roms).
 

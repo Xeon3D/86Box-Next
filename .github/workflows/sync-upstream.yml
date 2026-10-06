@@ -1,6 +1,6 @@
 name: Sync with upstream
 
-# Merges 86Box/86Box master into this fork's master once a day.
+# Merges 86Box/86Box master into this fork's master once a week (Mondays, 04:17 UTC), and on demand.
 # Never opens pull requests -- here or upstream.  README.md is the fork's own:
 # upstream's changes to it are left out (KEEP_OURS).  On a conflict or a failed
 # push it opens (or updates) an issue in this repository instead.
@@ -12,7 +12,7 @@ name: Sync with upstream
 
 on:
   schedule:
-    - cron: '17 4 * * *'
+    - cron: '17 4 * * 1' # weekly, on Mondays
   workflow_dispatch:
 
 permissions:
@@ -92,7 +92,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           {
-            echo "The daily merge of \`86Box/86Box@$UPSTREAM_BRANCH\` into \`$FORK_BRANCH\` failed on $(date -u +%Y-%m-%d)."
+            echo "The weekly merge of \`86Box/86Box@$UPSTREAM_BRANCH\` into \`$FORK_BRANCH\` failed on $(date -u +%Y-%m-%d)."
             echo
             echo "Run: $RUN_URL"
             if [ -n "$CONFLICTS" ]; then
