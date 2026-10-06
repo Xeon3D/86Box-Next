@@ -129,7 +129,10 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   A release build: `NEXT_RELEASE=1 cmake --build build-static` -- the title bar reads
   "86Box-Next 7.0 - Release 1" (the About box and the log keep the build number too). It is
   read from the environment on every build, so the next build without it is a plain build
-  again.
+  again. Every release: `tools/make-release.sh N` builds Release N, keeps its zip in
+  `F:\Claude\86Box-Next\RELEASES-ARCHIVE` (one per release, never overwritten) and stages
+  exactly those exes in the rigs (`isp-server.exe` in `Latest`); then tag `release-N`, push it,
+  and `gh release create` with the zip (the script prints both).
 
 ## Layout and the staged rig
 `F:\Claude\86Box-Next\86box` is this repository; `F:\Claude\86Box-Next\Latest` (outside
