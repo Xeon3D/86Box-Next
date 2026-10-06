@@ -1,14 +1,10 @@
 add_subdirectory(cdrom)
 add_subdirectory(floppy)
 add_subdirectory(device)
+add_subdirectory(disk)
 add_subdirectory(video)
 add_subdirectory(scsi)
 add_subdirectory(mem)
-# 86Box-Next: upstream's 9c5834490 adds tests/sound to this list without the
-# directory itself; until it arrives, configuring with BUILD_TESTING fails.
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/sound/CMakeLists.txt)
-    add_subdirectory(sound)
-endif()
 add_subdirectory(usb)
 add_subdirectory(pcmcia)
 add_subdirectory(modem)

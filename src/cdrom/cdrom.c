@@ -34,6 +34,7 @@
 #include <86box/cdrom_mitsumi.h>
 #include <86box/cdrom_hitachi.h>
 #include <86box/cdrom_philips.h>
+#include <86box/cdrom_sony.h>
 #include <86box/cdrom_cm153.h>
 #include <86box/cdrom_mke.h>
 #include <86box/crc.h>
@@ -133,12 +134,16 @@ static const struct {
     // clang-format off
     { &cdrom_interface_none_device  },
     { &hitachi_cdrom_isa_device     },
-    { &hitachi_cdrom_mca_device     },
     { &mke_cdrom_noncreative_device },
     { &mke_cdrom_device             },
-    { &philips_cm250_device         },
     { &philips_cm153_device         },
+    { &philips_cm250_device         },
+    { &sony_cdu31a_device           },
+    { &sony_creative_device         },
+    { &teac_cdrom_device            },
     { &mitsumi_cdrom_device         },
+    { &teac_cdrom_16bit_device      },
+    { &hitachi_cdrom_mca_device     },
     { NULL                          }
     // clang-format on
 };
