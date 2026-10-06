@@ -121,6 +121,11 @@ uint32_t modem_sound_dial_ms(const char *n, int s8, int p) { (void) n; (void) s8
 uint32_t modem_sound_ring_ms(void) { return 2000; }
 uint32_t modem_sound_handshake_ms(int v90) { (void) v90; return 2000; }
 
+void   modem_sound_voice(modem_sound_t *s, const int16_t *v, size_t n) { (void) s; (void) v; (void) n; }
+int    snd_mic_open(void) { return -1; }
+void   snd_mic_close(void) { }
+size_t snd_mic_read(int16_t *buf, size_t n) { (void) buf; (void) n; return 0; }
+
 /* The config the device would have read out of the ini.  Blank identity strings,
    so the model table's own answers are what gets tested. */
 static int fake_line     = 0;  /* 0 dead, 1 a TCP host that always answers */

@@ -7,6 +7,7 @@ if(BUILD_TESTING)
         modem_test.c
         ../isp/ppp_client.c
         ../../src/char/char_modem.c
+        ../../src/char/modem_voice.c
     )
     target_include_directories(modem_tests PRIVATE
         ${PROJECT_SOURCE_DIR}/src/include
@@ -37,9 +38,30 @@ if(BUILD_TESTING)
         ${PROJECT_BINARY_DIR}/src/include
         ${PROJECT_SOURCE_DIR}/tests/isp
     )
+    # (modem_voice.c comes with isp_srv, whose page phone speaks it too)
     target_link_libraries(phone_tests PRIVATE isp_srv isp_web isp)
     if(WIN32)
         target_link_libraries(phone_tests PRIVATE ws2_32)
     endif()
     add_test(NAME Modem.phone COMMAND phone_tests)
+
+    # Voice calls: the codecs, then two real modems in voice mode through the
+    # real exchange, and the handset.
+    add_executable(voice_tests
+        voice_test.c
+        ../isp/ppp_client.c
+        ../../src/char/char_modem.c
+        ${PHONE_NETSOCKET}
+    )
+    target_include_directories(voice_tests PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/include
+        ${PROJECT_BINARY_DIR}/src/include
+        ${PROJECT_SOURCE_DIR}/tests/isp
+        ${PROJECT_SOURCE_DIR}/src/network/isp
+    )
+    target_link_libraries(voice_tests PRIVATE isp_srv isp_web isp)
+    if(WIN32)
+        target_link_libraries(voice_tests PRIVATE ws2_32 winmm)
+    endif()
+    add_test(NAME Modem.voice COMMAND voice_tests)
 endif()

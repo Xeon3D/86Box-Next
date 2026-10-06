@@ -43,7 +43,17 @@ enum {
     CHAR_MODEM_ABSENT = -1,
     CHAR_MODEM_IDLE   = 0, /* on hook                      */
     CHAR_MODEM_CALLING,    /* dialling, ringing, training  */
-    CHAR_MODEM_ONLINE      /* carrier up                   */
+    CHAR_MODEM_ONLINE,     /* carrier up                   */
+    CHAR_MODEM_VOICE,      /* off hook in voice mode       */
+    CHAR_MODEM_HANDSET     /* the handset's call           */
+};
+
+/* 86Box-Next: the handset -- the telephone beside the modem, which is the
+   host's speaker and microphone. */
+enum {
+    CHAR_MODEM_HANDSET_HANGUP = 0,
+    CHAR_MODEM_HANDSET_PICKUP,     /* answers a call ringing, or a dial tone */
+    CHAR_MODEM_HANDSET_DIAL        /* off hook if it is not, then the number */
 };
 
 extern int         char_modem_slots(void);
@@ -65,6 +75,12 @@ extern int         char_modem_get_phone(int com, char *want, size_t want_len, ch
                                         char *number, size_t num_len);
 /* Saved like the line; registers again with the new number or exchange. */
 extern void        char_modem_set_phone(int com, const char *want, const char *exchange);
+/* The handset (CHAR_MODEM_HANDSET_*), applied on the emulation thread. */
+extern void        char_modem_handset(int com, int action, const char *number);
+/* Bit 0: the handset is off hook; bit 1: a call is ringing; bit 2: the modem
+   can talk (a Rockwell voice modem on the telephone network).  -1 with no
+   modem on that port. */
+extern int         char_modem_handset_state(int com);
 
 #ifdef __cplusplus
 }

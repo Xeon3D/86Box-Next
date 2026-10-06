@@ -59,6 +59,8 @@
 #include <86box/plat_netsocket.h>
 #include <86box/plat_unused.h>
 #include <86box/modem_sound.h>
+#include <86box/modem_voice.h>
+#include <86box/snd_mic.h>
 #include <86box/thread.h>
 #include <86box/char_modem.h>
 #include <86box/pcmcia.h>
@@ -131,7 +133,29 @@ enum { /* line state machine */
        MODEM_ST_DIALING,    /* off hook, waiting out the dial  */
        MODEM_ST_CONNECTING, /* the far end is being reached    */
        MODEM_ST_ANSWERING,  /* carrier found: training, then CONNECT */
-       MODEM_ST_ONLINE
+       MODEM_ST_ONLINE,
+       MODEM_ST_VOICE       /* 86Box-Next: off hook in voice mode, a call or not */
+};
+
+enum { /* 86Box-Next: voice mode's streams */
+       VM_NONE = 0,
+       VM_TX,  /* #VTX / +VTX: the DTE's audio to the line */
+       VM_RX,  /* #VRX / +VRX: the line's audio to the DTE */
+       VM_TR   /* +VTR: both at once                       */
+};
+
+enum { /* 86Box-Next: which voice command set the DTE speaks */
+       VSET_ROCKWELL = 0, /* #CLS=8, #VLS, #VBS...: VCON              */
+       VSET_V253          /* +FCLASS=8, +VLS, +VSM...: OK (ITU V.253) */
+};
+
+enum { /* 86Box-Next: the voice audio's format on the serial port */
+       VF_ADPCM = 0, /* Rockwell ADPCM, vbs bits a sample */
+       VF_U8,        /* unsigned 8-bit linear             */
+       VF_S8,        /* signed 8-bit linear               */
+       VF_S16,       /* signed 16-bit, little-endian      */
+       VF_ULAW,      /* G.711 mu-law                      */
+       VF_ALAW       /* G.711 A-law                       */
 };
 
 /* A TCP connect to localhost completes in well under a millisecond; a V.34
@@ -162,12 +186,13 @@ enum { /* result codes, in the numeric order every Hayes modem uses */
        RES_NO_DIALTONE,
        RES_BUSY,
        RES_NO_ANSWER,
+       RES_VCON, /* 86Box-Next: Rockwell's voice connection */
        RES_NONE = -1
 };
 
 static const char *modem_res_text[] = {
     "OK", "CONNECT", "RING", "NO CARRIER", "ERROR",
-    "CONNECT 1200", "NO DIALTONE", "BUSY", "NO ANSWER"
+    "CONNECT 1200", "NO DIALTONE", "BUSY", "NO ANSWER", "VCON"
 };
 
 /* The two modems these cabinets are found with, as MD_NAME.CSV rows 2 and 3.
@@ -384,6 +409,61 @@ typedef struct {
     char     sig_in[64];
     int      sig_len;
     int      call_fail;      /* what a refused call reports: BUSY, NO ANSWER... */
+
+    /* 86Box-Next: voice, in Rockwell's #CLS=8 command set -- what Windows'
+       Unimodem/V sends a Rockwell part (see the voice section below). */
+    int      fclass;         /* #CLS / +FCLASS: 0 data, 8 voice */
+    int      vset;           /* VSET_*: the last to set voice mode */
+    int      vls;            /* Rockwell's #VLS: 0/4 the line, 1 handset, 2 speaker, 3 microphone, 6 speakerphone */
+    int      vls253;         /* +VLS as the DTE set it (V.253's numbering) */
+    int      vfmt;           /* VF_* */
+    int      vbs;            /* #VBS: 2-4 ADPCM bits a sample */
+    int      vsm;            /* +VSM's compression id */
+    int      vsds;           /* +VSD's sensitivity, 0-255 */
+    int      vtd;            /* +VTD: a +VTS tone's length, 0.01 s */
+    int      vts_unit;       /* ms in a #VTS/+VTS [f1,f2,d]'s d */
+    int      vts_digit;      /* ms a #VTS/+VTS digit lasts */
+    int      vsr;            /* #VSR: samples a second on the serial port */
+    int      vparam[8];      /* the other #V settings, VP_* */
+    int      vcall;          /* off hook in voice mode */
+    int      vanswered;      /* ...having answered rather than dialled */
+    int      vpeer;          /* the far end: 1 voice, 0 a modem, -1 not answered yet */
+    int      vcon_said;
+    int      vok_after_dial; /* ATD...; -- OK once dialled, not VCON */
+    int      vline_gone;     /* the far end hung up; still off hook */
+    int      vgone_said;
+    int      vmode;          /* VM_*: #VTX or #VRX running */
+    int      vdle;           /* a DLE in the #VTX stream */
+    int      vtx_end;        /* DLE ETX came: play out, then OK */
+    uint8_t  vafter[64];     /* what the DTE sent after DLE ETX, for the command line */
+    int      vafter_len;
+    int      vswallow;       /* after #VRX: the rest of what stopped it */
+    int      vlo;            /* #VBS=16: the low byte, -1 if none */
+    int      handset;        /* the host's handset is off hook */
+    int      handset_call;   /* the call is the handset's: no result codes */
+    int      mic_open;
+    rv_adpcm_t        vcodec;    /* the DTE's audio, decoded */
+    voice_resampler_t vrs;       /* ...from the serial port's rate to the line's */
+    rv_adpcm_t        vcodec_rx; /* the line's, coded for the DTE */
+    voice_resampler_t vrs_rx;
+    int16_t  vtxq[16384];    /* the DTE's audio for the line, at 8000 Hz */
+    uint32_t vtxq_head, vtxq_tail;
+    int16_t  vrxq[8192];     /* the far end's audio, at 8000 Hz */
+    uint32_t vrxq_head, vrxq_tail;
+    uint32_t vclock;         /* when the next 20 ms of line is due */
+    uint32_t vms;            /* line time, for tones */
+    voice_tone_t vtone;      /* #VTS */
+    char     vts[96];
+    int      vts_pos;
+    int      vts_busy;
+    voice_tone_t vsynth;     /* a modem at the far end, as heard */
+    voice_silence_t vsil;
+    int      vsil_said;
+    voice_deframer_t vdefr;
+    char     vdtmf[16];      /* digits the far end pressed, for the DTE */
+    int      vdtmf_len;
+    int      pend_handset;   /* CHAR_MODEM_HANDSET_* + 1 from the UI; 0: none (modem_mutex) */
+    char     pend_dial[24];
 } modem_t;
 
 /* ------------------------------------------------------------------ output */
@@ -607,8 +687,11 @@ modem_phone_connected(modem_t *dev)
         dev->sig_in[dev->sig_len] = '\0';
         dev->sig_len              = 0;
         char_modem_log(dev->log, "exchange: %s\n", dev->sig_in);
-        if (!strcmp(dev->sig_in, "CONNECT"))
-            dev->sig = SIG_DATA;
+        if (!strncmp(dev->sig_in, "CONNECT", 7) && ((dev->sig_in[7] == '\0') || (dev->sig_in[7] == ' '))) {
+            /* What picked up at the other end: a voice call, or a modem. */
+            dev->vpeer = !strcmp(dev->sig_in, "CONNECT VOICE");
+            dev->sig   = SIG_DATA;
+        }
         else if (strcmp(dev->sig_in, "RINGING")) {
             dev->call_fail = !strcmp(dev->sig_in, "BUSY")       ? RES_BUSY
                              : !strcmp(dev->sig_in, "NOANSWER") ? RES_NO_ANSWER
@@ -680,6 +763,12 @@ modem_hangup(modem_t *dev)
     dev->txq_tail = 0;
     dev->cts_held = 0;
     dev->sig      = SIG_NONE;
+    dev->vcall        = 0;
+    dev->vpeer        = -1;
+    dev->vline_gone   = 0;
+    dev->handset_call = 0;
+    dev->vmode        = VM_NONE;
+    dev->vts_busy     = 0;
     char_update_status(dev->port);
 }
 
@@ -693,12 +782,15 @@ modem_carrier_lost(modem_t *dev, const char *why)
     modem_result(dev, RES_NO_CARRIER);
 }
 
+static void modem_voice_gone(modem_t *dev);
+
 /* Hand the line what it will take of the queue, in order.  A short send
    advances by what went; a full line is tried again on the next poll. */
 static void
 modem_txq_flush(modem_t *dev)
 {
-    while ((dev->call != NULL) && (dev->state == MODEM_ST_ONLINE) && (dev->txq_tail != dev->txq_head)) {
+    while ((dev->call != NULL) && ((dev->state == MODEM_ST_ONLINE) || (dev->state == MODEM_ST_VOICE)) &&
+           (dev->txq_tail != dev->txq_head)) {
         const uint32_t chunk      = (dev->txq_head > dev->txq_tail) ? (dev->txq_head - dev->txq_tail)
                                                                     : (MODEM_TXQ_SIZE - dev->txq_tail);
         int            wouldblock = 0;
@@ -709,11 +801,15 @@ modem_txq_flush(modem_t *dev)
         else if ((ret == 0) || wouldblock)
             break; /* the line is full for now */
         else {
-            modem_carrier_lost(dev, "send failed");
+            if (dev->state == MODEM_ST_VOICE)
+                modem_voice_gone(dev);
+            else
+                modem_carrier_lost(dev, "send failed");
             return;
         }
     }
-    modem_txq_cts(dev);
+    if (dev->state != MODEM_ST_VOICE)
+        modem_txq_cts(dev);
 }
 
 /* One byte for the line, behind the ones already waiting. */
@@ -895,22 +991,30 @@ modem_phone_poll(modem_t *dev)
     }
 }
 
-/* Off hook for the call ringing this modem: ATA, or S0's rings counted.
-   0 if there is nothing to answer. */
+static void modem_voice_begin(modem_t *dev, int answered);
+
+/* Off hook for the call ringing this modem: ATA, or S0's rings counted, as
+   a modem -- or as a voice call (voice mode, or the handset).  0 if there is
+   nothing to answer. */
 static int
-modem_answer(modem_t *dev)
+modem_answer(modem_t *dev, int voice)
 {
     const uint32_t now = plat_get_ticks();
 
     if ((dev->ring_id == 0) || (dev->state != MODEM_ST_IDLE))
         return 0;
-    snprintf(dev->sig_req, sizeof(dev->sig_req), "ANSWER %d", dev->ring_id);
+    snprintf(dev->sig_req, sizeof(dev->sig_req), voice ? "ANSWER %d VOICE" : "ANSWER %d", dev->ring_id);
     modem_ring_stop(dev);
     dev->refused   = 0;
     dev->call_fail = RES_NO_CARRIER;
+    dev->vpeer     = -1;
     if (modem_line_phone.open(dev) != 0)
         return 0;
-    dev->call      = &modem_line_phone;
+    dev->call = &modem_line_phone;
+    if (voice) {
+        modem_voice_begin(dev, 1);
+        return 1;
+    }
     dev->state     = MODEM_ST_CONNECTING;
     dev->answer_at = now; /* the caller is there already */
     dev->deadline  = now + (dev->s[7] * 1000u);
@@ -957,10 +1061,12 @@ modem_phone_ring(modem_t *dev)
     if (dev->s[1] < 255)
         dev->s[1]++;
     modem_result(dev, RES_RING);
+    if (!dev->handset)
+        modem_sound_event(dev->snd, MODEM_SOUND_BELL, NULL, 0); /* the phone beside it rings too */
     if (dev->cid && (dev->s[1] == 1))
         modem_caller_id(dev);
     char_update_status(dev->port);
-    if ((dev->s[0] > 0) && (dev->s[1] >= dev->s[0]) && !modem_answer(dev))
+    if ((dev->s[0] > 0) && (dev->s[1] >= dev->s[0]) && !modem_answer(dev, dev->fclass == 8))
         modem_result(dev, RES_NO_CARRIER);
 }
 
@@ -968,17 +1074,19 @@ modem_phone_ring(modem_t *dev)
    modifiers.  On a TCP line the number itself is never used -- there is one
    host; on the telephone network the exchange routes it. */
 static void
-modem_dial(modem_t *dev, const char *number)
+modem_dial(modem_t *dev, const char *number, int voice)
 {
-    uint32_t now = plat_get_ticks();
+    uint32_t       now     = plat_get_ticks();
+    const uint32_t dial_ms = modem_sound_dial_ms(number, dev->s[8], dev->pulse);
 
     /* There is one line: the number goes nowhere, but dialling it takes the
        time it takes -- tone or pulse, digit by digit, a comma for S8 -- and
        the far end answers after its first ring. */
     char_modem_log(dev->log, "dial \"%s\"\n", number);
     dev->refused   = 0;
-    dev->answer_at = now + modem_sound_dial_ms(number, dev->s[8], dev->pulse) + modem_sound_ring_ms();
-    if (dev->line != MODEM_LINE_DEAD) {
+    dev->answer_at = now + dial_ms + modem_sound_ring_ms();
+    dev->vpeer     = -1;
+    if ((dev->line != MODEM_LINE_DEAD) && !dev->handset_call) {
         modem_sound_country(dev->snd, (dev->country == 16) || (dev->country == 0xB4), dev->connect_rate > 33600);
         modem_sound_event(dev->snd, MODEM_SOUND_DIAL, number, (dev->s[8] & 0xff) | (dev->pulse << 8));
     }
@@ -993,7 +1101,7 @@ modem_dial(modem_t *dev, const char *number)
             modem_lock();
             snprintf(from, sizeof(from), "%s", dev->number[0] ? dev->number : "-");
             modem_unlock();
-            snprintf(dev->sig_req, sizeof(dev->sig_req), "DIAL %s %s", from, number);
+            snprintf(dev->sig_req, sizeof(dev->sig_req), voice ? "DIAL %s %s VOICE" : "DIAL %s %s", from, number);
             ops = &modem_line_phone;
         }
 
@@ -1004,7 +1112,14 @@ modem_dial(modem_t *dev, const char *number)
             dev->deadline = dev->answer_at + 5000;   /* it rings, and nobody answers */
             return;
         }
-        dev->call     = ops;
+        dev->call = ops;
+        if (voice && (dev->line == MODEM_LINE_PHONE)) {
+            /* A voice call: off hook from here, VCON once dialled (#VRN=0)
+               or once answered. */
+            modem_voice_begin(dev, 0);
+            dev->deadline = now + dial_ms;
+            return;
+        }
         dev->state    = MODEM_ST_CONNECTING;
         dev->deadline = now + (dev->s[7] * 1000u);
         return;
@@ -1018,6 +1133,8 @@ modem_dial(modem_t *dev, const char *number)
                                ? 1500u
                                : (dev->s[7] * 1000u));
 }
+
+static void modem_voice_call_poll(modem_t *dev, uint32_t now);
 
 static void
 modem_poll_line(modem_t *dev)
@@ -1038,7 +1155,14 @@ modem_poll_line(modem_t *dev)
         case MODEM_ST_CONNECTING: {
             const int connected = dev->refused ? -1 : dev->call->connected(dev);
 
-            if (connected == 1) {
+            if ((connected == 1) && (dev->vpeer == 1)) {
+                /* A voice answered, not a modem: no carrier comes, and S7
+                   runs out. */
+                if ((int32_t) (now - dev->deadline) >= 0) {
+                    modem_hangup(dev);
+                    modem_result(dev, RES_NO_CARRIER);
+                }
+            } else if (connected == 1) {
                 /* The far end is there; it picks up after its first ring. */
                 if ((int32_t) (now - dev->answer_at) >= 0)
                     modem_answered(dev);
@@ -1084,9 +1208,1204 @@ modem_poll_line(modem_t *dev)
             modem_phone_ring(dev);
             break;
 
+        case MODEM_ST_VOICE:
+            modem_voice_call_poll(dev, now);
+            break;
+
         default:
             break;
     }
+}
+
+/* ------------------------------------------------------------------- voice */
+
+/* 86Box-Next: voice mode, in Rockwell's own command set (the SupraExpress is
+   a Rockwell RCVDL56ACF/SP).  It is what Windows 9x's Unimodem/V sends a
+   Rockwell part -- the Diamond INF's VoiceAnswer is AT#CLS=8, #VLS=0, #VBT=1,
+   #VSR=7200, #VBS=4, #VSB=1, #VSS=2, S30=60, ATA; StartPlay AT#VTX,
+   StartRecord AT#VRX, GenerateDigit AT#VTS=<digit> -- and what vgetty's
+   Rockwell driver sends.
+
+   Off hook in voice mode (VCON), the modem is a telephone line the DTE talks
+   and listens on, a 20 ms frame at a time: #VTX takes the DTE's audio
+   (Rockwell ADPCM or linear, DLE-shielded, ended by DLE ETX) and plays it to
+   the far end; #VRX sends the DTE what the line brings, until the DTE sends
+   anything at all.  Both report what the modem hears on the line as DLE
+   codes: the far end's DTMF digits, b for the busy tone once it has hung up,
+   s for silence, a or e for a modem answering or calling.
+
+   On the telephone network the far end is another voice end -- a modem in
+   voice mode, or one's handset -- and the line between them carries frames
+   of 8000 Hz mu-law (modem_voice.h).  If a modem is there instead, it is
+   heard (answer tone, or its calling tone) and sent nothing.
+
+   The handset is the telephone beside the modem, which is the host: its
+   speaker plays the line, its microphone talks on it (snd_mic.c). */
+
+enum { /* vparam[] */
+       VP_VSS = 0, /* silence sensitivity, 0-3                  */
+       VP_VSP,     /* silence period, 0.1 s                     */
+       VP_VRN,     /* ringback never came, s (0: VCON at once)  */
+       VP_VRA,     /* ringback went away, 0.1 s                 */
+       VP_VBT,     /* #VTS digit length, 0.1 s                  */
+       VP_VSD,     /* silence deletion                          */
+       VP_VGT,     /* gains, accepted                           */
+       VP_VGR
+};
+
+#define DLE 0x10
+#define ETX 0x03
+#define CAN 0x18
+
+#define VTXQ_HIGH 4000 /* half a second of the DTE's audio waiting: CTS off */
+#define VTXQ_LOW  2000
+#define VRXQ_KEEP 1600 /* more than 200 ms of the far end waiting: catch up */
+
+static void modem_command_byte(modem_t *dev, uint8_t val);
+static int  modem_arg(const char **p);
+
+/* A voice connection: VCON in Rockwell's set, OK in V.253's. */
+static int
+modem_vcon(const modem_t *dev)
+{
+    return (dev->vset == VSET_V253) ? RES_OK : RES_VCON;
+}
+
+/* A result, unless the call is the handset's -- the DTE has no part in
+   that one. */
+static void
+modem_vresult(modem_t *dev, int code)
+{
+    if (!dev->handset_call)
+        modem_result(dev, code);
+}
+
+static void
+modem_vdte_event(modem_t *dev, char code)
+{
+    if (dev->vmode != VM_NONE) {
+        modem_out_byte(dev, DLE);
+        modem_out_byte(dev, (uint8_t) code);
+    }
+}
+
+static void
+modem_voice_defaults(modem_t *dev)
+{
+    dev->fclass           = 0;
+    dev->vset             = VSET_ROCKWELL;
+    dev->vls              = 0;
+    dev->vls253           = 0;
+    dev->vfmt             = VF_ADPCM;
+    dev->vbs              = 4;
+    dev->vsm              = 1;
+    dev->vsds             = 128;
+    dev->vtd              = 100;
+    dev->vsr              = 7200;
+    dev->vparam[VP_VSS]   = 2;
+    dev->vparam[VP_VSP]   = 50;
+    dev->vparam[VP_VRN]   = 0;
+    dev->vparam[VP_VRA]   = 50;
+    dev->vparam[VP_VBT]   = 1;
+    dev->vparam[VP_VSD]   = 0;
+    dev->vparam[VP_VGT]   = 128;
+    dev->vparam[VP_VGR]   = 128;
+}
+
+/* The host's microphone, wanted or not. */
+static void
+modem_voice_mic(modem_t *dev, int want)
+{
+    if (want && !dev->mic_open) {
+        dev->mic_open = 1;
+        (void) snd_mic_open();
+    } else if (!want && dev->mic_open) {
+        dev->mic_open = 0;
+        snd_mic_close();
+    }
+}
+
+/* Off hook in voice mode: a call dialled or answered (dev->call set), or
+   just off hook. */
+static void
+modem_voice_begin(modem_t *dev, int answered)
+{
+    dev->state        = MODEM_ST_VOICE;
+    dev->vcall        = 1;
+    dev->vanswered    = answered;
+    dev->vcon_said    = 0;
+    dev->vok_after_dial = 0;
+    dev->vline_gone   = 0;
+    dev->vgone_said   = 0;
+    dev->vclock       = plat_get_ticks();
+    dev->vrxq_head    = 0;
+    dev->vrxq_tail    = 0;
+    dev->vdtmf_len    = 0;
+    dev->txq_head     = 0;
+    dev->txq_tail     = 0;
+    memset(&dev->vdefr, 0, sizeof(dev->vdefr));
+    memset(&dev->vsynth, 0, sizeof(dev->vsynth));
+    voice_silence_init(&dev->vsil, dev->vparam[VP_VSS]);
+    char_update_status(dev->port);
+}
+
+/* The far end has hung up, or the line failed: still off hook, hearing the
+   exchange's busy tone, until ATH. */
+static void
+modem_voice_gone(modem_t *dev)
+{
+    if (dev->call != NULL) {
+        dev->call->close(dev);
+        dev->call = NULL;
+    }
+    dev->vline_gone = 1;
+    dev->txq_head   = 0;
+    dev->txq_tail   = 0;
+    char_modem_log(dev->log, "voice: the far end hung up\n");
+}
+
+/* The call, until it is answered: VCON then (or once dialled, with #VRN=0);
+   BUSY, NO ANSWER... if it never is. */
+static void
+modem_voice_call_poll(modem_t *dev, uint32_t now)
+{
+    if ((dev->call != NULL) && (dev->vpeer < 0)) {
+        const int c = dev->call->connected(dev);
+
+        if (c == 1) {
+            char_modem_log(dev->log, "voice: answered by %s\n", dev->vpeer ? "a voice" : "a modem");
+            if (!dev->vanswered)
+                modem_sound_event(dev->snd, MODEM_SOUND_HANGUP, NULL, 0); /* the ringback stops */
+            if (!dev->vcon_said) {
+                dev->vcon_said = 1;
+                modem_vresult(dev, dev->vok_after_dial ? RES_OK : modem_vcon(dev));
+            }
+        } else if (c == -1) {
+            const int res = dev->call_fail;
+
+            if (!dev->vcon_said) {
+                if (res == RES_BUSY)
+                    modem_sound_event(dev->snd, MODEM_SOUND_BUSY, NULL, 0);
+                if (dev->handset_call) {
+                    /* The handset hears it: busy, or nothing. */
+                    modem_voice_gone(dev);
+                    dev->vcon_said = 1;
+                    return;
+                }
+                modem_hangup(dev);
+                modem_vresult(dev, res);
+                return;
+            }
+            modem_voice_gone(dev);
+        }
+    }
+    if (!dev->vcon_said && !dev->vanswered && ((dev->vparam[VP_VRN] == 0) || dev->vok_after_dial) &&
+        ((int32_t) (now - dev->deadline) >= 0)) {
+        /* Dialled: VCON without waiting for an answer (#VRN=0), as Unimodem
+           asks -- or OK for ATD...;. */
+        dev->vcon_said = 1;
+        modem_vresult(dev, dev->vok_after_dial ? RES_OK : modem_vcon(dev));
+    }
+}
+
+/* -------------------------------------------- the DTE's audio, both ways */
+
+static uint32_t
+modem_vtxq_used(const modem_t *dev)
+{
+    return (dev->vtxq_head - dev->vtxq_tail) % (sizeof(dev->vtxq) / sizeof(dev->vtxq[0]));
+}
+
+static void
+modem_vtx_cts(modem_t *dev)
+{
+    const uint32_t used = modem_vtxq_used(dev);
+    const int      held = dev->cts_held;
+
+    if (!held && (used >= VTXQ_HIGH))
+        dev->cts_held = 1;
+    else if (held && (used <= VTXQ_LOW))
+        dev->cts_held = 0;
+    if (held != dev->cts_held)
+        char_update_status(dev->port);
+}
+
+static void
+modem_vtxq_put(modem_t *dev, const int16_t *s, size_t n)
+{
+    const uint32_t size = sizeof(dev->vtxq) / sizeof(dev->vtxq[0]);
+
+    for (size_t i = 0; i < n; i++) {
+        if (((dev->vtxq_head + 1) % size) == dev->vtxq_tail)
+            return; /* past CTS: lost */
+        dev->vtxq[dev->vtxq_head] = s[i];
+        dev->vtxq_head            = (dev->vtxq_head + 1) % size;
+    }
+}
+
+/* One byte of the DTE's audio. */
+static void
+modem_vtx_data(modem_t *dev, uint8_t b)
+{
+    int16_t s[8];
+    int16_t rs[32];
+    size_t  n = 0;
+
+    switch (dev->vfmt) {
+        case VF_U8:
+            s[n++] = (int16_t) (((int) b - 128) << 8);
+            break;
+        case VF_S8:
+            s[n++] = (int16_t) ((int8_t) b * 256);
+            break;
+        case VF_S16:
+            if (dev->vlo < 0)
+                dev->vlo = b;
+            else {
+                s[n++]   = (int16_t) (uint16_t) (dev->vlo | (b << 8));
+                dev->vlo = -1;
+            }
+            break;
+        case VF_ULAW:
+            s[n++] = voice_ulaw_decode(b);
+            break;
+        case VF_ALAW:
+            s[n++] = voice_alaw_decode(b);
+            break;
+        default:
+            n = rv_adpcm_decode(&dev->vcodec, &b, 1, s, 8);
+            break;
+    }
+    modem_vtxq_put(dev, rs, voice_resample(&dev->vrs, s, n, rs, 32));
+}
+
+static void modem_vrx_stop(modem_t *dev);
+
+/* #VTX's stream: audio with DLE-shielded commands.  DLE ETX ends it once
+   played out; DLE CAN throws away what is waiting; in +VTR, DLE ^ ends both
+   ways at once. */
+static void
+modem_vtx_byte(modem_t *dev, uint8_t b)
+{
+    if (dev->vtx_end) {
+        /* After DLE ETX the DTE goes on with commands, which wait for the
+           audio to finish -- Unimodem sends "<DLE><ETX>AT<CR>" in one go. */
+        if (dev->vafter_len < (int) sizeof(dev->vafter))
+            dev->vafter[dev->vafter_len++] = b;
+        return;
+    }
+    if (dev->vdle) {
+        dev->vdle = 0;
+        switch (b) {
+            case DLE:
+                modem_vtx_data(dev, DLE);
+                break;
+            case ETX:
+                dev->vtx_end = 1;
+                break;
+            case CAN:
+            case '!':
+                dev->vtxq_tail = dev->vtxq_head;
+                if (b == '!')
+                    dev->vtx_end = 1;
+                break;
+            case '^':
+                if (dev->vmode == VM_TR) {
+                    dev->vtxq_tail = dev->vtxq_head;
+                    modem_vrx_stop(dev);
+                }
+                break;
+            default:
+                break;
+        }
+        return;
+    }
+    if (b == DLE)
+        dev->vdle = 1;
+    else
+        modem_vtx_data(dev, b);
+    modem_vtx_cts(dev);
+}
+
+static void
+modem_vstream_start(modem_t *dev, int mode)
+{
+    rv_adpcm_init(&dev->vcodec, dev->vbs);
+    rv_adpcm_init(&dev->vcodec_rx, dev->vbs);
+    voice_resampler_init(&dev->vrs, (uint32_t) dev->vsr, VOICE_LINE_RATE);
+    voice_resampler_init(&dev->vrs_rx, VOICE_LINE_RATE, (uint32_t) dev->vsr);
+    dev->vmode      = mode;
+    dev->vdle       = 0;
+    dev->vtx_end    = 0;
+    dev->vafter_len = 0;
+    dev->vlo        = -1;
+    dev->vtxq_head  = 0;
+    dev->vtxq_tail  = 0;
+    dev->vgone_said = 0;
+    dev->vsil_said  = 0;
+    voice_silence_init(&dev->vsil, dev->vparam[VP_VSS]);
+    /* CONNECT, plain: there is no carrier, and no speed to report. */
+    if (!dev->quiet) {
+        if (dev->verbose)
+            modem_out_line(dev, "CONNECT");
+        else {
+            modem_out_byte(dev, '1');
+            modem_out_byte(dev, dev->s[3]);
+        }
+    }
+}
+
+/* The end of #VTX, played out: OK, and whatever the DTE sent behind it. */
+static void
+modem_vtx_done(modem_t *dev)
+{
+    uint8_t after[sizeof(dev->vafter)];
+    int     n = dev->vafter_len;
+
+    memcpy(after, dev->vafter, (size_t) n);
+    dev->vmode      = VM_NONE;
+    dev->vtx_end    = 0;
+    dev->vafter_len = 0;
+    if (dev->cts_held) {
+        dev->cts_held = 0;
+        char_update_status(dev->port);
+    }
+    modem_result(dev, RES_OK);
+    for (int i = 0; i < n; i++)
+        modem_command_byte(dev, after[i]);
+}
+
+/* #VRX ends on anything from the DTE (+VRX on <DLE>!), +VTR on <DLE>^: DLE
+   ETX, then OK.  What else came with that byte, up to the next AT, is not a
+   command. */
+static void
+modem_vrx_stop(modem_t *dev)
+{
+    uint8_t tail[2];
+    size_t  n = (dev->vfmt == VF_ADPCM) ? rv_adpcm_flush(&dev->vcodec_rx, tail, sizeof(tail)) : 0;
+
+    for (size_t i = 0; i < n; i++) {
+        if (tail[i] == DLE)
+            modem_out_byte(dev, DLE);
+        modem_out_byte(dev, tail[i]);
+    }
+    modem_out_byte(dev, DLE);
+    modem_out_byte(dev, ETX);
+    dev->vmode    = VM_NONE;
+    dev->vswallow = 1;
+    if (dev->cts_held) {
+        dev->cts_held = 0;
+        char_update_status(dev->port);
+    }
+    modem_result(dev, RES_OK);
+}
+
+/* 20 ms of audio for #VRX: to the serial port's rate and format, shielded. */
+static void
+modem_vrx_put(modem_t *dev, const int16_t *s, size_t n)
+{
+    int16_t rs[VOICE_FRAME_SAMPLES * 2];
+    uint8_t enc[VOICE_FRAME_SAMPLES * 4];
+    size_t  m = voice_resample(&dev->vrs_rx, s, n, rs, sizeof(rs) / sizeof(rs[0]));
+    size_t  k = 0;
+
+    switch (dev->vfmt) {
+        case VF_U8:
+            for (size_t i = 0; i < m; i++)
+                enc[k++] = (uint8_t) ((rs[i] >> 8) + 128);
+            break;
+        case VF_S8:
+            for (size_t i = 0; i < m; i++)
+                enc[k++] = (uint8_t) (int8_t) (rs[i] >> 8);
+            break;
+        case VF_S16:
+            for (size_t i = 0; i < m; i++) {
+                enc[k++] = (uint8_t) rs[i];
+                enc[k++] = (uint8_t) ((uint16_t) rs[i] >> 8);
+            }
+            break;
+        case VF_ULAW:
+            for (size_t i = 0; i < m; i++)
+                enc[k++] = voice_ulaw_encode(rs[i]);
+            break;
+        case VF_ALAW:
+            for (size_t i = 0; i < m; i++)
+                enc[k++] = voice_alaw_encode(rs[i]);
+            break;
+        default:
+            k = rv_adpcm_encode(&dev->vcodec_rx, rs, m, enc, sizeof(enc));
+            break;
+    }
+    for (size_t i = 0; i < k; i++) {
+        if (enc[i] == DLE)
+            modem_out_byte(dev, DLE);
+        modem_out_byte(dev, enc[i]);
+    }
+}
+
+/* ------------------------------------------------------------ the line */
+
+static void
+modem_vrxq_put(modem_t *dev, const int16_t *s, size_t n)
+{
+    const uint32_t size = sizeof(dev->vrxq) / sizeof(dev->vrxq[0]);
+
+    for (size_t i = 0; i < n; i++) {
+        dev->vrxq[dev->vrxq_head] = s[i];
+        dev->vrxq_head            = (dev->vrxq_head + 1) % size;
+        if (dev->vrxq_head == dev->vrxq_tail)
+            dev->vrxq_tail = (dev->vrxq_tail + 1) % size;
+    }
+    /* The far end's clock and this one are not the same clock: keep the
+       wait short rather than let it grow. */
+    while (((dev->vrxq_head - dev->vrxq_tail) % size) > VRXQ_KEEP)
+        dev->vrxq_tail = (dev->vrxq_tail + VOICE_FRAME_SAMPLES) % size;
+}
+
+static void
+modem_voice_frame_in(int type, const uint8_t *payload, size_t len, void *priv)
+{
+    modem_t *dev = (modem_t *) priv;
+
+    if (type == VOICE_FRAME_AUDIO) {
+        int16_t s[VOICE_FRAME_MAX];
+
+        for (size_t i = 0; i < len; i++)
+            s[i] = voice_ulaw_decode(payload[i]);
+        modem_vrxq_put(dev, s, len);
+    } else if ((type == VOICE_FRAME_DTMF) && (len >= 1) && (dev->vdtmf_len < (int) sizeof(dev->vdtmf)))
+        dev->vdtmf[dev->vdtmf_len++] = (char) payload[0];
+}
+
+/* Whatever the far end has sent: frames from a voice end; a modem's noise
+   is only heard (modem_voice_tick), not read. */
+static void
+modem_voice_receive(modem_t *dev)
+{
+    if ((dev->call == NULL) || (dev->vpeer < 0))
+        return;
+    for (int round = 0; round < 8; round++) {
+        uint8_t   buf[1024];
+        int       wouldblock = 0;
+        const int r          = dev->call->recv(dev, buf, sizeof(buf), &wouldblock);
+
+        if (r > 0) {
+            if (dev->vpeer && (voice_deframe(&dev->vdefr, buf, (size_t) r, modem_voice_frame_in, dev) != 0)) {
+                modem_voice_gone(dev); /* not frames: not a voice call after all */
+                return;
+            }
+            continue;
+        }
+        if ((r == 0) || !wouldblock)
+            modem_voice_gone(dev);
+        return;
+    }
+}
+
+static void
+modem_voice_send(modem_t *dev, int type, const uint8_t *payload, size_t len)
+{
+    uint8_t        frame[VOICE_FRAME_HDR + VOICE_FRAME_MAX];
+    const size_t   n    = voice_frame(frame, type, payload, len);
+    const uint32_t free = MODEM_TXQ_SIZE - 1 - modem_txq_used(dev);
+
+    if ((dev->call == NULL) || (dev->vpeer != 1) || (n > free))
+        return; /* nobody to hear it, or the line has fallen behind: dropped whole */
+    for (size_t i = 0; i < n; i++) {
+        dev->txq[dev->txq_head] = frame[i];
+        dev->txq_head           = (dev->txq_head + 1) % MODEM_TXQ_SIZE;
+    }
+}
+
+/* The exchange's tones, for the handset: dial tone, ringback, busy. */
+static void
+modem_handset_tones(modem_t *dev, int16_t *rx)
+{
+    const uint32_t ms = dev->vms;
+    int            on = 0;
+    voice_tone_t   t;
+
+    if (dev->vline_gone)
+        on = (ms % 1000) < 500; /* busy */
+    else if (dev->call == NULL)
+        on = 1;                 /* dial tone */
+    else if (dev->vpeer < 0)
+        on = (ms % 5000) < 1000; /* ringback */
+    if (!on)
+        return;
+    memset(&t, 0, sizeof(t));
+    voice_tone_start(&t, 425.0, 0.0, VOICE_FRAME_MS, 6000.0);
+    t.ph1 = 2.0 * 3.14159265358979 * 425.0 * (double) (ms % 1000) / 1000.0;
+    (void) voice_tone_mix(&t, rx, VOICE_FRAME_SAMPLES);
+}
+
+/* Up to three comma-separated numbers to a closing bracket, any of them
+   left out ("[440,,10]"); returns past the bracket. */
+static const char *
+modem_vts_group(const char *p, char close, int v[3])
+{
+    v[0] = v[1] = v[2] = 0;
+    for (int i = 0; (i < 3) && (*p != '\0') && (*p != close); i++) {
+        if (isdigit((unsigned char) *p))
+            v[i] = modem_arg(&p);
+        while ((*p != '\0') && (*p != ',') && (*p != close))
+            p++;
+        if (*p == ',')
+            p++;
+    }
+    while ((*p != '\0') && (*p != close))
+        p++;
+    return (*p == close) ? (p + 1) : p;
+}
+
+/* #VTS / +VTS: the next digit, {digit,length} or [f1,f2,length], once the
+   last has played.  Lengths are #VTS's 0.1 s or +VTS's 0.01 s. */
+static void
+modem_vts_next(modem_t *dev)
+{
+    const char *p = &dev->vts[dev->vts_pos];
+    double      f1;
+    double      f2;
+    char        digit = 0;
+    uint32_t    ms    = (uint32_t) dev->vts_digit;
+
+    if (dev->vtone.left > 0)
+        return;
+    while ((*p == ',') || (*p == ' '))
+        p++;
+    if (*p == '\0') {
+        dev->vts_busy = 0;
+        modem_vresult(dev, RES_OK);
+        return;
+    }
+    if (*p == '[') {
+        int v[3];
+
+        p = modem_vts_group(p + 1, ']', v);
+        voice_tone_start(&dev->vtone, (double) v[0], (double) v[1], (uint32_t) v[2] * (uint32_t) dev->vts_unit, 8000.0);
+        if ((v[0] == 0) && (v[1] == 0))
+            dev->vtone.amp = 0.0; /* a pause */
+    } else {
+        if (*p == '{') {
+            int v[3];
+
+            digit = p[1];
+            p     = modem_vts_group(p + 2, '}', v);
+            if (v[0] == 0)
+                v[0] = v[1]; /* "{5,10}": the length after the digit's comma */
+            if (v[0] > 0)
+                ms = (uint32_t) v[0] * (uint32_t) dev->vts_unit;
+        } else
+            digit = *p++;
+        if (voice_dtmf_freqs(digit, &f1, &f2)) {
+            const uint8_t d = (uint8_t) digit;
+
+            voice_tone_start(&dev->vtone, f1, f2, (ms > 0) ? ms : 100, 9000.0);
+            dev->vtone.left += VOICE_LINE_RATE / 20; /* 50 ms between */
+            modem_voice_send(dev, VOICE_FRAME_DTMF, &d, 1);
+        }
+    }
+    dev->vts_pos = (int) (p - dev->vts);
+}
+
+/* 20 ms of the line, both ways. */
+static void
+modem_voice_tick(modem_t *dev)
+{
+    const int      to_line = (dev->vls == 0) || (dev->vls == 4);
+    const int      hear    = dev->handset || (dev->vls == 6); /* the host listens and talks */
+    const int      local   = (dev->vls == 1) || (dev->vls == 2) || (dev->vls == 3);
+    const uint32_t vsize   = sizeof(dev->vrxq) / sizeof(dev->vrxq[0]);
+    int16_t        tx[VOICE_FRAME_SAMPLES];
+    int16_t        rx[VOICE_FRAME_SAMPLES];
+    int16_t        mic[VOICE_FRAME_SAMPLES];
+    const int      txing    = (dev->vmode == VM_TX) || (dev->vmode == VM_TR);
+    const int      rxing    = (dev->vmode == VM_RX) || (dev->vmode == VM_TR);
+    const int      want_mic = (dev->vcall && hear) || (rxing && ((dev->vls == 1) || (dev->vls == 3)));
+
+    memset(tx, 0, sizeof(tx));
+    memset(rx, 0, sizeof(rx));
+    memset(mic, 0, sizeof(mic));
+
+    /* What the far end hears: the DTE's audio, the host's voice, tones. */
+    if (txing) {
+        int16_t play[VOICE_FRAME_SAMPLES];
+
+        memset(play, 0, sizeof(play));
+        for (int i = 0; (i < VOICE_FRAME_SAMPLES) && (dev->vtxq_tail != dev->vtxq_head); i++) {
+            play[i]        = dev->vtxq[dev->vtxq_tail];
+            dev->vtxq_tail = (dev->vtxq_tail + 1) % (sizeof(dev->vtxq) / sizeof(dev->vtxq[0]));
+        }
+        if (to_line)
+            memcpy(tx, play, sizeof(tx));
+        else if ((dev->vls == 1) || (dev->vls == 2))
+            modem_sound_voice(dev->snd, play, VOICE_FRAME_SAMPLES); /* the handset's or the modem's speaker */
+        modem_vtx_cts(dev);
+    }
+    modem_voice_mic(dev, want_mic);
+    if (want_mic)
+        (void) snd_mic_read(mic, VOICE_FRAME_SAMPLES);
+    if (dev->vcall && hear) {
+        for (int i = 0; i < VOICE_FRAME_SAMPLES; i++) {
+            const int32_t v = tx[i] + mic[i];
+
+            tx[i] = (int16_t) ((v > 32767) ? 32767 : ((v < -32768) ? -32768 : v));
+        }
+    }
+    if (dev->vts_busy) {
+        if (!voice_tone_mix(&dev->vtone, tx, VOICE_FRAME_SAMPLES))
+            modem_vts_next(dev);
+    }
+    if (dev->vcall && (dev->call != NULL) && (dev->vpeer == 1) && !dev->vline_gone) {
+        uint8_t u[VOICE_FRAME_SAMPLES];
+
+        for (int i = 0; i < VOICE_FRAME_SAMPLES; i++)
+            u[i] = voice_ulaw_encode(tx[i]);
+        modem_voice_send(dev, VOICE_FRAME_AUDIO, u, sizeof(u));
+    }
+
+    /* What the line brings: the far end's audio, or a modem's tones. */
+    if ((dev->call != NULL) && (dev->vpeer == 1)) {
+        for (int i = 0; (i < VOICE_FRAME_SAMPLES) && (dev->vrxq_tail != dev->vrxq_head); i++) {
+            rx[i]          = dev->vrxq[dev->vrxq_tail];
+            dev->vrxq_tail = (dev->vrxq_tail + 1) % vsize;
+        }
+    } else if ((dev->call != NULL) && (dev->vpeer == 0)) {
+        /* A modem: its answer tone if it answered this call, its calling
+           tone (1300 Hz, 0.5 s in every 2.5) if it made it. */
+        if (dev->vsynth.left == 0) {
+            if (!dev->vanswered) {
+                voice_tone_start(&dev->vsynth, 2100.0, 0.0, 1000, 9000.0);
+                modem_vdte_event(dev, 'a');
+            } else if ((dev->vms % 2500) < VOICE_FRAME_MS) {
+                voice_tone_start(&dev->vsynth, 1300.0, 0.0, 500, 9000.0);
+                modem_vdte_event(dev, 'e');
+            }
+        }
+        (void) voice_tone_mix(&dev->vsynth, rx, VOICE_FRAME_SAMPLES);
+    }
+    if (dev->handset_call || (dev->handset && dev->vcall))
+        modem_handset_tones(dev, rx);
+    if (dev->vcall && hear)
+        modem_sound_voice(dev->snd, rx, VOICE_FRAME_SAMPLES);
+
+    /* And what the DTE is told. */
+    if (dev->vmode != VM_NONE) {
+        for (int i = 0; i < dev->vdtmf_len; i++)
+            modem_vdte_event(dev, dev->vdtmf[i]);
+        if (dev->vline_gone && !dev->vgone_said) {
+            dev->vgone_said = 1;
+            modem_vdte_event(dev, 'b');
+        }
+    }
+    dev->vdtmf_len = 0;
+    if (rxing) {
+        const int16_t *src = local ? mic : rx;
+
+        voice_silence_feed(&dev->vsil, src, VOICE_FRAME_SAMPLES);
+        if ((dev->vsil.quiet_ms >= (uint32_t) dev->vparam[VP_VSP] * 100u) && (dev->vparam[VP_VSP] > 0)) {
+            if (!dev->vsil_said) {
+                /* Rockwell says s; V.253 tells quiet after a voice (q) from
+                   no voice at all (s). */
+                dev->vsil_said = 1;
+                modem_vdte_event(dev, ((dev->vset == VSET_V253) && (dev->vsil.heard_ms > 0)) ? 'q' : 's');
+            }
+        } else if (dev->vsil.quiet_ms == 0)
+            dev->vsil_said = 0;
+        modem_vrx_put(dev, src, VOICE_FRAME_SAMPLES);
+    }
+    if ((dev->vmode == VM_TX) && dev->vtx_end && (dev->vtxq_tail == dev->vtxq_head))
+        modem_vtx_done(dev);
+}
+
+/* From modem_read(): the call, the frames in, and the line's clock. */
+static void
+modem_voice_poll(modem_t *dev)
+{
+    const uint32_t now = plat_get_ticks();
+
+    if ((dev->state != MODEM_ST_VOICE) && (dev->vmode == VM_NONE) && !dev->vts_busy) {
+        modem_voice_mic(dev, 0);
+        dev->vclock = now;
+        return;
+    }
+    modem_voice_receive(dev);
+    /* Paused, or the host was busy: pick up from now rather than catch up. */
+    if ((int32_t) (now - dev->vclock) > 200)
+        dev->vclock = now - VOICE_FRAME_MS;
+    while ((int32_t) (now - dev->vclock) >= VOICE_FRAME_MS) {
+        modem_voice_tick(dev);
+        dev->vclock += VOICE_FRAME_MS;
+        dev->vms += VOICE_FRAME_MS;
+    }
+    modem_txq_flush(dev);
+}
+
+/* --------------------------------------------------------------- #V... */
+
+/* "=n", "?", "=?" for one number; -1 if malformed. */
+static int
+modem_vnum(modem_t *dev, const char **p, int *val, int min, int max, const char *range)
+{
+    char buf[48];
+
+    if (**p == '?') {
+        (*p)++;
+        snprintf(buf, sizeof(buf), "%d", *val);
+        modem_out_line(dev, buf);
+        return 0;
+    }
+    if (**p != '=')
+        return -1;
+    (*p)++;
+    if (**p == '?') {
+        (*p)++;
+        modem_out_line(dev, range);
+        return 0;
+    }
+    {
+        const int v = modem_arg(p);
+
+        if ((v < min) || (v > max))
+            return -1;
+        *val = v;
+    }
+    /* Further values (#VTD=3F,3F,3F; #VSD=0,...): accepted, not used. */
+    while (**p == ',') {
+        (*p)++;
+        while (isalnum((unsigned char) **p))
+            (*p)++;
+    }
+    return 0;
+}
+
+/* #VTX/#VRX, +VTX/+VRX/+VTR: on the line, off hook -- or a local device, on
+   hook or off. */
+static int
+modem_vstream_cmd(modem_t *dev, int mode)
+{
+    if ((dev->fclass != 8) || (((dev->vls == 0) || (dev->vls == 4)) && (dev->state != MODEM_ST_VOICE)) ||
+        dev->handset_call)
+        return RES_ERROR;
+    modem_vstream_start(dev, mode);
+    return RES_NONE;
+}
+
+/* #VTS / +VTS: digits, {digit,length}s and [f1,f2,length]s to the end of
+   the line, lengths in `unit` ms; OK once played. */
+static int
+modem_vts_cmd(modem_t *dev, const char **p, int unit, int digit_ms)
+{
+    int n = 0;
+
+    if ((dev->fclass != 8) || (**p != '='))
+        return RES_ERROR;
+    (*p)++;
+    while ((**p != '\0') && (n < (int) (sizeof(dev->vts) - 1)))
+        dev->vts[n++] = *(*p)++;
+    dev->vts[n]     = '\0';
+    dev->vts_pos    = 0;
+    dev->vts_busy   = 1;
+    dev->vts_unit   = unit;
+    dev->vts_digit  = (digit_ms > 0) ? digit_ms : 100;
+    dev->vtone.left = 0;
+    return RES_NONE;
+}
+
+/* A #V command (or #CLS, #BDR...): RES_OK to go on with the line, an error,
+   or RES_NONE for one that answers for itself. */
+static int
+modem_voice_command(modem_t *dev, const char *name, const char **p)
+{
+    static const struct {
+        const char *name;
+        int         idx;
+        int         min, max;
+        const char *range;
+    } nums[] = {
+        { "VSS", VP_VSS, 0, 3, "0-3" },
+        { "VSP", VP_VSP, 0, 255, "0-255" },
+        { "VRN", VP_VRN, 0, 255, "0-255" },
+        { "VRA", VP_VRA, 0, 255, "0-255" },
+        { "VBT", VP_VBT, 0, 255, "0-255" },
+        { "VSD", VP_VSD, 0, 1, "0-1" },
+        { "VGT", VP_VGT, 0, 255, "0-255" },
+        { "VGR", VP_VGR, 0, 255, "0-255" },
+        { NULL, 0, 0, 0, NULL }
+    };
+
+    /* The 3C562's Rockwell is data and fax only. */
+    if (dev->model == &modem_models[MODEM_MODEL_3C562])
+        return RES_ERROR;
+
+    if (!strcmp(name, "CLS")) {
+        int cls = dev->fclass;
+
+        if (modem_vnum(dev, p, &cls, 0, 8, "0,8") != 0)
+            return RES_ERROR;
+        if ((cls != 0) && (cls != 8))
+            return RES_ERROR;
+        dev->fclass = cls;
+        if (cls == 8)
+            dev->vset = VSET_ROCKWELL;
+        return RES_OK;
+    }
+    if (!strcmp(name, "VLS")) {
+        int vls = dev->vls;
+
+        if (modem_vnum(dev, p, &vls, 0, 7, "0,1,2,3,4,6") != 0)
+            return RES_ERROR;
+        dev->vls = vls;
+        /* A local device -- handset, speaker, microphone, speakerphone -- is
+           a voice connection of its own: VCON (vgetty waits for it). */
+        return ((vls != 0) && (vls != 4)) ? RES_VCON : RES_OK;
+    }
+    if (!strcmp(name, "VBS")) {
+        int vbs = dev->vbs;
+
+        if (modem_vnum(dev, p, &vbs, 2, 16, "2-4,8,16") != 0)
+            return RES_ERROR;
+        if ((vbs > 4) && (vbs != 8) && (vbs != 16))
+            return RES_ERROR;
+        dev->vfmt = (vbs == 8) ? VF_U8 : ((vbs == 16) ? VF_S16 : VF_ADPCM);
+        if (vbs <= 4)
+            dev->vbs = vbs;
+        return RES_OK;
+    }
+    if (!strcmp(name, "VSR")) {
+        int vsr = dev->vsr;
+
+        if (modem_vnum(dev, p, &vsr, 4000, 11025, "7200,8000,11025") != 0)
+            return RES_ERROR;
+        if ((vsr != 7200) && (vsr != 8000) && (vsr != 11025))
+            return RES_ERROR;
+        dev->vsr = vsr;
+        return RES_OK;
+    }
+    if (!strcmp(name, "VTX") || !strcmp(name, "VRX"))
+        return modem_vstream_cmd(dev, (name[1] == 'T') ? VM_TX : VM_RX);
+    if (!strcmp(name, "VTS"))
+        return modem_vts_cmd(dev, p, 100, dev->vparam[VP_VBT] * 100);
+    if (!strcmp(name, "BDR") || !strcmp(name, "VTD") || !strcmp(name, "VSB") || !strcmp(name, "VSK") ||
+        !strcmp(name, "TL") || !strcmp(name, "RG") || !strcmp(name, "VCI") || !strcmp(name, "VSM")) {
+        /* Port speed, tone reporting, buffers, levels: accepted whole. */
+        if (**p == '?') {
+            (*p)++;
+            modem_out_line(dev, "0");
+            return RES_OK;
+        }
+        while ((**p != '\0') && (**p != ';') && (**p != '#') && (**p != '&') && (**p != '+'))
+            (*p)++;
+        return RES_OK;
+    }
+    for (int i = 0; nums[i].name != NULL; i++) {
+        if (!strcmp(name, nums[i].name))
+            return (modem_vnum(dev, p, &dev->vparam[nums[i].idx], nums[i].min, nums[i].max, nums[i].range) == 0)
+                       ? RES_OK
+                       : RES_ERROR;
+    }
+    return RES_ERROR;
+}
+
+/* ----------------------------------------------------------- +V... (V.253) */
+
+/* 86Box-Next: the ITU's voice set, V.253 (IS-101 grown up) -- +FCLASS=8,
+   +VLS, +VSM, +VTX/+VRX/+VTR, +VTS -- as vgetty's V253modem driver and
+   Windows 2000's Unimodem/5 use it, on the same voice engine as Rockwell's
+   set.  A voice connection is OK here rather than VCON; +VLS has its own
+   numbering (1 is the line, 0 on hook); +VSM picks the format by number,
+   listing names for software that looks them up (vgetty does). */
+
+static const struct {
+    int         cml;
+    int         fmt;
+    const char *desc; /* +VSM=? */
+} v253_formats[] = {
+    { 0, VF_S8, "0,\"SIGNED PCM\",8,0,(7200,8000,11025),(0),(0)" },
+    { 1, VF_U8, "1,\"UNSIGNED PCM\",8,0,(7200,8000,11025),(0),(0)" },
+    { 2, VF_S16, "2,\"SIGNED PCM\",16,0,(7200,8000,11025),(0),(0)" },
+    { 4, VF_ULAW, "4,\"ULAW\",8,0,(8000),(0),(0)" },
+    { 5, VF_ALAW, "5,\"ALAW\",8,0,(8000),(0),(0)" },
+    { 128, VF_U8, "128,\"8-BIT LINEAR\",8,0,(7200,8000,11025),(0),(0)" },
+    { 129, VF_S16, "129,\"16-BIT LINEAR\",16,0,(7200,8000,11025),(0),(0)" },
+    { -1, 0, NULL }
+};
+
+/* +VLS's analogue source/destination primitives, as Rockwell's #VLS: the
+   line, handset, speaker, microphone, speakerphone.  -1: none such. */
+static const int v253_vls[14] = {
+    0,  /*  0 on hook                          */
+    0,  /*  1 the line                         */
+    1,  /*  2 the handset                      */
+    0,  /*  3 the line, with the handset       */
+    2,  /*  4 the speaker                      */
+    4,  /*  5 the line, with the speaker       */
+    3,  /*  6 the microphone                   */
+    6,  /*  7 the line, microphone and speaker */
+    2,  /*  8 an external speaker              */
+    4,  /*  9 the line, external speaker       */
+    -1, /* 10                                  */
+    3,  /* 11 an external microphone           */
+    -1, /* 12                                  */
+    6   /* 13 the line, external mic and speaker */
+};
+
+/* "=n", "=a,b,...", "?", "=?": the rest of one parameter, skipped. */
+static void
+modem_vskip(const char **p)
+{
+    while ((**p != '\0') && (**p != ';') && (**p != '+') && (**p != '#') && (**p != '&'))
+        (*p)++;
+}
+
+static int
+modem_v253_command(modem_t *dev, const char *name, const char **p)
+{
+    char buf[64];
+
+    if (dev->model == &modem_models[MODEM_MODEL_3C562])
+        return RES_ERROR;
+
+    if (!strcmp(name, "FCLASS")) {
+        if (**p == '?') {
+            (*p)++;
+            snprintf(buf, sizeof(buf), "%d", dev->fclass);
+            modem_out_line(dev, buf);
+            return RES_OK;
+        }
+        if (**p != '=')
+            return RES_ERROR;
+        (*p)++;
+        if (**p == '?') {
+            (*p)++;
+            modem_out_line(dev, "0,8");
+            return RES_OK;
+        }
+        {
+            const int cls = modem_arg(p);
+
+            while ((**p == '.') || isdigit((unsigned char) **p))
+                (*p)++; /* 2.0 */
+            /* Fax classes: accepted, as they always were here, and data. */
+            dev->fclass = (cls == 8) ? 8 : 0;
+            if (cls == 8)
+                dev->vset = VSET_V253;
+        }
+        return RES_OK;
+    }
+
+    if (!strcmp(name, "VLS")) {
+        int v = dev->vls253;
+
+        if (modem_vnum(dev, p, &v, 0, 13, "0,1,2,3,4,5,6,7,8,9,11,13") != 0)
+            return RES_ERROR;
+        if ((dev->fclass != 8) || (v253_vls[v] < 0))
+            return RES_ERROR;
+        dev->vls253 = v;
+        dev->vls    = v253_vls[v];
+        if (v == 0) {
+            /* On hook. */
+            if ((dev->state == MODEM_ST_VOICE) && !dev->handset_call)
+                modem_hangup(dev);
+        } else if ((dev->vls == 0) || (dev->vls == 4) || (dev->vls == 6)) {
+            /* The line: off hook -- which answers a call ringing. */
+            if (dev->state == MODEM_ST_IDLE) {
+                if (!modem_answer(dev, 1)) {
+                    modem_voice_begin(dev, 1);
+                    dev->vcon_said = 1;
+                } else
+                    return RES_NONE; /* OK once answered */
+            }
+        }
+        return RES_OK;
+    }
+
+    if (!strcmp(name, "VSM")) {
+        if (**p == '?') {
+            (*p)++;
+            snprintf(buf, sizeof(buf), "%d,%d,0,0", dev->vsm, dev->vsr);
+            modem_out_line(dev, buf);
+            return RES_OK;
+        }
+        if (**p != '=')
+            return RES_ERROR;
+        (*p)++;
+        if (**p == '?') {
+            (*p)++;
+            for (int i = 0; v253_formats[i].desc != NULL; i++)
+                modem_out_line(dev, v253_formats[i].desc);
+            return RES_OK;
+        }
+        {
+            const int cml = modem_arg(p);
+            int       vsr = dev->vsr;
+            int       fmt = -1;
+
+            if (**p == ',') {
+                (*p)++;
+                if (isdigit((unsigned char) **p))
+                    vsr = modem_arg(p);
+            }
+            for (int i = 0; v253_formats[i].desc != NULL; i++)
+                if (v253_formats[i].cml == cml)
+                    fmt = v253_formats[i].fmt;
+            if ((fmt < 0) || ((vsr != 7200) && (vsr != 8000) && (vsr != 11025)))
+                return RES_ERROR;
+            dev->vsm  = cml;
+            dev->vfmt = fmt;
+            dev->vsr  = vsr;
+            while (**p == ',') { /* silence compression: none here */
+                (*p)++;
+                (void) modem_arg(p);
+            }
+        }
+        return RES_OK;
+    }
+
+    if (!strcmp(name, "VTX") || !strcmp(name, "VRX") || !strcmp(name, "VTR")) {
+        if (**p == '?') {
+            (*p)++;
+            return RES_OK;
+        }
+        return modem_vstream_cmd(dev, (name[2] == 'R') ? VM_TR : ((name[1] == 'T') ? VM_TX : VM_RX));
+    }
+    if (!strcmp(name, "VTS"))
+        return modem_vts_cmd(dev, p, 10, dev->vtd * 10);
+    if (!strcmp(name, "VTD"))
+        return (modem_vnum(dev, p, &dev->vtd, 0, 255, "0-255") == 0) ? RES_OK : RES_ERROR;
+
+    if (!strcmp(name, "VSD")) {
+        /* <sensitivity, 128 nominal>,<silence, 0.1 s> */
+        if (**p == '?') {
+            (*p)++;
+            snprintf(buf, sizeof(buf), "%d,%d", dev->vsds, dev->vparam[VP_VSP]);
+            modem_out_line(dev, buf);
+            return RES_OK;
+        }
+        if (**p != '=')
+            return RES_ERROR;
+        (*p)++;
+        if (**p == '?') {
+            (*p)++;
+            modem_out_line(dev, "(0-255),(0-255)");
+            return RES_OK;
+        }
+        dev->vsds = modem_arg(p);
+        if (dev->vsds > 255)
+            return RES_ERROR;
+        dev->vparam[VP_VSS] = dev->vsds / 64;
+        if (**p == ',') {
+            (*p)++;
+            dev->vparam[VP_VSP] = modem_arg(p);
+        }
+        return RES_OK;
+    }
+    if (!strcmp(name, "VGT"))
+        return (modem_vnum(dev, p, &dev->vparam[VP_VGT], 0, 255, "0-255") == 0) ? RES_OK : RES_ERROR;
+    if (!strcmp(name, "VGR"))
+        return (modem_vnum(dev, p, &dev->vparam[VP_VGR], 0, 255, "0-255") == 0) ? RES_OK : RES_ERROR;
+    if (!strcmp(name, "VRN"))
+        return (modem_vnum(dev, p, &dev->vparam[VP_VRN], 0, 255, "0-255") == 0) ? RES_OK : RES_ERROR;
+    if (!strcmp(name, "VRA"))
+        return (modem_vnum(dev, p, &dev->vparam[VP_VRA], 0, 255, "0-255") == 0) ? RES_OK : RES_ERROR;
+    if (!strcmp(name, "VIP")) {
+        /* The voice settings as they came. */
+        const int fclass = dev->fclass;
+
+        modem_vskip(p);
+        modem_voice_defaults(dev);
+        dev->fclass = fclass;
+        dev->vset   = VSET_V253;
+        return RES_OK;
+    }
+    if (!strcmp(name, "VIT") || !strcmp(name, "VNH") || !strcmp(name, "VDR") || !strcmp(name, "VEM") ||
+        !strcmp(name, "VBT") || !strcmp(name, "VGM") || !strcmp(name, "VGS") || !strcmp(name, "VRL") ||
+        !strcmp(name, "VPR") || !strcmp(name, "VSP")) {
+        /* Timers, hang-up control, ring and event reporting, buffers, levels:
+           accepted. */
+        if (**p == '?') {
+            (*p)++;
+            modem_out_line(dev, "0");
+            return RES_OK;
+        }
+        modem_vskip(p);
+        return RES_OK;
+    }
+    return RES_ERROR;
+}
+
+/* The handset, from the UI, on the emulation thread.  Off hook it answers a
+   call ringing, or hears the dial tone and can dial; it joins the guest's
+   voice call if there is one.  Its own calls are no business of the DTE's:
+   no result codes, and ATH does not end them. */
+static void
+modem_handset_apply(modem_t *dev, int action, const char *number)
+{
+    const int can_talk = (dev->model != &modem_models[MODEM_MODEL_3C562]);
+
+    switch (action) {
+        case CHAR_MODEM_HANDSET_PICKUP:
+        case CHAR_MODEM_HANDSET_DIAL:
+            if (!can_talk)
+                return;
+            if (!dev->handset) {
+                dev->handset = 1;
+                if (dev->state == MODEM_ST_IDLE) {
+                    dev->handset_call = 1;
+                    if ((dev->ring_id == 0) || (dev->line != MODEM_LINE_PHONE) || !modem_answer(dev, 1)) {
+                        modem_voice_begin(dev, 1); /* a dial tone */
+                        dev->vcon_said = 1;
+                    }
+                    dev->handset_call = 1;
+                }
+                char_modem_log(dev->log, "handset off hook\n");
+            }
+            if ((action == CHAR_MODEM_HANDSET_DIAL) && dev->handset_call && (dev->state == MODEM_ST_VOICE) &&
+                (dev->call == NULL) && !dev->vline_gone && (number != NULL) && (number[0] != '\0')) {
+                char_modem_log(dev->log, "handset dials %s\n", number);
+                if (dev->line == MODEM_LINE_PHONE)
+                    modem_dial(dev, number, 1);
+                if (dev->state != MODEM_ST_VOICE) {
+                    /* Nobody to reach: off hook, hearing the busy tone. */
+                    modem_hangup(dev);
+                    modem_voice_begin(dev, 1);
+                    dev->vcon_said = 1;
+                    dev->handset_call = 1;
+                } else
+                    dev->vcon_said = 1;
+                if ((dev->call == NULL) && (dev->line != MODEM_LINE_PHONE))
+                    dev->vline_gone = 1;
+            }
+            break;
+
+        case CHAR_MODEM_HANDSET_HANGUP:
+            if (!dev->handset)
+                return;
+            dev->handset = 0;
+            if (dev->handset_call)
+                modem_hangup(dev);
+            char_modem_log(dev->log, "handset on hook\n");
+            break;
+
+        default:
+            break;
+    }
+}
+
+static void
+modem_apply_handset(modem_t *dev)
+{
+    int  action;
+    char number[sizeof(dev->pend_dial)];
+
+    if (!dev->pend_handset)
+        return;
+    modem_lock();
+    action            = dev->pend_handset - 1;
+    dev->pend_handset = 0;
+    memcpy(number, dev->pend_dial, sizeof(number));
+    modem_unlock();
+    modem_handset_apply(dev, action, number);
 }
 
 /* ---------------------------------------------------------------- commands */
@@ -1145,6 +2464,7 @@ modem_load_defaults(modem_t *dev)
     dev->spk_level = 2;
     dev->pulse     = 0;
     dev->cid       = 0;
+    modem_voice_defaults(dev);
     modem_sound_speaker(dev->snd, dev->spk_mode, dev->spk_level);
 }
 
@@ -1187,14 +2507,30 @@ modem_execute(modem_t *dev, const char *line)
                 break;
 
             case 'A': /* answer: a call ringing on the telephone network */
-                return modem_answer(dev) ? RES_NONE : RES_NO_CARRIER;
+                if ((dev->state == MODEM_ST_VOICE) && dev->vanswered && (dev->call != NULL) && !dev->handset_call)
+                    return modem_vcon(dev); /* +VLS=1 answered it already */
+                if (dev->state != MODEM_ST_IDLE)
+                    return RES_ERROR;
+                if (modem_answer(dev, dev->fclass == 8))
+                    return RES_NONE;
+                if (dev->fclass == 8) {
+                    /* Nothing ringing: off hook all the same. */
+                    modem_voice_begin(dev, 1);
+                    dev->vcon_said = 1;
+                    return modem_vcon(dev);
+                }
+                return RES_NO_CARRIER;
 
             case 'D': { /* dial */
                 char number[64];
-                int  n = 0;
+                int  n    = 0;
+                int  semi = 0;
 
-                if (dev->state != MODEM_ST_IDLE)
-                    return RES_ERROR;
+                /* On hook, or off hook in voice mode with nothing on the line
+                   yet (ATH1, +VLS=1): a dial tone to dial on. */
+                if ((dev->state != MODEM_ST_IDLE) &&
+                    !((dev->state == MODEM_ST_VOICE) && (dev->call == NULL) && !dev->vline_gone && !dev->handset_call))
+                    return (dev->handset_call ? RES_NO_DIALTONE : RES_ERROR);
                 while ((*p != '\0') && (n < ((int) sizeof(number) - 1))) {
                     const char d = *p++;
 
@@ -1203,9 +2539,14 @@ modem_execute(modem_t *dev, const char *line)
                     if (isdigit((unsigned char) d) || (d == '*') || (d == '#') || (d == ',') ||
                         (strchr("WwTtPp", d) != NULL))
                         number[n++] = d;
+                    /* ';': back to command mode once dialled -- a voice call,
+                       for the phone beside the modem. */
+                    semi |= (d == ';');
                 }
                 number[n] = '\0';
-                modem_dial(dev, number);
+                modem_dial(dev, number, (dev->fclass == 8) || semi);
+                if (semi && (dev->state == MODEM_ST_VOICE))
+                    dev->vok_after_dial = 1;
                 return RES_NONE;
             }
 
@@ -1214,8 +2555,16 @@ modem_execute(modem_t *dev, const char *line)
                 break;
 
             case 'H':
-                if (modem_arg(&p) == 0)
-                    modem_hangup(dev);
+                if (modem_arg(&p) == 0) {
+                    /* The handset's call is the handset's: the modem's own
+                       hook going down does not end it. */
+                    if (!dev->handset_call)
+                        modem_hangup(dev);
+                } else if ((dev->fclass == 8) && (dev->state == MODEM_ST_IDLE)) {
+                    modem_voice_begin(dev, 1); /* ATH1: off hook */
+                    dev->vcon_said = 1;
+                    return modem_vcon(dev);
+                }
                 break;
 
             case 'I':
@@ -1366,15 +2715,22 @@ modem_execute(modem_t *dev, const char *line)
                 break;
             }
 
-            case '#': { /* Rockwell's own set: #CID, caller ID */
+            case '#': { /* Rockwell's own set: #CID, caller ID, and voice */
                 char name[16];
                 int  n = 0;
 
                 while (isalpha((unsigned char) *p) && (n < ((int) sizeof(name) - 1)))
                     name[n++] = (char) toupper((unsigned char) *p++);
                 name[n] = '\0';
-                if (strcmp(name, "CID") || (modem_cid_command(dev, &p, "#CID") != 0))
-                    return RES_ERROR;
+                if (!strcmp(name, "CID")) {
+                    if (modem_cid_command(dev, &p, "#CID") != 0)
+                        return RES_ERROR;
+                } else {
+                    const int r = modem_voice_command(dev, name, &p);
+
+                    if (r != RES_OK)
+                        return r; /* an error, or a command that answers for itself */
+                }
                 break;
             }
 
@@ -1382,7 +2738,7 @@ modem_execute(modem_t *dev, const char *line)
                 char name[16];
                 int  n = 0;
 
-                while ((*p != '\0') && (*p != '=') && (*p != '?') &&
+                while ((*p != '\0') && (*p != '=') && (*p != '?') && (*p != '+') && (*p != ';') &&
                        (n < ((int) sizeof(name) - 1)))
                     name[n++] = (char) toupper((unsigned char) *p++);
                 name[n] = '\0';
@@ -1406,8 +2762,12 @@ modem_execute(modem_t *dev, const char *line)
                 } else if (!strcmp(name, "VCID")) {
                     if (modem_cid_command(dev, &p, "+VCID") != 0)
                         return RES_ERROR;
-                } else if (!strcmp(name, "MS") || !strcmp(name, "FCLASS") ||
-                           !strcmp(name, "IFC") || !strcmp(name, "ES")) {
+                } else if (!strcmp(name, "FCLASS") || (name[0] == 'V')) {
+                    const int r = modem_v253_command(dev, name, &p);
+
+                    if (r != RES_OK)
+                        return r;
+                } else if (!strcmp(name, "MS") || !strcmp(name, "IFC") || !strcmp(name, "ES")) {
                     /* Modulation, fax class and flow control: accepted whole. */
                     while ((*p != '\0') && (*p != ';'))
                         p++;
@@ -1730,6 +3090,35 @@ char_modem_set_phone(int com, const char *want, const char *exchange)
     modem_unlock();
 }
 
+void
+char_modem_handset(int com, int action, const char *number)
+{
+    modem_lock();
+    if (char_modem_present(com)) {
+        modem_t *dev = modems[com];
+
+        dev->pend_handset = action + 1;
+        snprintf(dev->pend_dial, sizeof(dev->pend_dial), "%s", number ? number : "");
+    }
+    modem_unlock();
+}
+
+int
+char_modem_handset_state(int com)
+{
+    int ret = -1;
+
+    modem_lock();
+    if (char_modem_present(com)) {
+        const modem_t *dev = modems[com];
+
+        ret = (dev->handset ? 1 : 0) | (dev->ring_id ? 2 : 0) |
+              (((dev->line == MODEM_LINE_PHONE) && (dev->model != &modem_models[MODEM_MODEL_3C562])) ? 4 : 0);
+    }
+    modem_unlock();
+    return ret;
+}
+
 int
 char_modem_get_line(int com, char *host, size_t host_len, int *port)
 {
@@ -1762,6 +3151,9 @@ char_modem_get_state(int com)
                 break;
             case MODEM_ST_ONLINE:
                 ret = CHAR_MODEM_ONLINE;
+                break;
+            case MODEM_ST_VOICE:
+                ret = modems[com]->handset_call ? CHAR_MODEM_HANDSET : CHAR_MODEM_VOICE;
                 break;
             default:
                 ret = CHAR_MODEM_CALLING;
@@ -1811,8 +3203,10 @@ modem_read(uint8_t *buf, size_t len, void *priv)
     size_t   n   = 0;
 
     modem_apply_pending(dev);
+    modem_apply_handset(dev);
     modem_phone_poll(dev);
     modem_poll_line(dev);
+    modem_voice_poll(dev);
 
     /* The escape sequence completes on silence, not on a fourth character. */
     if (dev->online && (dev->pluses >= 3) &&
@@ -1868,10 +3262,18 @@ modem_write(uint8_t *buf, size_t len, void *priv)
     modem_t *dev = (modem_t *) priv;
 
     for (size_t i = 0; i < len; i++) {
-        if (dev->online)
+        if ((dev->vmode == VM_TX) || (dev->vmode == VM_TR))
+            modem_vtx_byte(dev, buf[i]);
+        else if (dev->vmode == VM_RX)
+            modem_vrx_stop(dev); /* any byte ends recording; it is not a command */
+        else if (dev->vswallow && (toupper(buf[i]) != 'A'))
+            ; /* the rest of what ended recording ("<DLE>E<CR>"), until the next AT */
+        else if (dev->online)
             modem_data_byte(dev, buf[i]);
-        else
+        else {
+            dev->vswallow = 0;
             modem_command_byte(dev, buf[i]);
+        }
     }
     /* All of it is taken: what the line cannot have yet waits in the queue,
        and CTS tells the DTE when to stop. */
@@ -1959,6 +3361,7 @@ modem_close(void *priv)
     modem_unlock();
 
     modem_hangup(dev);
+    modem_voice_mic(dev, 0);
     modem_phone_unplug(dev, 0);
     modem_sound_close(dev->snd);
     log_close(dev->log);
@@ -1978,6 +3381,7 @@ modem_init(const device_t *info)
                                    : MODEM_MODEL_SUPRA];
     dev->sock  = (SOCKET) -1;
     dev->ctl   = (SOCKET) -1;
+    dev->vpeer = -1;
     dev->snd   = modem_sound_init(device_get_config_int("speaker"));
     modem_load_defaults(dev);
 

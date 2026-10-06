@@ -307,9 +307,11 @@ api_status(isp_web_response_t *resp)
             sb_json(&b, p->to);
             sb_add(&b, ",\"to_label\":", 12);
             sb_json(&b, p->to_label);
-            sb_printf(&b, ",\"state\":\"%s\",\"seconds\":%u,\"from_bytes\":%llu,\"to_bytes\":%llu}",
+            sb_printf(&b, ",\"state\":\"%s\",\"seconds\":%u,\"from_bytes\":%llu,\"to_bytes\":%llu,"
+                          "\"from_voice\":%d,\"to_voice\":%d}",
                       (p->state == ISP_PCALL_ACTIVE) ? "connected" : "ringing", p->seconds,
-                      (unsigned long long) p->from_bytes, (unsigned long long) p->to_bytes);
+                      (unsigned long long) p->from_bytes, (unsigned long long) p->to_bytes,
+                      !!(p->voice & ISP_PCALL_FROM_VOICE), !!(p->voice & ISP_PCALL_TO_VOICE));
         }
     }
     sb_add(&b, "]}", 2);

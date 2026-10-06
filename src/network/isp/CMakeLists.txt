@@ -66,8 +66,11 @@ add_library(isp_web OBJECT
 target_include_directories(isp_web PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(isp_web PUBLIC isp)
 
-# The server: listeners, ISP calls, the telephone exchange, the .ini.
-add_library(isp_srv OBJECT isp_srv.c)
+# The server: listeners, ISP calls, the telephone exchange, the .ini -- and
+# the status page's phone, which speaks the modems' voice frames
+# (src/char/modem_voice.c).
+add_library(isp_srv OBJECT isp_srv.c isp_phone.c ${PROJECT_SOURCE_DIR}/src/char/modem_voice.c)
+target_include_directories(isp_srv PRIVATE ${PROJECT_SOURCE_DIR}/src/include)
 target_link_libraries(isp_srv PUBLIC isp_web isp)
 
 add_executable(isp-server isp_server.c)

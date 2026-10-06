@@ -92,6 +92,46 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   menu: "Telephone network (isp-server)", "Set phone number...", the number in the status line.
   (Line 2 was the built-in ISP for a day; the exchange still reaches the ISP on any unknown
   number.)
+- Voice calls (Supra and ELSA, not the 3C562): Rockwell's `#` voice set, as Windows 9x's
+  Unimodem/V uses it (the Diamond INF: `#CLS=8`, `#VLS=0`, `#VBS=4`, `#VSR=7200`, `#VTX`/`#VRX`,
+  `#VTS`) and vgetty's Rockwell driver. `AT#CLS=8` then ATD/ATA give VCON (`#VRN=0`: once
+  dialled); ATD...; is a voice call too (OK once dialled). `#VTX` plays the DTE's audio
+  (DLE-shielded, DLE ETX ends it once played out, DLE CAN flushes; CTS paces it) and `#VRX`
+  records the line until any byte (DLE ETX, OK; the rest up to the next `A` is swallowed); both
+  report DLE events: the far end's digits, `b` once it hung up, `s` after `#VSP` of silence,
+  `a`/`e` for a modem's answer/calling tone. `#VLS` 0/4 the line, 1/2/3 handset/speaker/mic,
+  6 speakerphone. `modem_voice.c`: Rockwell ADPCM 2/3/4-bit, a reentrant port of vgetty's
+  rockwell.c, bit-exact with it (and so with Rockwell's coder, which Windows' SERWAVE.VXD
+  decodes) -- the tests pin CRCs computed with vgetty's own code; mu-law, 7200<->8000 Hz, DTMF,
+  silence. On the exchange DIAL/ANSWER take ` VOICE` and each end's CONNECT says what the other
+  is (`CONNECT VOICE`); two voice ends exchange 20 ms frames (`'A'` 8000 Hz mu-law, `'D'` a
+  digit), paced by the wall clock in `modem_voice_poll()` (from `modem_read`); a voice end facing
+  a modem hears its tones and sends nothing; a data modem answered by a voice waits out S7: NO
+  CARRIER. The handset (status bar modem menu: pick up / answer / call a number / hang up;
+  `char_modem_handset()`) is the phone beside the modem: the host's speakers
+  (`modem_sound_voice()`) and microphone (`src/sound/snd_mic.c`, OpenAL capture at 8000 Hz,
+  static `AL_LIBTYPE_STATIC` like openal.c); it answers or dials as a voice call of its own (no
+  result codes, ATH does not end it), joins the guest's voice call, hears dial/ring/busy tones;
+  an incoming RING also rings the phone (`MODEM_SOUND_BELL`, heard whatever ATM says when the
+  Speaker option is on). Tests: `tests/modem/voice_test.c` (Modem.voice), `exchange_test.c`.
+  Also the ITU's set, V.253 (`modem_v253_command()`): `+FCLASS=8`, `+VLS` (V.253 numbering: 0 on
+  hook, 1 the line -- off hook, answering a call ringing -- 2 handset, 4 speaker, 6 mic, 7/13
+  speakerphone, mapped onto Rockwell's `vls`), `+VSM` (0/1 signed/unsigned 8-bit, 2/129 16-bit,
+  4 mu-law, 5 A-law, 128 8-bit; `+VSM=?` lists names, which vgetty matches), `+VTX`/`+VRX`
+  (`<DLE>!` stops), `+VTR` full duplex (`<DLE>^`), `+VTS` (10 ms units, `{d,len}`, `+VTD`),
+  `+VSD`, `+VGT/+VGR/+VRA/+VRN`, `+VIP`; others accepted. `vset` says which set the DTE spoke last:
+  V.253 answers OK where Rockwell says VCON, and reports silence as `q` after a voice, `s` before.
+  The voice tests' guests must keep real time: `timeBeginPeriod(1)` (Windows' 15.6 ms Sleep starves
+  mu-law at 8 KB/s).
+- The status page's phone (`src/network/isp/isp_phone.c`, the "Phone" section): `/api/phone` is a
+  WebSocket (Host and Origin must be the page's own; SHA-1/base64 handshake in-file) that
+  `http_serve()` hands over; each is a thread registering on the exchange over loopback as any
+  modem (asks for 555-0100, label "Status page (browser)"), dialling/answering as VOICE, relaying
+  JSON commands/events and 8000 Hz 16-bit audio (binary) to and from the browser, which resamples
+  in an AudioWorklet (the page's audio runs at the browser's rate: Firefox will not mix rates) and
+  plays the ring/ringback/busy tones itself. The microphone needs the page as 127.0.0.1/localhost
+  (a secure context). `isp_srv` links `src/char/modem_voice.c` for it. Test:
+  `tests/isp/web_phone_test.c` (Isp.web_phone: the test is the browser and a modem).
 - isp-server (`src/network/isp/`, its own exe; the emulator does not link it): the virtual ISP
   and telephone exchange modems reach over the network. `isp_srv.c` is the server (listeners,
   exchange, .ini; start/stop for in-process tests), `isp_server.c` only its command line. A

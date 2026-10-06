@@ -24,15 +24,23 @@
          taken), then sends RING <call> <caller|-> when the number is dialled
          and CANCEL <call> when the caller gives up.
 
-     86BOX-EXCHANGE 1 DIAL <caller|-> <dialled>
+     86BOX-EXCHANGE 1 DIAL <caller|-> <dialled> [VOICE]
          One call.  The exchange answers RINGING while another modem rings,
          then CONNECT -- after which the connection carries the call's bytes
          and nothing else -- or BUSY, NOANSWER or UNKNOWN, and closes.  A
          number that is no modem's reaches the ISP (unless that is switched
          off): CONNECT, then PPP.
 
-     86BOX-EXCHANGE 1 ANSWER <call>
+     86BOX-EXCHANGE 1 ANSWER <call> [VOICE]
          The ringing modem picks up: CONNECT and the caller's bytes, or GONE.
+
+   VOICE marks a voice call: the modem dialled or picked up in voice mode, or
+   with its handset.  Each end's CONNECT says what the other is -- CONNECT
+   VOICE, or plain CONNECT for a modem (and for the ISP) -- because the bytes
+   that follow are different: between two voice ends, voice frames
+   (modem_voice.h: 'A' with 8000 Hz mu-law, 'D' with a DTMF digit); otherwise
+   whatever the modems send.  A voice end facing a modem hears it and sends
+   it nothing.
 
    A connection that does not begin with the greeting is a modem on a plain
    TCP line to the ISP: PPP from the first byte. */
