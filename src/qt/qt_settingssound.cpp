@@ -38,6 +38,9 @@ extern "C" {
 #include "qt_settings_completer.hpp"
 
 #include "qt_settingssound.hpp"
+#ifdef USE_SOUNDCANVAS
+#    include "qt_soundcanvas.hpp"
+#endif
 #include "ui_qt_settingssound.h"
 
 SettingsSound::SettingsSound(QWidget *parent)
@@ -621,6 +624,13 @@ SettingsSound::on_comboBoxMidiOut_currentIndexChanged(int index)
 void
 SettingsSound::on_pushButtonConfigureMidiOut_clicked()
 {
+#ifdef USE_SOUNDCANVAS
+    /* 86Box-Next: the Sound Canvas has a window of its own, listing 88emu's boards and their ROMs. */
+    if (midi_out_device_getdevice(ui->comboBoxMidiOut->currentData().toInt()) == &soundcanvas_device) {
+        midi_output_device_cfg_changed |= SoundCanvasConfigDialog::configure(this);
+        return;
+    }
+#endif
     midi_output_device_cfg_changed |= DeviceConfig::ConfigureDevice(midi_out_device_getdevice(ui->comboBoxMidiOut->currentData().toInt()));
 }
 

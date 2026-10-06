@@ -161,6 +161,32 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   `tests/modem/` (transport, two modems, calls to isp-server's core behind the fake sockets;
   `phone_test.c`: two real modems with real sockets ringing each other through the real exchange)
   and `tests/network/` (`net_slirp.c` behind a stub card).
+- Roland Sound Canvas MIDI out (`src/sound/midi_soundcanvas.c`, replacing upstream's CLAP-plugin
+  device and `src/sound/clap/`; sync-upstream.yml keeps both ours (KEEP_OURS / KEEP_DELETED),
+  upstream changes to the SOUNDCANVAS blocks of the CMake files or midi.h can still conflict):
+  88emu from gearmulator (GPLv3, so builds with it are GPLv3), vendored in
+  `src/sound/emu88/gearmulator/` (`VENDORED.md`: commits, MinGW patches, how to update), built
+  as the `emu88` static library (`src/sound/emu88/CMakeLists.txt`; framework sources C++17, the
+  rest C++20, `-ffast-math`, asmjit JIT). `emu88_host.h/.cpp` is the C glue: catalogue (88emu's
+  24 boards, config key = 88emu's CLI id), per-slot ROM status from `RomInventory`, boards
+  created powered and booted in the first `emu88h_render()` on the MIDI thread (never the
+  emulation/UI threads), power/standby, panel buttons/encoder/LEDs, LCD textures
+  (`emu88_lcd.cpp`, ported from 88emuPlayer). ROMs: `roms/soundcanvas` under every ROM path,
+  recursive, identified by MD5+size. One device ("Roland Sound Canvas", internal name
+  `soundcanvas`; config `model` = key, legacy numeric values map to SC-55/SC-55mkII,
+  `factory_reset`, `fast_boot`, `output_gain` = the panel's knob, `panel_x/y/width`).
+  The board outlives a device close for 3 s (hard resets re-create devices): the next init with
+  the same options takes it back, so the synth keeps running through a PC reset.
+  Qt (`src/qt/qt_soundcanvas.cpp`): Settings > Sound > MIDI Out > Configure opens
+  `SoundCanvasConfigDialog` (synth list with availability lamps, ROM table with lamps and each
+  file's MD5, the known dumps' in its tooltip); `SoundCanvasPanelManager` polls
+  `soundcanvas_get_board()` and opens `SoundCanvasPanel` once per new board (no focus steal);
+  the status bar's first icon, a piano (`midi.ico`, while MIDI out is the Sound Canvas, lit while
+  its board runs, `MachineStatus::setSoundCanvas()`), shows it again:
+  88emuPlayer's artwork without the playlist (`src/qt/soundcanvas/*.png`, 2x, generated from
+  88emu's assets; SVG faces pre-rendered to PNG -- the dynamic Qt has no Svg module), its
+  controls and key bindings in the skin's 612 x 187 dp. Tests: `tests/soundcanvas/`
+  (SoundCanvas.emu88; board tests need `BOX86NEXT_SC_ROMS`).
 - Upstream's CI workflows and Dependabot are disabled/removed in this repo; only
   `sync-upstream.yml` runs.
 - Build number in the title bar / About box: `.build-number` (git-ignored, repo root)

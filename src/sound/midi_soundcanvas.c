@@ -6,496 +6,282 @@
  *
  *          This file is part of the 86Box distribution.
  *
- *          Roland Sound Canvas (SC-55) MIDI backend using CLAP plugins.
- *
- *          Ported from DOSBox Staging's Sound Canvas backend.
- *
- * Authors: The DOSBox Staging Team (original implementation)
- *          Jasmine Iwanek, <jriwanek@gmail.com>
- *          win2kgamer
- *
- *          Original Copyright 2024-2025 The DOSBox Staging Team.
- *          86Box adaptation 2026.
- *          Copyright 2026 Jasmine Iwanek.
- *          Copyright 2026 win2kgamer
+ *          Roland Sound Canvas MIDI output: the boards 88emu emulates (the
+ *          Sound Canvas family, the MT-32 and the CM modules), running their
+ *          own firmware from ROM images in roms/soundcanvas. The board is
+ *          picked in its configuration window (qt_soundcanvas.cpp), and its
+ *          front panel opens as a window of its own while the machine runs.
+ *          The emulation is gearmulator's 88lib, see emu88/.
  */
-#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
-#include <stdarg.h>
-#define HAVE_STDARG_H
 
 #include <86box/86box.h>
-#include <86box/config.h>
 #include <86box/device.h>
-#include <86box/mem.h>
 #include <86box/midi.h>
-#include <86box/thread.h>
-#include <86box/sound.h>
-#include <86box/plat_unused.h>
+#include <86box/mem.h>
 #include <86box/path.h>
+#include <86box/plat.h>
 #include <86box/rom.h>
-#include <86box/log.h>
+#include <86box/sound.h>
+#include <86box/thread.h>
+#include <86box/ui.h>
+#include <86box/plat_unused.h>
 
-#include "clap/clap_host.h"
-#include "clap/clap_event_list.h"
+#include "emu88/emu88_host.h"
 
-#define RENDER_RATE      100
-#define BUFFER_SEGMENTS  10
+#define RENDER_RATE     100 /* midi_poll() runs every 10 ms */
+#define BUFFER_SEGMENTS 10
+#define FRAMES          (SOUND_FREQ / RENDER_RATE)
 
-extern void al_set_midi(int freq, int buf_size);
+extern void    al_set_midi(int freq, int buf_size);
+extern uint8_t MIDI_evt_len[256];
 
-/* ------------------------------------------------------------------ */
-/*  Model definitions (matching DOSBox Staging)                       */
-/* ------------------------------------------------------------------ */
-typedef struct {
-    const char *label;
-    const char *version;
-    int         sample_rate;
-} sc_model_t;
+typedef struct soundcanvas_t {
+    emu88h_t *board;
+    int       opts[3]; /* model, factory reset, fast boot */
 
-static const sc_model_t sc_models[] = {
-    { "SC-55 v1.00",      "1.00", 32000 },
-    { "SC-55 v1.10",      "1.10", 32000 },
-    { "SC-55 v1.20",      "1.20", 32000 },
-    { "SC-55 v1.21",      "1.21", 32000 },
-    { "SC-55 v2.00",      "2.00", 32000 },
-    { "SC-55mk2 v1.01",   "1.01", 33103 },
-};
+    float   *buffer;       /* BUFFER_SEGMENTS segments of FRAMES stereo frames */
+    int16_t *buffer_int16;
+    int      buf_size;     /* bytes */
 
-#define NUM_MODELS (sizeof(sc_models) / sizeof(sc_models[0]))
-
-/* ------------------------------------------------------------------ */
-/*  State                                                             */
-/* ------------------------------------------------------------------ */
-typedef struct soundcanvas {
-    clap_host_instance_t *clap_inst;
-    clap_event_list_t     events;
-
-    int  sample_rate;
-    int  model_index;
-
-    /* audio buffers */
-    float    *buf_left;
-    float    *buf_right;
-    float    *out_buffer;        /* interleaved float stereo */
-    int16_t  *out_buffer_int16;  /* interleaved int16 stereo */
-    int       buf_size;          /* total buffer size in bytes */
-    float     vol_ctrl;          /* Output gain */
-
-    /* threading */
     thread_t *thread_h;
     event_t  *event;
     event_t  *start_event;
-    mutex_t  *midi_mutex;
-    int       on;
-
-    /* logging */
-    void *    log;
+    volatile int on;
 } soundcanvas_t;
 
-static soundcanvas_t scdev;
+static soundcanvas_t *scdev = NULL;
 
-/* ------------------------------------------------------------------ */
-/*  Logging                                                           */
-/* ------------------------------------------------------------------ */
+/* The board outlives the device: 86Box closes and re-creates its devices on every hard reset,
+   but an external module keeps running through a reset of the PC. A closed device parks its
+   board, and the next one takes it back when it asks for the same board; the panel window
+   (which polls soundcanvas_get_board()) stays open meanwhile. A board parked for longer than a
+   reset takes is let go: the MIDI device was changed or the machine stopped. */
+#define PARK_TIMEOUT_MS 3000
 
-#ifdef ENABLE_SCANVAS_LOG
-int scanvas_do_log = ENABLE_SCANVAS_LOG;
+static mutex_t  *board_mutex  = NULL;
+static emu88h_t *board_shared = NULL; /* the running board, or the parked one */
+static int       parked       = 0;
+static uint32_t  parked_at;
+static int       parked_opts[3];      /* model, factory reset, fast boot */
 
 static void
-scanvas_log(void *priv, const char *fmt, ...)
+board_lock(void)
 {
-    if (scanvas_do_log) {
-        va_list ap;
-        va_start(ap, fmt);
-        log_out(priv, fmt, ap);
-        va_end(ap);
-    }
-}
-#else
-#    define scanvas_log(fmt, ...)
-#endif
-
-/* ------------------------------------------------------------------ */
-/*  Case-insensitive substring search                                 */
-/* ------------------------------------------------------------------ */
-static int
-str_icontains(const char *haystack, const char *needle)
-{
-    if (!haystack || !needle)
-        return 0;
-
-    size_t hlen = strlen(haystack);
-    size_t nlen = strlen(needle);
-    if (nlen > hlen)
-        return 0;
-
-    for (size_t i = 0; i <= hlen - nlen; i++) {
-        size_t j;
-        for (j = 0; j < nlen; j++) {
-            if (tolower((unsigned char)haystack[i + j]) != tolower((unsigned char)needle[j]))
-                break;
-        }
-        if (j == nlen)
-            return 1;
-    }
-    return 0;
+    if (!board_mutex)
+        board_mutex = thread_create_mutex();
+    thread_wait_mutex(board_mutex);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Find best matching CLAP plugin for a model                        */
-/* ------------------------------------------------------------------ */
-static int
-find_sc_plugin(UNUSED(const char *rom_path), int model_index,
-               char *lib_path_out, size_t lib_sz,
-               char *plugin_id_out, size_t id_sz)
+void *
+soundcanvas_get_board(void)
 {
-    clap_plugin_info_t *infos = NULL;
-    int  count = 0;
-    int  found = -1;
-    char temp[1024] = { 0 };
-    #ifdef ENABLE_SCANVAS_LOG
-    soundcanvas_t *data = &scdev;
-    #endif
+    emu88h_t *board = NULL;
 
-    clap_host_enumerate_plugins(NULL, &infos, &count); /* Check system CLAP directories */
-
-    if (count == 0) { /* Check roms/plugins */
-        for (rom_path_t *rom_path = &rom_paths; rom_path != NULL; rom_path = rom_path->next) {
-            path_append_filename(temp, rom_path->path, "plugins/");
-            scanvas_log(data->log, "Checking ROM path %s for CLAP plugins\n", temp);
-            clap_host_enumerate_plugins(temp, &infos, &count);
-            scanvas_log(data->log, "ROM path %s contains %i CLAP plugins\n", temp, count);
-            if (count > 0)
-                break;
-
-        }
+    if (!board_mutex)
+        return NULL;
+    thread_wait_mutex(board_mutex);
+    if (parked && ((plat_get_ticks() - parked_at) > PARK_TIMEOUT_MS)) {
+        emu88h_release(board_shared);
+        board_shared = NULL;
+        parked       = 0;
     }
-
-    scanvas_log(data->log, "CLAP plugin count: %i\n", count);
-
-    if (count == 0)
-        return 0;
-
-    for (int i = 0; i < count; i++) {
-        /* Must contain "sc-55" or "SC-55" in the name */
-        scanvas_log(data->log, "CLAP plugin %i name: %s, version: %s\n", i, infos[i].name, infos[i].version);
-        if (!str_icontains(infos[i].name, "sc-55") &&
-            !str_icontains(infos[i].name, "sc55"))
-            continue;
-
-        if (model_index >= 0 && model_index < (int)NUM_MODELS) {
-            /* Match specific model by label substring and version */
-            const sc_model_t *m = &sc_models[model_index];
-
-            scanvas_log(data->log, "CLAP plugin check: label: %s, version: %s\n", m->label, m->version);
-
-            int name_match = str_icontains(infos[i].name, "mk2")
-                ? str_icontains(m->label, "mk2")
-                : !str_icontains(m->label, "mk2");
-
-            if (name_match && str_icontains(infos[i].name, m->version)) {
-                found = i;
-                break;
-            }
-        } else {
-            /* Auto mode: pick first SC-55 plugin found */
-            found = i;
-            break;
-        }
-    }
-
-    if (found >= 0) {
-        memcpy(lib_path_out, infos[found].library_path, lib_sz - 1);
-        lib_path_out[lib_sz - 1] = '\0';
-        memcpy(plugin_id_out, infos[found].id, id_sz - 1);
-        plugin_id_out[id_sz - 1] = '\0';
-    }
-
-    free(infos);
-    return found >= 0;
+    board = board_shared;
+    if (board)
+        emu88h_retain(board);
+    thread_release_mutex(board_mutex);
+    return board;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Poll callback (called from sound system at SOUND_FREQ)            */
-/* ------------------------------------------------------------------ */
+/* A board for these options: the parked one when it matches, a new one otherwise. */
+static emu88h_t *
+take_board(int model, int factory_reset, int fast_boot)
+{
+    emu88h_t *board;
+
+    board_lock();
+    if (board_shared && parked && (parked_opts[0] == model) && (parked_opts[1] == factory_reset) && (parked_opts[2] == fast_boot))
+        board = board_shared;
+    else {
+        if (board_shared)
+            emu88h_release(board_shared);
+        board        = emu88h_create(model, factory_reset, fast_boot);
+        board_shared = board;
+    }
+    parked = 0;
+    thread_release_mutex(board_mutex);
+    return board;
+}
+
+static void
+park_board(emu88h_t *board, int model, int factory_reset, int fast_boot)
+{
+    board_lock();
+    if (board_shared == board) {
+        parked         = 1;
+        parked_at      = plat_get_ticks();
+        parked_opts[0] = model;
+        parked_opts[1] = factory_reset;
+        parked_opts[2] = fast_boot;
+    } else
+        emu88h_release(board);
+    thread_release_mutex(board_mutex);
+}
+
+/* The configured board. The CLAP-based device this replaced saved "model" as a number: 0 for
+   auto-detect, 1-5 for SC-55 firmware revisions and 6 for the SC-55mkII. */
+int
+soundcanvas_config_model(const char *value)
+{
+    int model = emu88h_model_from_key(value);
+
+    if ((model < 0) && value && (value[0] >= '0') && (value[0] <= '6') && !value[1])
+        model = ((value[0] >= '1') && (value[0] <= '5')) ? EMU88H_SC55 : EMU88H_SC55MK2;
+    return model;
+}
+
+/* roms/soundcanvas under every ROM path. */
 void
+soundcanvas_set_rom_dirs(void)
+{
+    char        paths[8][1024];
+    const char *dirs[8];
+    int         n = 0;
+
+    for (rom_path_t *rp = &rom_paths; rp && (n < 8); rp = rp->next) {
+        if (!rp->path[0])
+            continue;
+        path_append_filename(paths[n], rp->path, "soundcanvas");
+        dirs[n] = paths[n];
+        n++;
+    }
+    emu88h_set_rom_dirs(dirs, n);
+}
+
+static void
 soundcanvas_poll(void)
 {
-    soundcanvas_t *data = &scdev;
-
-    thread_set_event(data->event);
+    if (scdev)
+        thread_set_event(scdev->event);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Render thread                                                     */
-/* ------------------------------------------------------------------ */
 static void
 soundcanvas_thread(void *param)
 {
-    soundcanvas_t *data      = (soundcanvas_t *)param;
-    int            buf_pos   = 0;
-    int            frames_per_seg;
-    int            seg_bytes;
+    soundcanvas_t *dev     = (soundcanvas_t *) param;
+    const int      seg     = FRAMES * 2;  /* samples per segment */
+    int            pos     = 0;           /* samples into the buffer */
+    float          render[FRAMES * 2];
 
-    if (sound_is_float) {
-        seg_bytes      = data->buf_size / BUFFER_SEGMENTS;
-        frames_per_seg = seg_bytes / (2 * (int)sizeof(float));
-    } else {
-        seg_bytes      = data->buf_size / BUFFER_SEGMENTS;
-        frames_per_seg = seg_bytes / (2 * (int)sizeof(int16_t));
-    }
+    thread_set_event(dev->start_event);
 
-    thread_set_event(data->start_event);
+    while (dev->on) {
+        thread_wait_event(dev->event, -1);
+        thread_reset_event(dev->event);
+        if (!dev->on)
+            break;
 
-    while (data->on) {
-        thread_wait_event(data->event, -1);
-        thread_reset_event(data->event);
+        emu88h_render(dev->board, render, FRAMES, SOUND_FREQ);
 
-        /* Grab pending MIDI events under lock */
-        thread_wait_mutex(data->midi_mutex);
-
-        /* Render through CLAP plugin */
-        memset(data->buf_left,  0, (size_t)frames_per_seg * sizeof(float));
-        memset(data->buf_right, 0, (size_t)frames_per_seg * sizeof(float));
-
-        clap_host_process(data->clap_inst,
-                          data->buf_left, data->buf_right,
-                          frames_per_seg, &data->events);
-
-        thread_release_mutex(data->midi_mutex);
-
-        /* Interleave into output buffer */
-        if (sound_is_float) {
-            float *buf = (float *)((uint8_t *)data->out_buffer + buf_pos);
-
-            for (int i = 0; i < frames_per_seg; i++) {
-                /* Apply sound card MIDI volume and filters */
-                if (filter_midi != NULL) {
-                    double dl = (double) (data->buf_left[i] * data->vol_ctrl);
-                    double dr = (double) (data->buf_right[i] * data->vol_ctrl);
-                    filter_midi(0, &dl, filter_midi_p);
-                    filter_midi(1, &dr, filter_midi_p);
-                    buf[i * 2 + 0] = (float) dl;
-                    buf[i * 2 + 1] = (float) dr;
-                } else {
-                    buf[i * 2 + 0] = data->buf_left[i] * data->vol_ctrl;
-                    buf[i * 2 + 1] = data->buf_right[i] * data->vol_ctrl;
-                }
+        /* Apply sound card MIDI volume and filters */
+        if (filter_midi != NULL) {
+            for (int i = 0; i < seg; i += 2) {
+                double dl = render[i];
+                double dr = render[i + 1];
+                filter_midi(0, &dl, filter_midi_p);
+                filter_midi(1, &dr, filter_midi_p);
+                render[i]     = (float) dl;
+                render[i + 1] = (float) dr;
             }
-            buf_pos += seg_bytes;
-            if (buf_pos >= data->buf_size) {
-                givealbuffer_midi(data->out_buffer,
-                                  data->buf_size / (int)sizeof(float));
-                buf_pos = 0;
+        }
+
+        if (sound_is_float)
+            memcpy(dev->buffer + pos, render, sizeof(render));
+        else
+            for (int i = 0; i < seg; i++) {
+                float s = render[i] * 32767.0f;
+                if (s > 32767.0f)
+                    s = 32767.0f;
+                if (s < -32768.0f)
+                    s = -32768.0f;
+                dev->buffer_int16[pos + i] = (int16_t) s;
             }
-        } else {
-            int16_t *buf = (int16_t *)((uint8_t *)data->out_buffer_int16 + buf_pos);
 
-            for (int i = 0; i < frames_per_seg; i++) {
-                float l = data->buf_left[i]  * 32767.0f * data->vol_ctrl;
-                float r = data->buf_right[i] * 32767.0f * data->vol_ctrl;
-
-                /* Apply sound card MIDI volume and filters */
-                if (filter_midi != NULL) {
-                    double dl = (double) l;
-                    double dr = (double) r;
-                    filter_midi(0, &dl, filter_midi_p);
-                    filter_midi(1, &dr, filter_midi_p);
-                    l = (float) l;
-                    r = (float) r;
-                }
-
-                if (l >  32767.0f) l =  32767.0f;
-                if (l < -32768.0f) l = -32768.0f;
-                if (r >  32767.0f) r =  32767.0f;
-                if (r < -32768.0f) r = -32768.0f;
-
-                buf[i * 2 + 0] = (int16_t)l;
-                buf[i * 2 + 1] = (int16_t)r;
-            }
-            buf_pos += seg_bytes;
-            if (buf_pos >= data->buf_size) {
-                givealbuffer_midi(data->out_buffer_int16,
-                                  data->buf_size / (int)sizeof(int16_t));
-                buf_pos = 0;
-            }
+        pos += seg;
+        if (pos >= seg * BUFFER_SEGMENTS) {
+            if (sound_is_float)
+                givealbuffer_midi(dev->buffer, seg * BUFFER_SEGMENTS);
+            else
+                givealbuffer_midi(dev->buffer_int16, seg * BUFFER_SEGMENTS);
+            pos = 0;
         }
     }
 }
 
-/* ------------------------------------------------------------------ */
-/*  MIDI message callbacks                                            */
-/* ------------------------------------------------------------------ */
-void
+static void
 soundcanvas_msg(uint8_t *msg)
 {
-    soundcanvas_t *data = &scdev;
-    uint32_t val  = *((uint32_t *)msg);
-    uint8_t  midi[3];
-    int      len;
+    int len = MIDI_evt_len[msg[0]];
 
-    midi[0] = (uint8_t)(val & 0xFF);
-    midi[1] = (uint8_t)((val >> 8) & 0xFF);
-    midi[2] = (uint8_t)((val >> 16) & 0xFF);
-
-    /* Determine message length from status byte */
-    uint8_t status = midi[0] & 0xF0;
-    switch (status) {
-        case 0xC0: case 0xD0:
-            len = 2; break;
-        default:
-            len = 3; break;
-    }
-
-    thread_wait_mutex(data->midi_mutex);
-    clap_event_list_add_midi(&data->events, midi, len, 0);
-    thread_release_mutex(data->midi_mutex);
+    if (scdev && len)
+        emu88h_midi(scdev->board, 0, msg, len);
 }
 
-void
-soundcanvas_sysex(uint8_t *buf, unsigned int len)
+static void
+soundcanvas_sysex(uint8_t *data, unsigned int len)
 {
-    soundcanvas_t *data = &scdev;
-
-    thread_wait_mutex(data->midi_mutex);
-    clap_event_list_add_sysex(&data->events, buf, len, 0);
-    thread_release_mutex(data->midi_mutex);
-}
-
-/* ------------------------------------------------------------------ */
-/*  Init / Close                                                      */
-/* ------------------------------------------------------------------ */
-int
-soundcanvas_available(void)
-{
-    /* Check if any SC-55 CLAP plugin is discoverable */
-    clap_plugin_info_t *infos = NULL;
-    int count = 0;
-    char temp[1024] = { 0 };
-
-    clap_host_enumerate_plugins(NULL, &infos, &count);
-
-    int found = 0;
-    for (int i = 0; i < count; i++) {
-        if (str_icontains(infos[i].name, "sc-55") ||
-            str_icontains(infos[i].name, "sc55")) {
-            found = 1;
-            break;
-        }
-    }
-
-    if (found == 0) {
-        for (rom_path_t *rom_path = &rom_paths; rom_path != NULL; rom_path = rom_path->next) {
-            path_append_filename(temp, rom_path->path, "plugins/");
-
-            clap_host_enumerate_plugins(temp, &infos, &count);
-
-            for (int i = 0; i < count; i++) {
-                if (str_icontains(infos[i].name, "sc-55") ||
-                    str_icontains(infos[i].name, "sc55")) {
-                    found = 1;
-                    break;
-                }
-            }
-        }
-    }
-
-    free(infos);
-    return found;
+    if (scdev)
+        emu88h_midi(scdev->board, 0, data, len);
 }
 
 static void *
 soundcanvas_init(UNUSED(const device_t *info))
 {
-    soundcanvas_t *data = &scdev;
-    midi_device_t *dev;
-    char           lib_path[1024]  = { 0 };
-    char           plugin_id[256]  = { 0 };
+    soundcanvas_t *dev;
+    midi_device_t *mdev;
+    int            model = soundcanvas_config_model(device_get_config_string("model"));
+    char           msg[512];
 
-    memset(data, 0, sizeof(soundcanvas_t));
-
-    data->log = log_open("SC55");
-
-    /* Determine model from config */
-    int model_cfg = device_get_config_int("model");
-    int model_idx = (model_cfg > 0 && model_cfg <= (int)NUM_MODELS)
-                  ? model_cfg - 1 : -1;
-
-    /* Find matching CLAP plugin */
-    if (!find_sc_plugin(NULL, model_idx, lib_path, sizeof(lib_path),
-                        plugin_id, sizeof(plugin_id))) {
-        scanvas_log(data->log, "Sound Canvas: No SC-55 CLAP plugin found.\n");
+    soundcanvas_set_rom_dirs();
+    if ((model < 0) || !emu88h_model_available(model)) {
+        snprintf(msg, sizeof(msg),
+                 "The ROM images of the %s are missing from roms/soundcanvas.\n\n"
+                 "Open Settings > Sound > MIDI Out device > Configure to see which files it needs.",
+                 (model >= 0) ? emu88h_model_name(model) : "selected synthesizer");
+        ui_msgbox_header(MBX_ERROR, "Roland Sound Canvas", msg);
         return NULL;
     }
 
-    /* Load plugin */
-    data->clap_inst = clap_host_load_plugin(lib_path, plugin_id);
-    if (!data->clap_inst) {
-        scanvas_log(data->log, "Sound Canvas: Failed to load CLAP plugin.\n");
-        return NULL;
-    }
+    dev          = calloc(1, sizeof(soundcanvas_t));
+    dev->opts[0] = model;
+    dev->opts[1] = device_get_config_int("factory_reset");
+    dev->opts[2] = device_get_config_int("fast_boot");
+    dev->board   = take_board(dev->opts[0], dev->opts[1], dev->opts[2]);
+    emu88h_set_gain(dev->board, device_get_config_int("output_gain"));
 
-    /* Determine sample rate from model */
-    if (model_idx >= 0)
-        data->sample_rate = sc_models[model_idx].sample_rate;
+    dev->buf_size = FRAMES * 2 * BUFFER_SEGMENTS * (sound_is_float ? sizeof(float) : sizeof(int16_t));
+    if (sound_is_float)
+        dev->buffer = calloc(1, dev->buf_size);
     else
-        data->sample_rate = 32000;  /* default SC-55 rate */
+        dev->buffer_int16 = calloc(1, dev->buf_size);
+    al_set_midi(SOUND_FREQ, dev->buf_size);
 
-    data->model_index = model_idx;
+    mdev             = calloc(1, sizeof(midi_device_t));
+    mdev->play_msg   = soundcanvas_msg;
+    mdev->play_sysex = soundcanvas_sysex;
+    mdev->poll       = soundcanvas_poll;
+    midi_out_init(mdev);
 
-    /* Set up volume control */
-    data->vol_ctrl = (device_get_config_int("output_gain") / 100.0f);
-
-    /* Activate plugin */
-    clap_host_activate(data->clap_inst, data->sample_rate);
-
-    /* Initialize event list */
-    clap_event_list_init(&data->events);
-
-    /* Allocate render buffers (separate L/R for CLAP) */
-    int frames_per_seg = data->sample_rate / RENDER_RATE;
-    data->buf_left  = (float *)calloc((size_t)frames_per_seg, sizeof(float));
-    data->buf_right = (float *)calloc((size_t)frames_per_seg, sizeof(float));
-
-    /* Allocate interleaved output buffer */
-    if (sound_is_float) {
-        data->buf_size         = frames_per_seg * 2 * (int)sizeof(float) * BUFFER_SEGMENTS;
-        data->out_buffer       = (float *)calloc(1, (size_t)data->buf_size);
-        data->out_buffer_int16 = NULL;
-    } else {
-        data->buf_size         = frames_per_seg * 2 * (int)sizeof(int16_t) * BUFFER_SEGMENTS;
-        data->out_buffer       = NULL;
-        data->out_buffer_int16 = (int16_t *)calloc(1, (size_t)data->buf_size);
-    }
-
-    al_set_midi(data->sample_rate, data->buf_size);
-
-    /* Set up MIDI device */
-    dev = (midi_device_t *)calloc(1, sizeof(midi_device_t));
-    dev->play_msg   = soundcanvas_msg;
-    dev->play_sysex = soundcanvas_sysex;
-    dev->poll       = soundcanvas_poll;
-
-    midi_out_init(dev);
-
-    /* Start render thread */
-    data->on          = 1;
-    data->midi_mutex  = thread_create_mutex();
-    data->start_event = thread_create_event();
-    data->event       = thread_create_event();
-    data->thread_h    = thread_create(soundcanvas_thread, data);
-
-    thread_wait_event(data->start_event, -1);
-    thread_reset_event(data->start_event);
-
-    scanvas_log(data->log, "Sound Canvas: Initialized (model=%s, rate=%d Hz)\n",
-          model_idx >= 0 ? sc_models[model_idx].label : "auto",
-          data->sample_rate);
+    scdev            = dev;
+    dev->on          = 1;
+    dev->start_event = thread_create_event();
+    dev->event       = thread_create_event();
+    dev->thread_h    = thread_create(soundcanvas_thread, dev);
+    thread_wait_event(dev->start_event, -1);
+    thread_reset_event(dev->start_event);
 
     return dev;
 }
@@ -503,78 +289,69 @@ soundcanvas_init(UNUSED(const device_t *info))
 static void
 soundcanvas_close(void *priv)
 {
-    if (!priv)
+    soundcanvas_t *dev = (soundcanvas_t *) priv;
+
+    if (!dev)
         return;
 
-    soundcanvas_t *data = &scdev;
+    dev->on = 0;
+    thread_set_event(dev->event);
+    thread_wait(dev->thread_h);
+    thread_destroy_event(dev->event);
+    thread_destroy_event(dev->start_event);
+    scdev = NULL;
 
-    /* Stop render thread */
-    data->on = 0;
-    thread_set_event(data->event);
-    thread_wait(data->thread_h);
-
-    /* Destroy CLAP instance */
-    if (data->clap_inst) {
-        clap_host_destroy(data->clap_inst);
-        data->clap_inst = NULL;
-    }
-
-    clap_event_list_free(&data->events);
-
-    thread_close_mutex(data->midi_mutex);
-
-    free(data->buf_left);
-    free(data->buf_right);
-    free(data->out_buffer);
-    free(data->out_buffer_int16);
-
-    data->buf_left         = NULL;
-    data->buf_right        = NULL;
-    data->out_buffer       = NULL;
-    data->out_buffer_int16 = NULL;
-
-    if (data->log != NULL) {
-        log_close(data->log);
-        data->log = NULL;
-    }
+    park_board(dev->board, dev->opts[0], dev->opts[1], dev->opts[2]);
+    free(dev->buffer);
+    free(dev->buffer_int16);
+    free(dev);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Device config                                                     */
-/* ------------------------------------------------------------------ */
 static const device_config_t soundcanvas_config[] = {
     // clang-format off
     {
+        /* Set in the device's own configuration window, which lists the boards and their ROMs. */
         .name           = "model",
-        .description    = "Model",
-        .type           = CONFIG_SELECTION,
+        .description    = "Synthesizer",
+        .type           = CONFIG_STRING,
+        .default_string = "sc55mk2",
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = { { 0 } },
+        .bios           = { { 0 } }
+    },
+    {
+        .name           = "factory_reset",
+        .description    = "Factory reset at power-on",
+        .type           = CONFIG_BINARY,
+        .default_string = NULL,
+        .default_int    = 1,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = { { 0 } },
+        .bios           = { { 0 } }
+    },
+    {
+        .name           = "fast_boot",
+        .description    = "Fast boot (skip intro)",
+        .type           = CONFIG_BINARY,
         .default_string = NULL,
         .default_int    = 0,
         .file_filter    = NULL,
         .spinner        = { 0 },
-        .selection      = {
-            { .description = "Auto-detect",     .value = 0 },
-            { .description = "SC-55 v1.00",     .value = 1 },
-            { .description = "SC-55 v1.10",     .value = 2 },
-            { .description = "SC-55 v1.20",     .value = 3 },
-            { .description = "SC-55 v1.21",     .value = 4 },
-            { .description = "SC-55 v2.00",     .value = 5 },
-            { .description = "SC-55mk2 v1.01",  .value = 6 },
-            { .description = ""                            }
-        },
+        .selection      = { { 0 } },
         .bios           = { { 0 } }
     },
     {
+        /* The panel's VOLUME knob. */
         .name           = "output_gain",
-        .description    = "Output Gain",
+        .description    = "Volume",
         .type           = CONFIG_SPINNER,
         .default_string = NULL,
         .default_int    = 100,
         .file_filter    = NULL,
-        .spinner        = {
-            .min =   0,
-            .max = 100
-        },
+        .spinner        = { .min = 0, .max = 200 },
         .selection      = { { 0 } },
         .bios           = { { 0 } }
     },
@@ -583,14 +360,14 @@ static const device_config_t soundcanvas_config[] = {
 };
 
 const device_t soundcanvas_device = {
-    .name          = "Roland Sound Canvas (CLAP)",
+    .name          = "Roland Sound Canvas",
     .internal_name = "soundcanvas",
     .flags         = 0,
     .local         = 0,
     .init          = soundcanvas_init,
     .close         = soundcanvas_close,
     .reset         = NULL,
-    .available     = soundcanvas_available,
+    .available     = NULL,
     .speed_changed = NULL,
     .force_redraw  = NULL,
     .config        = soundcanvas_config

@@ -129,4 +129,13 @@ extern const device_t soundcanvas_device;
 #    endif /* USE_SOUNDCANVAS */
 #endif
 
+#ifdef USE_SOUNDCANVAS
+/* The 88emu board the running Sound Canvas drives, retained (emu88h_release() it), or NULL. */
+extern void *soundcanvas_get_board(void);
+/* Points 88emu at roms/soundcanvas under every ROM path, and rescans it. */
+extern void soundcanvas_set_rom_dirs(void);
+/* The board a "model" setting names (emu88h model), -1 for none. */
+extern int soundcanvas_config_model(const char *value);
+#endif
+
 #endif /*EMU_SOUND_MIDI_H*/

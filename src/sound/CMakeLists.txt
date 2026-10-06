@@ -215,14 +215,9 @@ endif()
 
 if(SOUNDCANVAS)
     target_compile_definitions(snd PRIVATE USE_SOUNDCANVAS)
-    target_sources(snd PRIVATE
-        midi_soundcanvas.c
-        clap/clap_event_list.c
-        clap/clap_host.c
-    )
-    if(NOT WIN32)
-        target_link_libraries(86Box dl)
-    endif()
+    target_sources(snd PRIVATE midi_soundcanvas.c)
+    add_subdirectory(emu88)
+    target_link_libraries(86Box emu88)
 endif()
 
 if(SOFTMODEM)

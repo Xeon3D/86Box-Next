@@ -974,10 +974,14 @@ serial_attach_ex(int port,
 {
     /* Make sure this port becomes non-hotunpluggable if a hotunpluggable dropdown
        device and a non-hotunpluggable external device are both trying to claim it. */
-    uint8_t hotunplug         = com_ports[port].hotunplug;
-    com_ports[port].hotunplug = CHAR_PORT_NOHOTUNPLUG;
-    if (hotunplug != CHAR_PORT_DETACHED)
+    /* 86Box-Next: only when this device gets the port. A refused attach that marked it anyway
+       left a hot-pluggable device (a modem) on a port that serial_devices_reset() then skips:
+       the device was closed but the port kept calling it, and a soft settings change crashed. */
+    if (com_ports[port].hotunplug != CHAR_PORT_DETACHED) {
+        com_ports[port].hotunplug = (com_ports[port].hotunplug == CHAR_PORT_HOTUNPLUG) ? CHAR_PORT_HOTUNPLUG : CHAR_PORT_NOHOTUNPLUG;
         return NULL;
+    }
+    com_ports[port].hotunplug = CHAR_PORT_NOHOTUNPLUG;
 
     serial_device_t *sd = &serial_devices[port];
 
@@ -999,10 +1003,14 @@ serial_attach_ex_2(int port,
 {
     /* Make sure this port becomes non-hotunpluggable if a hotunpluggable dropdown
        device and a non-hotunpluggable external device are both trying to claim it. */
-    uint8_t hotunplug         = com_ports[port].hotunplug;
-    com_ports[port].hotunplug = CHAR_PORT_NOHOTUNPLUG;
-    if (hotunplug != CHAR_PORT_DETACHED)
+    /* 86Box-Next: only when this device gets the port. A refused attach that marked it anyway
+       left a hot-pluggable device (a modem) on a port that serial_devices_reset() then skips:
+       the device was closed but the port kept calling it, and a soft settings change crashed. */
+    if (com_ports[port].hotunplug != CHAR_PORT_DETACHED) {
+        com_ports[port].hotunplug = (com_ports[port].hotunplug == CHAR_PORT_HOTUNPLUG) ? CHAR_PORT_HOTUNPLUG : CHAR_PORT_NOHOTUNPLUG;
         return NULL;
+    }
+    com_ports[port].hotunplug = CHAR_PORT_NOHOTUNPLUG;
 
     serial_device_t *sd = &serial_devices[port];
 

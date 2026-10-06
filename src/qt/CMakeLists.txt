@@ -353,6 +353,12 @@ if(RTMIDI)
     target_compile_definitions(ui PRIVATE USE_RTMIDI)
 endif()
 
+if(SOUNDCANVAS)
+    target_compile_definitions(ui PRIVATE USE_SOUNDCANVAS)
+    target_sources(ui PRIVATE qt_soundcanvas.cpp qt_soundcanvas.hpp soundcanvas.qrc)
+    target_link_libraries(ui PRIVATE emu88)
+endif()
+
 if(WACOM)
     target_compile_definitions(ui PRIVATE USE_WACOM)
 endif()

@@ -22,6 +22,9 @@
 
 #include "qt_mainwindow.hpp"
 #include "qt_ioboard_controls.hpp"
+#ifdef USE_SOUNDCANVAS
+#    include "qt_soundcanvas.hpp"
+#endif
 #include "qt_usb_manager.hpp"
 #include "qt_pccard_menu.hpp"
 #include "qt_modem_menu.hpp"
@@ -233,6 +236,10 @@ MainWindow::MainWindow(QWidget *parent)
        status bar too. */
     usbManager = new UsbManager(this);
     status->setUsbManager(usbManager);
+#ifdef USE_SOUNDCANVAS
+    /* 86Box-Next: the Roland Sound Canvas MIDI device's front panel, behind the piano icon. */
+    status->setSoundCanvas(new SoundCanvasPanelManager(this));
+#endif
     ui->actionMute_Unmute->setText(sound_muted ? tr("&Unmute") : tr("&Mute"));
     ui->stackedWidget->setMouseTracking(true);
     statusBar()->setVisible(!hide_status_bar);
