@@ -1,7 +1,8 @@
 name: Sync with upstream
 
 # Merges 86Box/86Box master into this fork's master once a day.
-# Never opens pull requests -- here or upstream.  On a conflict or a failed
+# Never opens pull requests -- here or upstream.  README.md is the fork's own:
+# upstream's changes to it are left out (KEEP_OURS).  On a conflict or a failed
 # push it opens (or updates) an issue in this repository instead.
 #
 # Pushing a merge that touches upstream's .github/workflows needs a token with
@@ -27,6 +28,8 @@ env:
   UPSTREAM_BRANCH: master
   FORK_BRANCH: master
   ISSUE_TITLE: Upstream sync failed
+  # Files upstream never overwrites here (space-separated paths).
+  KEEP_OURS: README.md
 
 jobs:
   sync:
@@ -55,18 +58,23 @@ jobs:
           fi
 
           sha=$(git rev-parse --short "upstream/$UPSTREAM_BRANCH")
-          if git merge --no-edit -m "Merge upstream 86Box/86Box@$sha" "upstream/$UPSTREAM_BRANCH"; then
-            echo "result=merged" >> "$GITHUB_OUTPUT"
-          else
+          git merge --no-commit --no-ff "upstream/$UPSTREAM_BRANCH" || true
+          # The fork's own files (KEEP_OURS) stay as they are, whatever
+          # upstream did to them -- conflicting or not.
+          git checkout HEAD -- $KEEP_OURS
+          conflicts=$(git diff --name-only --diff-filter=U)
+          if [ -n "$conflicts" ]; then
             {
               echo "conflicts<<EOF"
-              git diff --name-only --diff-filter=U
+              echo "$conflicts"
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
             git merge --abort
             echo "result=conflict" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+          git commit --no-edit -m "Merge upstream 86Box/86Box@$sha"
+          echo "result=merged" >> "$GITHUB_OUTPUT"
 
       - name: Push
         if: steps.merge.outputs.result == 'merged'
