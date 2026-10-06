@@ -44,6 +44,8 @@
 
 /* ------------------------------------------------------------ 86Box stubs */
 /* One char port per modem; `tp` is the one the helpers below talk to. */
+char vm_name[1024] = "Modem test";
+
 static char_port_t  ports[4];
 static int          next_port;
 static char_port_t *tp = &ports[0];
@@ -1044,8 +1046,9 @@ udp_round_trip(ppp_client_t *c, SOCKET hs, uint16_t hport, const char *msg)
 }
 
 /* Calls through the modems to isp-server -- its core, in-process, behind the
-   fake sockets -- over the TCP line that "Dial the ISP" sets up.  Ended by the
-   guest's own PPP, the ISP hangs up, and the modem says so. */
+   fake sockets -- over a plain TCP line to it.  Ended by the guest's own PPP,
+   the ISP hangs up, and the modem says so.  (The telephone network, which
+   also reaches the ISP, has phone_test.c.) */
 static void
 run_isp(void)
 {
@@ -1075,13 +1078,13 @@ run_isp(void)
     u3.dev        = d3;
     fake_instance = 2;
 
-    expect("a saved line 2 is the dial to isp-server",
-           ((char_modem_get_line(1, host, sizeof(host), &port) == CHAR_MODEM_LINE_TCP) &&
-            !strcmp(host, CHAR_MODEM_ISP_HOST) && (port == CHAR_MODEM_ISP_PORT)) ? "yes" : "no", "yes");
+    expect("a saved line 2 is the telephone network now (which reaches the ISP too)",
+           (char_modem_get_line(1, host, sizeof(host), &port) == CHAR_MODEM_LINE_PHONE) ? "yes" : "no", "yes");
 
-    /* What "Dial the ISP" in the modem menu does. */
+    /* Both on a plain TCP line to where isp-server listens. */
+    char_modem_set_line(1, CHAR_MODEM_LINE_TCP, CHAR_MODEM_ISP_HOST, CHAR_MODEM_ISP_PORT);
     char_modem_set_line(2, CHAR_MODEM_LINE_TCP, CHAR_MODEM_ISP_HOST, CHAR_MODEM_ISP_PORT);
-    expect("\"Dial the ISP\" is a TCP line to it, saved",
+    expect("a TCP line to isp-server, saved",
            ((saved_line == CHAR_MODEM_LINE_TCP) && !strcmp(saved_host, CHAR_MODEM_ISP_HOST) &&
             (saved_port == CHAR_MODEM_ISP_PORT)) ? "yes" : "no", "yes");
 

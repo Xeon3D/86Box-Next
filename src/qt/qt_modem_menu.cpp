@@ -4,9 +4,10 @@
  *             The modem menu, behind the modem icon in the status bar.  For
  *             each COM port with a modem on it, and each PC Card with a modem
  *             of its own (the 3C562D) (char_modem.c): leave its telephone
- *             line unplugged, have dialling reach a TCP/IP host, or have it
- *             dial the ISP -- isp-server, on this PC, and through it the
- *             Internet (a TCP host too, preset to where it listens).  The
+ *             line unplugged, have dialling reach a TCP/IP host, or plug it
+ *             into the telephone network of isp-server: a number of its own,
+ *             other modems' numbers, and the ISP -- the Internet -- on any
+ *             other.  The
  *             change is made at once, without a reset -- a call in progress
  *             ends with NO CARRIER -- and kept in the modem's configuration
  *             (a PC Card's: the card's), where Settings shows it too.
@@ -22,6 +23,7 @@
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QIcon>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QSpinBox>
@@ -55,9 +57,25 @@ isIsp(int line, const QString &host, int port)
            (port == CHAR_MODEM_ISP_PORT);
 }
 
+/* "5550101" -> "555-0101" */
 static QString
-lineText(int line, const QString &host, int port)
+phoneText(const QString &digits)
 {
+    if ((digits.size() == 7) && (digits.toULongLong() || (digits == QStringLiteral("0000000"))))
+        return digits.left(3) + QStringLiteral("-") + digits.mid(3);
+    return digits;
+}
+
+static QString
+lineText(int com, int line, const QString &host, int port)
+{
+    if (line == CHAR_MODEM_LINE_PHONE) {
+        char number[24] = "";
+
+        if (char_modem_get_phone(com, nullptr, 0, nullptr, 0, number, sizeof(number)) == 1)
+            return QObject::tr("telephone %1").arg(phoneText(QString::fromUtf8(number)));
+        return QObject::tr("telephone network, not reached (is isp-server running?)");
+    }
     if (isIsp(line, host, port))
         return QObject::tr("dials the ISP (isp-server)");
     if ((line == CHAR_MODEM_LINE_TCP) && !host.isEmpty())
@@ -130,7 +148,7 @@ ModemMenu::toolTip() const
 
         if ((line < 0) || (name == nullptr))
             continue;
-        tip += "\n" + tr("%1: %2, %3, %4").arg(slotText(i), QString::fromUtf8(name), lineText(line, QString::fromUtf8(host), port), stateText(char_modem_get_state(i)));
+        tip += "\n" + tr("%1: %2, %3, %4").arg(slotText(i), QString::fromUtf8(name), lineText(i, line, QString::fromUtf8(host), port), stateText(char_modem_get_state(i)));
     }
     return tip;
 }
@@ -149,7 +167,6 @@ ModemMenu::buildMenu()
             continue;
 
         const QString qhost = QString::fromUtf8(host);
-        const bool    isp   = isIsp(line, qhost, port);
         QMenu        *sub   = m_menu->addMenu(QIcon(":/settings/qt/icons/modem.ico"),
                                               tr("%1: %2").arg(slotText(i), QString::fromUtf8(name)));
         auto         *grp   = new QActionGroup(sub);
@@ -168,13 +185,13 @@ ModemMenu::buildMenu()
             emit changed();
         });
 
-        QAction *tcp = sub->addAction((qhost.isEmpty() || isp) ? tr("Dial out to a TCP/IP host...")
-                                                               : tr("Dial out to %1:%2").arg(qhost).arg(port));
+        QAction *tcp = sub->addAction(qhost.isEmpty() ? tr("Dial out to a TCP/IP host...")
+                                                      : tr("Dial out to %1:%2").arg(qhost).arg(port));
         tcp->setCheckable(true);
-        tcp->setChecked((line == CHAR_MODEM_LINE_TCP) && !qhost.isEmpty() && !isp);
+        tcp->setChecked((line == CHAR_MODEM_LINE_TCP) && !qhost.isEmpty());
         grp->addAction(tcp);
-        connect(tcp, &QAction::triggered, this, [this, i, qhost, port, isp]() {
-            if (qhost.isEmpty() || isp) {
+        connect(tcp, &QAction::triggered, this, [this, i, qhost, port]() {
+            if (qhost.isEmpty()) {
                 editHost(i);
                 return;
             }
@@ -183,15 +200,19 @@ ModemMenu::buildMenu()
             emit changed();
         });
 
-        /* isp-server, the virtual ISP (src/network/isp/), where it listens
-           unless told otherwise: any number gets PPP, an address and the
-           host's Internet.  It has to be running. */
-        QAction *dialIsp = sub->addAction(tr("Dial the ISP (isp-server on this PC)"));
-        dialIsp->setCheckable(true);
-        dialIsp->setChecked(isp);
-        grp->addAction(dialIsp);
-        connect(dialIsp, &QAction::triggered, this, [this, i]() {
-            char_modem_set_line(i, CHAR_MODEM_LINE_TCP, CHAR_MODEM_ISP_HOST, CHAR_MODEM_ISP_PORT);
+        /* isp-server's telephone network (src/network/isp/): a number of the
+           modem's own, other modems' numbers, and the ISP on any other.  It
+           has to be running; the modem keeps trying until it is. */
+        QAction *phone = sub->addAction(tr("Telephone network (isp-server)"));
+        phone->setCheckable(true);
+        phone->setChecked(line == CHAR_MODEM_LINE_PHONE);
+        grp->addAction(phone);
+        connect(phone, &QAction::triggered, this, [this, i]() {
+            char h[128] = "";
+            int  p      = 23;
+            if (char_modem_get_line(i, h, sizeof(h), &p) < 0)
+                return;
+            char_modem_set_line(i, CHAR_MODEM_LINE_PHONE, h, p);
             config_save();
             emit changed();
         });
@@ -199,10 +220,16 @@ ModemMenu::buildMenu()
         sub->addSeparator();
         QAction *edit = sub->addAction(tr("Set TCP/IP host..."));
         connect(edit, &QAction::triggered, this, [this, i]() { editHost(i); });
+        QAction *num = sub->addAction(tr("Set phone number..."));
+        connect(num, &QAction::triggered, this, [this, i]() { editPhone(i); });
 
         sub->addSeparator();
         QAction *st = sub->addAction(tr("Status: %1").arg(stateText(char_modem_get_state(i))));
         st->setEnabled(false);
+        if (line == CHAR_MODEM_LINE_PHONE) {
+            QAction *n = sub->addAction(lineText(i, line, qhost, port));
+            n->setEnabled(false);
+        }
     }
 
     if (m_menu->isEmpty()) {
@@ -242,6 +269,45 @@ ModemMenu::editHost(int com)
     const QString h = hostE->text().trimmed();
     char_modem_set_line(com, h.isEmpty() ? CHAR_MODEM_LINE_DEAD : CHAR_MODEM_LINE_TCP,
                         h.toUtf8().constData(), portE->value());
+    config_save();
+    emit changed();
+}
+
+/* The number this modem asks for (blank: the exchange gives one) and where
+   the exchange is. */
+void
+ModemMenu::editPhone(int com)
+{
+    char want[24]      = "";
+    char exchange[160] = "";
+    char number[24]    = "";
+
+    if (char_modem_get_phone(com, want, sizeof(want), exchange, sizeof(exchange), number, sizeof(number)) < 0)
+        return;
+
+    QDialog dlg(m_parent);
+    dlg.setWindowTitle(tr("Telephone line of %1").arg(slotText(com)));
+    auto *form  = new QFormLayout(&dlg);
+    auto *wantE = new QLineEdit(QString::fromUtf8(want), &dlg);
+    wantE->setPlaceholderText(tr("blank: the exchange gives one"));
+    wantE->setMinimumWidth(240);
+    auto *exchE = new QLineEdit(QString::fromUtf8(exchange), &dlg);
+    exchE->setPlaceholderText(QStringLiteral(CHAR_MODEM_EXCHANGE));
+    form->addRow(tr("Phone number:"), wantE);
+    form->addRow(tr("Exchange (isp-server):"), exchE);
+    form->addRow(new QLabel(number[0] ? tr("The exchange has given this line %1.").arg(phoneText(QString::fromUtf8(number)))
+                                      : tr("Not registered with the exchange now."),
+                            &dlg));
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    char_modem_set_phone(com, wantE->text().trimmed().toUtf8().constData(),
+                         exchE->text().trimmed().toUtf8().constData());
     config_save();
     emit changed();
 }

@@ -82,12 +82,25 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   it in the modem's section (`<name> #<COM+1>`). Tests: `tests/modem/` (FN_SYS's tables).
   The modem's bytes to the line go through a queue (`MODEM_TXQ_*`): short sends and would-block
   lose nothing, CTS drops at the high-water mark, an overrun past CTS ends the call; a full
-  receive ring is not a hangup. The line is a backend (`modem_line_ops_t`, TCP) behind the
-  unchanged call state machine (CONNECT before DCD). "Dial the ISP (isp-server on this PC)" in
-  the modem menu sets the TCP line to `CHAR_MODEM_ISP_HOST:PORT` (127.0.0.1:2323); a saved line
-  2 (the built-in ISP that lived for a day) is read as that.
+  receive ring is not a hangup. Lines are backends (`modem_line_ops_t`: TCP, phone) behind the
+  unchanged call state machine (CONNECT before DCD). Line 2, "Telephone network (isp-server)",
+  with `phone_number` (blank: the exchange assigns) and `exchange` (127.0.0.1:2323) settings: the
+  modem holds a REGISTER connection to isp-server's exchange (reconnects every 3 s, polled every
+  32nd `modem_read`), gets RING/CANCEL on it -- RING result every 6 s, RI 2 s, S1 counts, S0
+  auto-answers, ATA, caller ID with `AT#CID=1`/`AT+VCID=1` -- and opens a connection per call
+  (DIAL/ANSWER, the reply read a byte at a time until CONNECT; BUSY plays the busy tone). Modem
+  menu: "Telephone network (isp-server)", "Set phone number...", the number in the status line.
+  (Line 2 was the built-in ISP for a day; the exchange still reaches the ISP on any unknown
+  number.)
 - isp-server (`src/network/isp/`, its own exe; the emulator does not link it): the virtual ISP
-  modems dial over their TCP line. Any number reaches it; one session per call: PPP server
+  and telephone exchange modems reach over the network. `isp_srv.c` is the server (listeners,
+  exchange, .ini; start/stop for in-process tests), `isp_server.c` only its command line. A
+  connection opening with `86BOX-EXCHANGE 1 ` is the exchange's (REGISTER / DIAL / ANSWER, see
+  `isp_srv.h`): numbers from 555-0101 (the one asked for if free), a dial rings the line whose
+  number it is or ends with (prefixes), RINGING/CONNECT/BUSY/NOANSWER/UNKNOWN, the answer's
+  connection handed to the caller's thread and bridged; other numbers reach the ISP (switchable;
+  explicit ISP numbers); dialling oneself is BUSY. Anything else is a plain TCP line: PPP from the
+  first byte. The ISP: one session per call: PPP server
   (`ppp_framing.c` RFC 1662, `ppp_session.c` RFC 1661 LCP passive until the guest's first request,
   optional PAP accepting anything, IPCP with address and DNS; rejects PFC/ACFC/callback/VJ/NBNS,
   Protocol-Rejects CCP/IPX/NBF) and a libslirp instance per session (`isp_nat_slirp.c`: synthetic
@@ -97,14 +110,17 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   (guest LAN, `isp.c` routes between sessions). Each session has its own thread; other threads only
   copy bytes or snapshots under its lock (global lock before session lock). Its GUI is a web page
   on 127.0.0.1:2324 (`isp_web.c`, `isp_web_page.html` embedded by `embed.cmake`), opened at start
-  (`--no-open` to skip -- always use it when testing): calls, hang-up, per-call-number port
+  (`--no-open` to skip -- always use it when testing): calls, the exchange's phone book and
+  modem-to-modem calls (hang-up), the exchange's settings, hang-up, per-call-number port
   forwards (libslirp hostfwd), settings (guest LAN, modem-speed throttle, PAP, keepalive, range);
   Host-header check and an `X-ISP-Request` header on changes against rebinding/CSRF. Settings and
   forwards persist in `isp-server.ini` next to the exe (`--config`). Tests: `tests/isp/` (framing,
   PPP automaton, sessions and controls through libslirp to host sockets; `isp_web_test.c` the
   page's API; `isp_probe` drives a running isp-server, `--internet NAME` adds DNS + HTTP, `--hold
-  SECS` keeps a call up), `tests/modem/` (transport, two modems, calls to isp-server's core behind
-  the fake sockets) and `tests/network/` (`net_slirp.c` behind a stub card).
+  SECS` keeps a call up; `exchange_test.c` the exchange in-process with sockets as modems),
+  `tests/modem/` (transport, two modems, calls to isp-server's core behind the fake sockets;
+  `phone_test.c`: two real modems with real sockets ringing each other through the real exchange)
+  and `tests/network/` (`net_slirp.c` behind a stub card).
 - Upstream's CI workflows and Dependabot are disabled/removed in this repo; only
   `sync-upstream.yml` runs.
 - Build number in the title bar / About box: `.build-number` (git-ignored, repo root)

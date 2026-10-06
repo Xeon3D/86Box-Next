@@ -66,8 +66,12 @@ add_library(isp_web OBJECT
 target_include_directories(isp_web PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(isp_web PUBLIC isp)
 
+# The server: listeners, ISP calls, the telephone exchange, the .ini.
+add_library(isp_srv OBJECT isp_srv.c)
+target_link_libraries(isp_srv PUBLIC isp_web isp)
+
 add_executable(isp-server isp_server.c)
-target_link_libraries(isp-server PRIVATE isp_web isp)
+target_link_libraries(isp-server PRIVATE isp_srv isp_web isp)
 if(WIN32)
     target_link_libraries(isp-server PRIVATE shell32)
 endif()
