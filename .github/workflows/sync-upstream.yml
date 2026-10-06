@@ -1,8 +1,9 @@
 name: Sync with upstream
 
 # Merges 86Box/86Box master into this fork's master once a week (Mondays, 04:17 UTC), and on demand.
-# Never opens pull requests -- here or upstream.  README.md is the fork's own:
-# upstream's changes to it are left out (KEEP_OURS).  On a conflict or a failed
+# Never opens pull requests -- here or upstream.  README.md and the Sound Canvas device are the
+# fork's own: upstream's changes to them are left out (KEEP_OURS), and upstream's CLAP Sound
+# Canvas host, which the fork removed, stays removed (KEEP_DELETED).  On a conflict or a failed
 # push it opens (or updates) an issue in this repository instead.
 #
 # Pushing a merge that touches upstream's .github/workflows needs a token with
@@ -29,7 +30,9 @@ env:
   FORK_BRANCH: master
   ISSUE_TITLE: Upstream sync failed
   # Files upstream never overwrites here (space-separated paths).
-  KEEP_OURS: README.md
+  KEEP_OURS: README.md src/sound/midi_soundcanvas.c
+  # Upstream files the fork deleted, kept deleted whatever upstream does to them.
+  KEEP_DELETED: src/sound/clap
 
 jobs:
   sync:
@@ -62,6 +65,7 @@ jobs:
           # The fork's own files (KEEP_OURS) stay as they are, whatever
           # upstream did to them -- conflicting or not.
           git checkout HEAD -- $KEEP_OURS
+          git rm -rq --ignore-unmatch -- $KEEP_DELETED
           conflicts=$(git diff --name-only --diff-filter=U)
           if [ -n "$conflicts" ]; then
             {

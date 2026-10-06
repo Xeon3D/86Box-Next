@@ -1,0 +1,35 @@
+<RCC>
+    <qresource prefix="/soundcanvas">
+        <file alias="button_all.png">soundcanvas/button_all.png</file>
+        <file alias="button_led_on.png">soundcanvas/button_led_on.png</file>
+        <file alias="button_left.png">soundcanvas/button_left.png</file>
+        <file alias="button_part_left.png">soundcanvas/button_part_left.png</file>
+        <file alias="button_part_right.png">soundcanvas/button_part_right.png</file>
+        <file alias="button_plain.png">soundcanvas/button_plain.png</file>
+        <file alias="button_right.png">soundcanvas/button_right.png</file>
+        <file alias="button_round.png">soundcanvas/button_round.png</file>
+        <file alias="cm32l_panel.png">soundcanvas/cm32l_panel.png</file>
+        <file alias="cm32p_panel.png">soundcanvas/cm32p_panel.png</file>
+        <file alias="cm64_panel.png">soundcanvas/cm64_panel.png</file>
+        <file alias="cm_led_on.png">soundcanvas/cm_led_on.png</file>
+        <file alias="efx_led_amber.png">soundcanvas/efx_led_amber.png</file>
+        <file alias="efx_led_green.png">soundcanvas/efx_led_green.png</file>
+        <file alias="efx_led_off.png">soundcanvas/efx_led_off.png</file>
+        <file alias="efx_led_on.png">soundcanvas/efx_led_on.png</file>
+        <file alias="knob.png">soundcanvas/knob.png</file>
+        <file alias="preview.png">soundcanvas/preview.png</file>
+        <file alias="sc55_panel.png">soundcanvas/sc55_panel.png</file>
+        <file alias="sc55mk2_panel.png">soundcanvas/sc55mk2_panel.png</file>
+        <file alias="sc55pc_panel.png">soundcanvas/sc55pc_panel.png</file>
+        <file alias="sc8820_panel.png">soundcanvas/sc8820_panel.png</file>
+        <file alias="sc8850_assets.png">soundcanvas/sc8850_assets.png</file>
+        <file alias="sc8850_panel.png">soundcanvas/sc8850_panel.png</file>
+        <file alias="sc88_panel.png">soundcanvas/sc88_panel.png</file>
+        <file alias="sc88exp_panel.png">soundcanvas/sc88exp_panel.png</file>
+        <file alias="sc88pro_panel.png">soundcanvas/sc88pro_panel.png</file>
+        <file alias="sc88vl_panel.png">soundcanvas/sc88vl_panel.png</file>
+        <file alias="selector_led_off.png">soundcanvas/selector_led_off.png</file>
+        <file alias="selector_led_on.png">soundcanvas/selector_led_on.png</file>
+        <file alias="value_knob.png">soundcanvas/value_knob.png</file>
+    </qresource>
+</RCC>

@@ -58,6 +58,11 @@ Extra features
 * Host device passthrough (libusb, or UsbDk on Windows), including isochronous transfers such as USB audio.
 * A connect prompt, a USB menu and an activity trace.
 
+### Sound
+* **Roland Sound Canvas** MIDI output: the boards of [88emu](https://github.com/dsp56300/gearmulator) (SC-55, SC-55mkII, SC-88, SC-88VL, SC-88Pro, SC-8820, SC-8850 and their relatives, the MT-32s and the CM-32L/CM-32P/CM-64), running their own firmware.
+  * Its Configure window lists the synthesizers and, for the selected one, every ROM image it needs, with a green lamp for each one found in `roms/soundcanvas` (any file name: known dumps are recognized by their contents) and a red one for each one missing.
+  * While the machine runs, the synthesizer's front panel opens in a window of its own: the display, the lamps, the buttons (mouse or keyboard) and the volume knob all work.
+
 ### Input and arcade
 * Elo TouchSystems SmartSet serial touchscreen.
 * Arcade I/O boards: funworld Photo Play and Merit Megatouch XL/MAXX.
@@ -74,6 +79,8 @@ Licensing
 
 86Box-Next, like 86Box, is released under the [GNU General Public License, version 2](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html) or later. For more information, see the `COPYING` file in the root of the repository.
 
+The Roland Sound Canvas device includes 88emu from [gearmulator](https://github.com/dsp56300/gearmulator), which is released under the [GNU General Public License, version 3](https://www.gnu.org/licenses/gpl-3.0.html); builds that include it are therefore distributed under GPLv3.
+
 The emulator can also optionally make use of [munt](https://github.com/munt/munt), [FluidSynth](https://www.fluidsynth.org/), [Ghostscript](https://www.ghostscript.com/) and [Discord Game SDK](https://discord.com/developers/docs/game-sdk/sdk-starter-guide), which are distributed under their respective licenses.
 
 Credits
@@ -82,4 +89,5 @@ Credits
 * **86Box and its developers** wrote the emulator this is built on: [86Box/86Box](https://github.com/86Box/86Box).
 * The COM port modems, the Elo touchscreen and the funworld I/O board come from PeepeeBox.
 * The PC Card controller and the Megatouch board come from MegaPPBox.
+* The Roland Sound Canvas emulation and its front-panel artwork are 88emu's, by The Usual Suspects ([gearmulator](https://github.com/dsp56300/gearmulator)), building on nukeykt's [Nuked-SC55](https://github.com/nukeykt/Nuked-SC55) and [munt](https://github.com/munt/munt).
 * The Rockwell ADPCM coder is a port of Peter Jaeckel's fixed-point version in [mgetty/vgetty](https://github.com/Distrotech/mgetty) (GPL).

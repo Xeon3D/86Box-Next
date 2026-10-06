@@ -22,6 +22,9 @@
 
 #include "qt_mainwindow.hpp"
 #include "qt_ioboard_controls.hpp"
+#ifdef USE_SOUNDCANVAS
+#    include "qt_soundcanvas.hpp"
+#endif
 #include "qt_usb_manager.hpp"
 #include "qt_pccard_menu.hpp"
 #include "qt_modem_menu.hpp"
@@ -338,6 +341,12 @@ MainWindow::MainWindow(QWidget *parent)
 
     /* 86Box-Next: the arcade I/O board's cabinet controls. */
     ioBoard = new IOBoardControls(this, ui->menubar, ui->menuAbout->menuAction(), ui->toolBar, ui->toolBar->actions().last());
+
+#ifdef USE_SOUNDCANVAS
+    /* 86Box-Next: the Roland Sound Canvas MIDI device's front panel. */
+    ui->menuSound->addSeparator();
+    new SoundCanvasPanelManager(this, ui->menuSound->addAction(tr("Roland Sound Canvas &panel")));
+#endif
 
     this->setWindowFlag(Qt::CustomizeWindowHint, true);
     this->setWindowFlag(Qt::MSWindowsFixedSizeDialogHint, vid_resize != 1);
