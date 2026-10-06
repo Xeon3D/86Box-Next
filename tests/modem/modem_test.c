@@ -960,10 +960,31 @@ sleep_ms(unsigned ms)
 #endif
 }
 
+/* After the far end hangs up: what the modem says, added to out, until NO
+   CARRIER has come and DCD is down, or ms run out.  Collects across reads --
+   one drain() alone may come up empty after the result, or before it. */
+static int
+wait_no_carrier(char *out, size_t outsz, unsigned ms)
+{
+    const uint32_t until = ppp_client_ms() + ms;
+    size_t         n     = strlen(out);
+
+    while ((int32_t) (ppp_client_ms() - until) < 0) {
+        drain(out + n, outsz - n);
+        n += strlen(out + n);
+        if (strstr(out, "NO CARRIER") && !dcd())
+            return 1;
+        sleep_ms(10);
+    }
+    return 0;
+}
+
 /* The PPP client talks through the modem as the guest's UART would. */
 typedef struct {
     char_port_t *port;
     void        *dev;
+    char         tail[64]; /* the last bytes read, as text: a result code the
+                              PPP client read along with its last frame */
 } uart_t;
 
 static size_t
@@ -983,8 +1004,15 @@ uart_read(void *o, uint8_t *b, size_t n)
     size_t  got = 0;
 
     /* As the receive timer does: one byte per call. */
-    while ((got < n) && (u->port->chardev.read(&b[got], 1, u->dev) == 1))
+    while ((got < n) && (u->port->chardev.read(&b[got], 1, u->dev) == 1)) {
+        size_t len = strlen(u->tail);
+
+        if (len == (sizeof(u->tail) - 1))
+            memmove(u->tail, u->tail + 1, len--); /* the terminator too */
+        u->tail[len]     = b[got] ? (char) b[got] : '.';
+        u->tail[len + 1] = '\0';
         got++;
+    }
     return got;
 }
 
@@ -1055,7 +1083,7 @@ run_isp(void)
     char         buf[4096];
     char         host[128];
     int          port = 0;
-    uart_t       u2, u3;
+    uart_t       u2 = { 0 }, u3 = { 0 };
     ppp_client_t c2, c3;
     void        *d2, *d3;
     SOCKET       hs;
@@ -1151,17 +1179,11 @@ run_isp(void)
     /* The guest on COM2 ends PPP: the ISP hangs up on it. */
     tp  = u2.port;
     dev = d2;
+    u2.tail[0] = '\0';
     expect("COM2's guest terminates LCP", ppp_client_terminate(&c2, 3000) ? "acked" : "no", "acked");
-    {
-        const uint32_t until = ppp_client_ms() + 6000;
-
-        buf[0] = '\0';
-        while (dcd() && ((int32_t) (ppp_client_ms() - until) < 0)) {
-            drain(buf, sizeof(buf));
-            sleep_ms(10);
-        }
-        expect("...and the ISP hangs up: NO CARRIER", buf, "NO CARRIER");
-    }
+    snprintf(buf, sizeof(buf), "%s", u2.tail);
+    wait_no_carrier(buf, sizeof(buf), 6000);
+    expect("...and the ISP hangs up: NO CARRIER", buf, "NO CARRIER");
 
     /* Dial again: the freed address is handed out again. */
     expect("COM2 redials", call_up("0191") ? "up" : "down", "up");
@@ -1170,6 +1192,7 @@ run_isp(void)
     expect("...on the address it had", (c2.my_ip == 0x0a56010f) ? "10.86.1.15" : ppp_client_ip_str(c2.my_ip), "10.86.1.15");
 
     /* The ISP operator hangs up on COM2 (the status page's button). */
+    u2.tail[0] = '\0';
     expect("the ISP hangs up on the call", isp_hangup_call(1) ? "found" : "none", "found");
     {
         const uint32_t until = ppp_client_ms() + 8000;
@@ -1181,12 +1204,10 @@ run_isp(void)
             ppp_client_poll(&c2);
             sleep_ms(10);
         }
-        buf[0] = '\0';
-        while (dcd() && ((int32_t) (ppp_client_ms() - until) < 0)) {
-            drain(buf, sizeof(buf));
-            sleep_ms(10);
-        }
-        expect("...the guest is told, then NO CARRIER", (c2.terminated && strstr(buf, "NO CARRIER")) ? "yes" : "no", "yes");
+        expect("...the guest is told", c2.terminated ? "yes" : "no", "yes");
+        snprintf(buf, sizeof(buf), "%s", u2.tail);
+        wait_no_carrier(buf, sizeof(buf), 8000);
+        expect("...then NO CARRIER", buf, "NO CARRIER");
     }
 
     /* The emulator closes with a call up. */
