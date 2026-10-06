@@ -393,6 +393,50 @@ main(void)
     closesocket(a);
     closesocket(b);
 
+    /* Voice calls: each end's CONNECT says what the other is. */
+    {
+        static const struct {
+            int         caller, callee;
+            const char *caller_hears, *callee_hears, *what;
+        } kinds[] = {
+            { 1, 1, "CONNECT VOICE", "CONNECT VOICE", "a voice call answered as one: CONNECT VOICE, both ends" },
+            { 1, 0, "CONNECT", "CONNECT VOICE", "a voice call answered by a modem: each hears what the other is" },
+            { 0, 1, "CONNECT VOICE", "CONNECT", "a modem's call answered by a voice: likewise" }
+        };
+
+        for (int k = 0; k < 3; k++) {
+            isp_srv_pcall_t pc[4];
+            int             np;
+
+            a = dial_server();
+            say(a, ISP_EXCHANGE_GREETING "DIAL %s 5550103%s\r\n", n1, kinds[k].caller ? " VOICE" : "");
+            hear(a, 3000);
+            sscanf(hear(l3, 3000), "RING %d", &id);
+            b = dial_server();
+            say(b, ISP_EXCHANGE_GREETING "ANSWER %d%s\r\n", id, kinds[k].callee ? " VOICE" : "");
+            {
+                char cb[64], ca[64];
+
+                snprintf(cb, sizeof(cb), "%s", hear(b, 3000));
+                snprintf(ca, sizeof(ca), "%s", hear(a, 3000));
+                check(kinds[k].what, !strcmp(ca, kinds[k].caller_hears) && !strcmp(cb, kinds[k].callee_hears));
+            }
+            np = isp_srv_phone_calls(pc, 4);
+            check("...and the page knows which end is a voice",
+                  (np == 1) && (pc[0].voice == ((kinds[k].caller ? ISP_PCALL_FROM_VOICE : 0) |
+                                                (kinds[k].callee ? ISP_PCALL_TO_VOICE : 0))));
+            closesocket(a);
+            closed_within(b, 3000);
+            closesocket(b);
+            {
+                const uint64_t until = isp_now_ms() + 3000;
+
+                while ((isp_srv_phone_calls(pc, 4) > 0) && (isp_now_ms() < until))
+                    sleep_ms(10);
+            }
+        }
+    }
+
     /* Dialling oneself. */
     a = dial_server();
     say(a, ISP_EXCHANGE_GREETING "DIAL %s 5550101\r\n", n1);

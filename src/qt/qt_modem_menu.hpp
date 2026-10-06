@@ -36,6 +36,7 @@ signals:
 private:
     void editHost(int com);
     void editPhone(int com);
+    void callNumber(int com);
 
     QWidget *m_parent;
     QMenu   *m_menu;

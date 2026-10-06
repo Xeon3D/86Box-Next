@@ -59,6 +59,7 @@ typedef int SOCKET;
 #include "isp_plat.h"
 #include "isp_web.h"
 #include "isp_srv.h"
+#include "isp_phone.h"
 
 #define MAX_CONNS     64
 #define MAX_LINES     64
@@ -96,6 +97,8 @@ typedef struct {
     int      state;      /* ISP_PCALL_* */
     int      gone;       /* the callee's line went away while it rang */
     int      hangup_req; /* the status page hangs it up */
+    int      from_voice; /* the caller dialled a voice call */
+    int      to_voice;   /* the callee picked up as one     */
     SOCKET   answer;     /* the callee's connection, once it answers */
     uint64_t t0;
     uint64_t from_bytes;
@@ -416,6 +419,7 @@ isp_srv_phone_calls(isp_srv_pcall_t *out, int max)
         out[n].seconds    = (uint32_t) ((now - p->t0) / 1000);
         out[n].from_bytes = p->from_bytes;
         out[n].to_bytes   = p->to_bytes;
+        out[n].voice      = (p->from_voice ? ISP_PCALL_FROM_VOICE : 0) | (p->to_voice ? ISP_PCALL_TO_VOICE : 0);
         n++;
     }
     isp_mutex_unlock(ex_lock);
@@ -904,10 +908,23 @@ ex_dial(conn_t *c, const char *args)
     int      unknown;
     char     ispnums[128];
     uint64_t until;
+    int      voice = 0;
 
     if (sscanf(args, "%23s %95[^\r\n]", from_arg, dial_arg) < 2) {
         send_line(c->sock, "ERROR dial what?");
         return;
+    }
+    /* "... VOICE": a voice call -- dialled in voice mode, or on the
+       modem's handset. */
+    {
+        size_t len = strlen(dial_arg);
+
+        while ((len > 0) && (dial_arg[len - 1] == ' '))
+            dial_arg[--len] = '\0';
+        if ((len >= 6) && !strcmp(&dial_arg[len - 6], " VOICE")) {
+            dial_arg[len - 6] = '\0';
+            voice             = 1;
+        }
     }
     number_digits(from_arg, from, sizeof(from));
     number_digits(dial_arg, dialled, sizeof(dialled));
@@ -972,8 +989,9 @@ ex_dial(conn_t *c, const char *args)
     p->used   = 1;
     p->id     = next_call_id++;
     p->state  = ISP_PCALL_RINGING;
-    p->answer = INVALID_SOCKET;
-    p->t0     = isp_now_ms();
+    p->answer     = INVALID_SOCKET;
+    p->t0         = isp_now_ms();
+    p->from_voice = voice;
     snprintf(p->from, sizeof(p->from), "%s", from);
     snprintf(p->to, sizeof(p->to), "%s", t->number);
     isp_srv_format_number(t->number, to_shown, sizeof(to_shown));
@@ -1008,8 +1026,11 @@ ex_dial(conn_t *c, const char *args)
                 t->busy++;
             }
             isp_mutex_unlock(ex_lock);
-            logf_("[conn %d] call %d answered: %s and %s connected", c->id, p->id, from_shown, to_shown);
-            if (send_line(c->sock, "CONNECT"))
+            logf_("[conn %d] call %d answered: %s and %s connected%s", c->id, p->id, from_shown, to_shown,
+                  (p->from_voice && p->to_voice) ? " (voice)"
+                  : (p->from_voice || p->to_voice) ? " (voice at one end, a modem at the other)" : "");
+            /* What picked up: a voice call, or a modem. */
+            if (send_line(c->sock, p->to_voice ? "CONNECT VOICE" : "CONNECT"))
                 bridge(c->sock, answer, p);
             sock_close(answer);
             logf_("[conn %d] call %d ended", c->id, p->id);
@@ -1049,6 +1070,7 @@ static void
 ex_answer(conn_t *c, const char *args)
 {
     const int id     = atoi(args);
+    const int voice  = (strstr(args, " VOICE") != NULL);
     int       handed = 0;
 
     isp_mutex_lock(ex_lock);
@@ -1057,8 +1079,9 @@ ex_answer(conn_t *c, const char *args)
 
         if (p->used && (p->id == id) && (p->state == ISP_PCALL_RINGING) && (p->answer == INVALID_SOCKET) &&
             !p->gone && !p->hangup_req) {
-            if (send_line(c->sock, "CONNECT")) {
-                p->answer = c->sock;
+            if (send_line(c->sock, p->from_voice ? "CONNECT VOICE" : "CONNECT")) {
+                p->to_voice = voice;
+                p->answer   = c->sock;
                 c->sock   = INVALID_SOCKET; /* the caller's thread has it now */
                 handed    = 1;
             }
@@ -1251,7 +1274,8 @@ http_header(const char *head, const char *name, char *out, size_t len)
     }
 }
 
-static void
+/* One request.  1 if the socket was taken over (the page's phone). */
+static int
 http_serve(SOCKET cs)
 {
     char              *buf  = (char *) malloc(HTTP_MAX + 1);
@@ -1269,7 +1293,7 @@ http_serve(SOCKET cs)
     const uint64_t     until = isp_now_ms() + 3000;
 
     if (buf == NULL)
-        return;
+        return 0;
     /* The request: headers, then Content-Length bytes of body. */
     while (isp_now_ms() < until) {
         if ((hend == NULL) || (got < need)) {
@@ -1297,7 +1321,14 @@ http_serve(SOCKET cs)
     }
     if ((hend == NULL) || (got < need) || (sscanf(buf, "%7s %255s", method, path) != 2)) {
         free(buf);
-        return;
+        return 0;
+    }
+    /* The page's phone: a WebSocket, which is the phone's from here. */
+    if (!strncmp(path, "/api/phone", 10)) {
+        const int taken = isp_phone_accept((uintptr_t) cs, buf, cfg.http_port, cfg.port);
+
+        free(buf);
+        return taken;
     }
     path[strcspn(path, "?")] = '\0';
     http_header(buf, "Host", host, sizeof(host));
@@ -1321,6 +1352,7 @@ http_serve(SOCKET cs)
     send_all(cs, resp.body, resp.len);
     free(resp.body);
     free(buf);
+    return 0;
 }
 
 static void
@@ -1336,8 +1368,8 @@ http_loop(void *arg)
         if (cs == INVALID_SOCKET)
             continue;
         set_nonblocking(cs);
-        http_serve(cs);
-        sock_close(cs);
+        if (!http_serve(cs))
+            sock_close(cs);
     }
 }
 
@@ -1434,6 +1466,7 @@ isp_srv_stop(void)
     if (http_thread_h != NULL)
         isp_thread_join(http_thread_h);
     accept_thread = http_thread_h = NULL;
+    isp_phone_stop_all();
     if (listen_sock != INVALID_SOCKET)
         sock_close(listen_sock);
     if (http_sock != INVALID_SOCKET)

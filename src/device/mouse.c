@@ -855,8 +855,11 @@ tablet_reset(void)
     /* Poll at 100 Hz. */
     tablet_set_sample_rate(100.0);
 
+    /* 86Box-Next: the tablet's own device -- upstream's 3dacbc756 took the
+       mouse at the same index (the MicroTouch's is the Logitech bus mouse,
+       which then took the PS/2 mouse's polling over). */
     if ((tablet_type > 1) && (tablet_devices[tablet_type].device != NULL))
-        mouse_ex_priv = device_add(mouse_devices[tablet_type].device);
+        mouse_ex_priv = device_add(tablet_devices[tablet_type].device);
 
     if (!mouse_both_enabled()) {
         mouse_dev_poll = mouse_poll_ex;

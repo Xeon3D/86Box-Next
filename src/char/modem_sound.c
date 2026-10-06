@@ -39,9 +39,13 @@
  * speaker.  Tones follow CEPT (425 Hz) except where the country code the
  * cabinet set says UK.
  *
+ * 86Box-Next: and a voice call (char_modem.c's voice mode, or its handset):
+ * the far end's audio at 8000 Hz, played as it comes, and the bell of the
+ * telephone beside the modem when a call rings.
+ *
  * Threading: events come from the emulation thread (modem_sound_event),
  * samples are made on the sound thread (the handler).  Events go through a
- * small ring whose write index is published last.
+ * small ring whose write index is published last; so does the voice.
  */
 #include <math.h>
 #include <stdint.h>
@@ -130,8 +134,12 @@ enum {
     PH_RING,     /* ringback until answered                            */
     PH_HANDSHAKE,
     PH_ONLINE,   /* carrier up: M1 silent, M2 hears the data          */
-    PH_BUSY
+    PH_BUSY,
+    PH_BELL      /* the phone beside the modem rings                  */
 };
+
+#define VOICE_RING     4096 /* 8000 Hz samples: half a second */
+#define VOICE_KEEP     2400 /* more than 300 ms waiting: catch up */
 
 enum { /* dial program steps */
     ST_TONE_DIAL = 0,
@@ -186,6 +194,13 @@ struct modem_sound_t {
     double   comb_phase[26];
     /* filters */
     double hp_x1, hp_y1, lp1[4], lp2[4], bp[4];
+
+    /* the voice, emulation thread -> sound thread */
+    int16_t     voice[VOICE_RING];
+    atomic_uint v_write;
+    atomic_uint v_read;
+    uint32_t    v_pos;  /* between v_read and the next, in 1/rate of a sample */
+    int16_t     v_prev;
 };
 
 static inline uint32_t
@@ -319,6 +334,12 @@ take_events(modem_sound_t *s)
                 s->phase = PH_BUSY;
                 s->t     = 0;
                 break;
+            case MODEM_SOUND_BELL:
+                if ((s->phase == PH_IDLE) || (s->phase == PH_BELL)) {
+                    s->phase = PH_BELL;
+                    s->t     = 0;
+                }
+                break;
             case MODEM_SOUND_HANGUP:
             default:
                 if (s->phase != PH_IDLE)
@@ -365,6 +386,63 @@ ringback(modem_sound_t *s)
         return on ? 0.5 * osc(&s->ph1, 400, s->rate) + 0.5 * osc(&s->ph2, 450, s->rate) : 0.0;
     }
     return ((ms % 5000) < 1000) ? osc(&s->ph1, 425, s->rate) : 0.0;
+}
+
+/* An electronic ringer: two tones trilling at 20 Hz, two seconds. */
+static double
+bell(modem_sound_t *s)
+{
+    const uint32_t ms = (uint32_t) (((uint64_t) s->t * 1000u) / s->rate);
+
+    if (ms >= 2000) {
+        s->phase = PH_IDLE;
+        return 0.0;
+    }
+    return ((ms / 25) & 1) ? osc(&s->ph1, 1300, s->rate) : osc(&s->ph1, 1000, s->rate);
+}
+
+void
+modem_sound_voice(modem_sound_t *s, const int16_t *samples, size_t n)
+{
+    unsigned w;
+
+    if (s == NULL)
+        return;
+    w = atomic_load(&s->v_write);
+    for (size_t i = 0; i < n; i++) {
+        if ((w - atomic_load(&s->v_read)) >= VOICE_RING)
+            break; /* the sound thread is not taking it: no more */
+        s->voice[w % VOICE_RING] = samples[i];
+        w++;
+    }
+    atomic_store(&s->v_write, w);
+}
+
+/* The next voice sample at the sound card's rate, from 8000 Hz. */
+static double
+voice_sample(modem_sound_t *s)
+{
+    unsigned r = atomic_load(&s->v_read);
+    unsigned w = atomic_load(&s->v_write);
+    double   v;
+
+    if ((w - r) > VOICE_KEEP) {
+        r = w - (VOICE_KEEP / 2);
+        atomic_store(&s->v_read, r);
+    }
+    if (r == w)
+        return 0.0;
+    v = s->v_prev + ((s->voice[r % VOICE_RING] - s->v_prev) * (double) s->v_pos / s->rate);
+    s->v_pos += 8000;
+    while (s->v_pos >= (uint32_t) s->rate) {
+        s->v_pos -= (uint32_t) s->rate;
+        s->v_prev = s->voice[r % VOICE_RING];
+        r++;
+        if (r == w)
+            break;
+    }
+    atomic_store(&s->v_read, r);
+    return v / 32768.0;
 }
 
 static double
@@ -586,6 +664,10 @@ modem_sound_get_buffer(int32_t *buffer, uint16_t len, void *priv)
                 hear = (mode == 2);
                 x    = 0.35 * noise(s);   /* M2: the data, as a hiss */
                 break;
+            case PH_BELL:
+                hear = 2;                 /* the phone's bell, whatever ATM says */
+                x    = 0.7 * bell(s);
+                break;
             default:
                 break;
         }
@@ -599,10 +681,17 @@ modem_sound_get_buffer(int32_t *buffer, uint16_t len, void *priv)
         s->t++;
 
         const double y = line_and_speaker(s, hear ? x : 0.0);
-        if (audible) {
+        if (audible || ((hear == 2) && atomic_load(&s->enabled))) {
             const int32_t out = (int32_t) (y * gain);
             buffer[(i << 1)] += out;
             buffer[(i << 1) + 1] += out;
+        }
+        /* A voice call: what the handset hears, not the modem's speaker. */
+        {
+            const int32_t v = (int32_t) (voice_sample(s) * 20000.0);
+
+            buffer[(i << 1)] += v;
+            buffer[(i << 1) + 1] += v;
         }
     }
 }
@@ -629,6 +718,8 @@ modem_sound_init(int enabled)
             if (speakers[i] == NULL)
                 return NULL;
             atomic_init(&speakers[i]->q_write, 0);
+            atomic_init(&speakers[i]->v_write, 0);
+            atomic_init(&speakers[i]->v_read, 0);
             speakers[i]->rng = 0x4d4f4445u + i;
         }
         if (!speakers[i]->in_use) {
@@ -641,6 +732,7 @@ modem_sound_init(int enabled)
 
     s->in_use = 1;
     s->q_read = atomic_load(&s->q_write);   /* nothing left over from before */
+    atomic_store(&s->v_read, atomic_load(&s->v_write));
     s->phase  = PH_IDLE;
     s->click  = 0;
     atomic_store(&s->mode, 1);

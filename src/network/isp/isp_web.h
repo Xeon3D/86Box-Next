@@ -62,7 +62,11 @@ typedef struct isp_srv_pcall {
     uint32_t seconds;
     uint64_t from_bytes; /* caller to callee */
     uint64_t to_bytes;
+    int      voice;      /* ISP_PCALL_FROM_VOICE | ISP_PCALL_TO_VOICE */
 } isp_srv_pcall_t;
+
+#define ISP_PCALL_FROM_VOICE 1 /* the caller dialled a voice call      */
+#define ISP_PCALL_TO_VOICE   2 /* the callee picked up as a voice call */
 
 /* What the server provides the page with (isp_srv.c; the tests have their
    own). */

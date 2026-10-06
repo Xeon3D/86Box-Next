@@ -25,6 +25,7 @@ add_library(snd OBJECT
     snd_resid.cpp
     midi.c
     snd_speaker.c
+    snd_mic.c
     snd_lpt_adlipt.c
     snd_lpt_cms.c
     snd_lpt_dac.c
@@ -114,6 +115,8 @@ elseif(OPENAL)
     include_directories(${OPENAL_INCLUDE_DIR})
 
     target_sources(snd PRIVATE openal.c)
+    # 86Box-Next: the microphone of a voice modem's handset
+    set_property(SOURCE snd_mic.c APPEND PROPERTY COMPILE_DEFINITIONS USE_OPENAL_MIC)
 else()
     if(WIN32)
         option(FAUDIO "Use FAudio instead of XAudio2" OFF)

@@ -53,6 +53,13 @@ input[type=number] { width: 90px; }
 .msg { min-height: 20px; margin-top: 10px; font-size: 13px; }
 .msg.err { color: var(--bad); } .msg.ok { color: var(--ok); }
 code { background: var(--chip); padding: 1px 5px; border-radius: 4px; }
+.phone { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
+.ph-state { font-size: 18px; font-weight: 600; margin-bottom: 2px; }
+.ph-state.ringing { color: var(--warn); animation: blink 1s steps(2) infinite; }
+.ph-state.talking { color: var(--ok); }
+@keyframes blink { 50% { opacity: .35; } }
+.keypad { display: grid; grid-template-columns: repeat(3, 44px); gap: 6px; }
+.keypad button { padding: 8px 0; font-size: 16px; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -92,6 +99,26 @@ code { background: var(--chip); padding: 1px 5px; border-radius: 4px; }
     </div>
     <div class="hint">A modem's number rings that modem; dialling it with a prefix (9,555-0101) works too.</div>
     <div class="msg" id="p-msg"></div>
+  </section>
+
+  <section>
+    <h2>Phone</h2>
+    <div class="phone">
+      <div>
+        <div class="ph-state" id="ph-state">Off</div>
+        <div class="sub">This page's number: <b id="ph-num">–</b></div>
+        <div class="form">
+          <input id="ph-dial" placeholder="Number to call, e.g. 555-0101" inputmode="tel" size="24" autocomplete="off">
+          <button class="primary" id="ph-call">Call</button>
+          <button class="primary" id="ph-answer">Answer</button>
+          <button class="danger" id="ph-hang">Hang up</button>
+        </div>
+      </div>
+      <div class="keypad" id="ph-keys"></div>
+    </div>
+    <label class="check" style="margin-top:12px"><input type="checkbox" id="ph-on"> This page is a phone: it rings here, and can call</label>
+    <div class="hint">You talk on this computer's microphone and hear the call on its speakers. A VM answers on its modem: with the modem menu's “Answer the phone”, or with voice software in the guest.</div>
+    <div class="msg" id="ph-msg"></div>
   </section>
 
   <section>
@@ -220,10 +247,14 @@ function render(st) {
     "</td><td class=num data-f=t></td></tr>").join(""));
   st.lines.forEach((l, i) => { $("lines").rows[i].querySelector("[data-f=t]").textContent = duration(l.seconds); });
   $("nolines").style.display = st.lines.length ? "none" : "";
+  /* A voice call, or a modem at one end and a voice call at the other. */
+  const callKind = p => p.from_voice && p.to_voice ? ", voice"
+    : p.from_voice ? (p.state === "connected" ? ", voice to a modem" : ", voice")
+    : p.to_voice ? ", a modem to voice" : "";
   setRows($("pcalls"), st.phone_calls.map(p =>
     "<tr><td class=num>" + p.id + "</td><td>" + esc(phone(p.from) + (p.from_label ? " (" + p.from_label + ")" : "")) +
     "</td><td>" + esc(phone(p.to) + (p.to_label ? " (" + p.to_label + ")" : "")) + "</td><td class='" +
-    (p.state === "connected" ? "s-on" : "s-neg") + "'>" + p.state + "</td><td class=num data-f=t></td>" +
+    (p.state === "connected" ? "s-on" : "s-neg") + "'>" + p.state + callKind(p) + "</td><td class=num data-f=t></td>" +
     "<td class=num data-f=a></td><td class=num data-f=b></td><td><button class=danger data-pcall=" + p.id +
     ">Hang up</button></td></tr>").join(""));
   st.phone_calls.forEach((p, i) => {
@@ -325,6 +356,197 @@ $("s-save").onclick = async () => {
   settingsLoaded = false;
   refresh();
 };
+
+/* ------------------------------------------------------------- the phone
+   A WebSocket to /api/phone makes this page a telephone on the exchange
+   (isp_phone.c): JSON to and fro for the calls, and 8000 Hz 16-bit audio,
+   binary, both ways.  The browser's own audio rate is converted here, in an
+   AudioWorklet; the tones (ring, ringback, busy) are played here too. */
+const ph = { ws: null, on: true, state: "off", number: "", peer: "", voice: 1, ctx: null, node: null,
+             mic: null, tone: null, retry: null };
+
+const WORKLET = `
+class PhoneProc extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.step = 8000 / sampleRate;           /* line samples per output sample */
+    this.a = 1 - Math.exp(-2 * Math.PI * 3400 / sampleRate);
+    this.lp = 0; this.acc = 0;
+    this.frame = new Int16Array(160); this.n = 0;
+    this.q = new Float32Array(16000); this.qr = 0; this.qw = 0;
+    this.pos = 0; this.prev = 0;
+    this.port.onmessage = e => {
+      const s = new Int16Array(e.data);
+      for (let i = 0; i < s.length; i++) { this.q[this.qw % 16000] = s[i] / 32768; this.qw++; }
+      if (this.qw - this.qr > 2400) this.qr = this.qw - 800;  /* more than 300 ms behind: catch up */
+    };
+  }
+  process(inputs, outputs) {
+    const inp = inputs[0] && inputs[0][0];
+    if (inp) for (let i = 0; i < inp.length; i++) {      /* the microphone, down to 8000 Hz */
+      this.lp += this.a * (inp[i] - this.lp);
+      this.acc += this.step;
+      if (this.acc >= 1) {
+        this.acc -= 1;
+        this.frame[this.n++] = Math.max(-32768, Math.min(32767, this.lp * 32767));
+        if (this.n === 160) { this.port.postMessage(this.frame.buffer.slice(0)); this.n = 0; }
+      }
+    }
+    const out = outputs[0];
+    for (let i = 0; i < out[0].length; i++) {             /* the far end, up from 8000 Hz */
+      let v = 0;
+      if (this.qr < this.qw) {
+        const next = this.q[this.qr % 16000];
+        v = this.prev + (next - this.prev) * this.pos;
+        this.pos += this.step;
+        while (this.pos >= 1 && this.qr < this.qw) { this.pos -= 1; this.prev = this.q[this.qr % 16000]; this.qr++; }
+      }
+      for (let c = 0; c < out.length; c++) out[c][i] = v;
+    }
+    return true;
+  }
+}
+registerProcessor("phone-proc", PhoneProc);`;
+
+/* The audio: started from a click (browsers allow it no other way), the
+   microphone asked for then. */
+async function phoneAudio(withMic) {
+  if (!ph.ctx) {
+    ph.ctx = new AudioContext();
+    const url = URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" }));
+    await ph.ctx.audioWorklet.addModule(url);
+    ph.node = new AudioWorkletNode(ph.ctx, "phone-proc", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+    ph.node.connect(ph.ctx.destination);
+    ph.node.port.onmessage = e => {
+      if (ph.state === "talking" && ph.ws && ph.ws.readyState === 1) ph.ws.send(e.data);
+    };
+  }
+  if (ph.ctx.state !== "running") await ph.ctx.resume();
+  if (withMic && !ph.mic) {
+    if (!navigator.mediaDevices || !window.isSecureContext)
+      throw new Error("The microphone needs this page opened as http://127.0.0.1 or http://localhost.");
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    ph.mic = ph.ctx.createMediaStreamSource(stream);
+    ph.mic.connect(ph.node);
+  }
+}
+
+/* The tones: patterns of on/off milliseconds on one or two frequencies. */
+function phoneTone(kind) {
+  if (ph.tone) { clearInterval(ph.tone.timer); ph.tone.osc.stop(); ph.tone = null; }
+  if (!kind || !ph.ctx || ph.ctx.state !== "running") return;
+  const pat = { ringback: { f: [425], on: 1000, off: 4000 }, busy: { f: [425], on: 500, off: 500, total: 4000 },
+                ring: { f: [1000, 1300], trill: 25, on: 2000, off: 4000 } }[kind];
+  const gain = ph.ctx.createGain();
+  const osc  = ph.ctx.createOscillator();
+  gain.gain.value     = 0;
+  osc.frequency.value = pat.f[0];
+  osc.connect(gain);
+  gain.connect(ph.ctx.destination);
+  osc.start();
+  const t0 = performance.now();
+  const timer = setInterval(() => {
+    const t = performance.now() - t0;
+    if (pat.total && t > pat.total) { phoneTone(null); return; }
+    if (pat.trill) osc.frequency.value = pat.f[Math.floor(t / pat.trill) % 2];   /* the ringer's trill */
+    gain.gain.value = (t % (pat.on + pat.off)) < pat.on ? 0.15 : 0;
+  }, 10);
+  ph.tone = { timer, osc };
+}
+
+function phoneShow() {
+  const st = $("ph-state");
+  const peer = ph.peer ? phone(ph.peer) : "someone";
+  const text = { off: "Off", connecting: "Connecting…", idle: "Ready", ringing: peer + " is calling",
+                 calling: "Calling…", ringback: "Ringing…", answering: "Answering…",
+                 talking: ph.voice ? "In a call" : "In a call — a modem answered, no voice" }[ph.state] || ph.state;
+  st.textContent = text;
+  st.className = "ph-state " + (ph.state === "ringing" ? "ringing" : ph.state === "talking" ? "talking" : "");
+  $("ph-num").textContent = ph.number ? phone(ph.number) : "–";
+  $("ph-call").disabled = ph.state !== "idle";
+  $("ph-answer").disabled = ph.state !== "ringing";
+  $("ph-hang").disabled = !["calling", "ringback", "answering", "talking"].includes(ph.state);
+  document.title = ph.state === "ringing" ? "☎ " + peer + " is calling" : "86Box-Next ISP";
+}
+
+function phoneEvent(m) {
+  if (m.type === "number") ph.number = m.number;
+  else if (m.type === "error") say($("ph-msg"), m.why, false);
+  else if (m.type === "dtmf") say($("ph-msg"), "The other end pressed " + m.digit + ".", true);
+  else if (m.type === "state") {
+    const was = ph.state;
+    ph.state = m.state;
+    ph.voice = m.voice;
+    if (m.state === "ringing") ph.peer = m.peer;
+    phoneTone(m.state === "ringing" ? "ring" : m.state === "ringback" ? "ringback" : null);
+    if (m.state === "idle" && m.why) {
+      if (["busy", "the other end hung up", "no answer", "no such number"].includes(m.why) &&
+          ["calling", "ringback", "talking"].includes(was)) phoneTone("busy");
+      say($("ph-msg"), m.why.charAt(0).toUpperCase() + m.why.slice(1) + ".", m.why === "hung up");
+    } else if (m.state !== "idle") $("ph-msg").textContent = "";
+  }
+  phoneShow();
+}
+
+function phoneConnect() {
+  clearTimeout(ph.retry);
+  if (!ph.on || ph.ws) return;
+  ph.state = "connecting";
+  phoneShow();
+  const ws = new WebSocket("ws://" + location.host + "/api/phone");
+  ws.binaryType = "arraybuffer";
+  ws.onmessage = e => {
+    if (typeof e.data === "string") { try { phoneEvent(JSON.parse(e.data)); } catch (x) { } }
+    else if (ph.node && ph.state === "talking") ph.node.port.postMessage(e.data, [e.data]);
+  };
+  ws.onclose = () => {
+    ph.ws = null;
+    ph.number = "";
+    phoneTone(null);
+    ph.state = "off";
+    phoneShow();
+    if (ph.on) ph.retry = setTimeout(phoneConnect, 3000);   /* isp-server restarting, say */
+  };
+  ph.ws = ws;
+}
+
+function phoneSend(o) { if (ph.ws && ph.ws.readyState === 1) ph.ws.send(JSON.stringify(o)); }
+
+$("ph-call").onclick = async () => {
+  const n = $("ph-dial").value.trim();
+  if (!n) { say($("ph-msg"), "Type a number to call.", false); return; }
+  try { await phoneAudio(true); } catch (e) { say($("ph-msg"), e.message, false); return; }
+  phoneSend({ cmd: "dial", number: n });
+};
+$("ph-dial").onkeydown = e => { if (e.key === "Enter") $("ph-call").click(); };
+$("ph-answer").onclick = async () => {
+  try { await phoneAudio(true); } catch (e) { say($("ph-msg"), e.message, false); return; }
+  phoneSend({ cmd: "answer" });
+};
+$("ph-hang").onclick = () => phoneSend({ cmd: "hangup" });
+"123456789*0#".split("").forEach(d => {
+  const b = document.createElement("button");
+  b.textContent = d;
+  b.onclick = () => {
+    if (ph.state === "talking") phoneSend({ cmd: "dtmf", digit: d });
+    else $("ph-dial").value += d;
+  };
+  $("ph-keys").appendChild(b);
+});
+/* Any click lets the page's audio start, so a call can be heard ringing. */
+document.addEventListener("click", () => { phoneAudio(false).catch(() => {}); }, { once: true });
+
+try { ph.on = localStorage.getItem("phone-off") !== "1"; } catch (e) { }
+$("ph-on").checked = ph.on;
+$("ph-on").onchange = () => {
+  ph.on = $("ph-on").checked;
+  try { localStorage.setItem("phone-off", ph.on ? "0" : "1"); } catch (e) { }
+  if (ph.on) phoneConnect();
+  else if (ph.ws) ph.ws.close();
+};
+phoneShow();
+phoneConnect();
 
 refresh();
 setInterval(refresh, 1000);

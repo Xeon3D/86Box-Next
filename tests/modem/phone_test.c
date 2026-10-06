@@ -14,6 +14,7 @@
  *   number (PPP up through the modem), and the exchange going away (the
  *   number goes, and comes back with it).
  */
+#include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -123,6 +124,29 @@ void     modem_sound_country(modem_sound_t *s, int uk, int v90) { (void) s; (voi
 uint32_t modem_sound_dial_ms(const char *n, int s8, int p) { (void) n; (void) s8; (void) p; return 100; }
 uint32_t modem_sound_ring_ms(void) { return 100; }
 uint32_t modem_sound_handshake_ms(int v90) { (void) v90; return 300; }
+
+/* The handset's ear and mouth: what the speaker plays, and a microphone the
+   test speaks into. */
+static int16_t heard[64000];
+static size_t  heard_n;
+static double  mic_hz;     /* a tone the microphone hears; 0: silence */
+static double  mic_ph;
+void   modem_sound_voice(modem_sound_t *s, const int16_t *v, size_t n)
+{
+    (void) s;
+    for (size_t i = 0; (i < n) && (heard_n < (sizeof(heard) / sizeof(heard[0]))); i++)
+        heard[heard_n++] = v[i];
+}
+int    snd_mic_open(void) { return 0; }
+void   snd_mic_close(void) { }
+size_t snd_mic_read(int16_t *buf, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        buf[i] = (int16_t) ((mic_hz > 0.0) ? 8000.0 * sin(mic_ph) : 0.0);
+        mic_ph += 2.0 * 3.14159265358979 * mic_hz / 8000.0;
+    }
+    return n;
+}
 
 /* --------------------------------------------------------------- the rig */
 

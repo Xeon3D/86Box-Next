@@ -23,6 +23,7 @@ add_library(char OBJECT
     char_loopback.c
     char_modem.c
     modem_sound.c
+    modem_voice.c
     char_pipe.c
     char_serial.c
     char_stdio.c

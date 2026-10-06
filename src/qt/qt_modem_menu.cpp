@@ -12,6 +12,10 @@
  *             ends with NO CARRIER -- and kept in the modem's configuration
  *             (a PC Card's: the card's), where Settings shows it too.
  *
+ *             On the telephone network a voice modem also has a phone beside
+ *             it, which is the host's speaker and microphone: pick it up to
+ *             answer a call ringing or to call a number, as a voice call.
+ *
  *             Released under the GNU General Public License version 2 or
  *             later.  See COPYING for more information.
  */
@@ -26,6 +30,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QPushButton>
 #include <QSpinBox>
 #include <QWidget>
 
@@ -91,6 +96,10 @@ stateText(int state)
             return QObject::tr("calling");
         case CHAR_MODEM_ONLINE:
             return QObject::tr("on line");
+        case CHAR_MODEM_VOICE:
+            return QObject::tr("in a voice call");
+        case CHAR_MODEM_HANDSET:
+            return QObject::tr("on the phone");
         default:
             return QObject::tr("on hook");
     }
@@ -223,6 +232,29 @@ ModemMenu::buildMenu()
         QAction *num = sub->addAction(tr("Set phone number..."));
         connect(num, &QAction::triggered, this, [this, i]() { editPhone(i); });
 
+        /* The phone beside the modem: the host's speaker and microphone. */
+        const int hs = char_modem_handset_state(i);
+        if ((hs >= 0) && (hs & 4)) {
+            sub->addSeparator();
+            if (hs & 1) {
+                QAction *down = sub->addAction(tr("Hang up the phone"));
+                connect(down, &QAction::triggered, this, [this, i]() {
+                    char_modem_handset(i, CHAR_MODEM_HANDSET_HANGUP, nullptr);
+                    emit changed();
+                });
+            } else {
+                QAction *up = sub->addAction((hs & 2) ? tr("Answer the phone (ringing)") : tr("Pick up the phone"));
+                connect(up, &QAction::triggered, this, [this, i]() {
+                    char_modem_handset(i, CHAR_MODEM_HANDSET_PICKUP, nullptr);
+                    emit changed();
+                });
+            }
+            if (!(hs & 2) || (hs & 1)) {
+                QAction *call = sub->addAction(tr("Call a number on the phone..."));
+                connect(call, &QAction::triggered, this, [this, i]() { callNumber(i); });
+            }
+        }
+
         sub->addSeparator();
         QAction *st = sub->addAction(tr("Status: %1").arg(stateText(char_modem_get_state(i))));
         st->setEnabled(false);
@@ -270,6 +302,30 @@ ModemMenu::editHost(int com)
     char_modem_set_line(com, h.isEmpty() ? CHAR_MODEM_LINE_DEAD : CHAR_MODEM_LINE_TCP,
                         h.toUtf8().constData(), portE->value());
     config_save();
+    emit changed();
+}
+
+/* A voice call from the phone beside the modem: off hook, then the number. */
+void
+ModemMenu::callNumber(int com)
+{
+    QDialog dlg(m_parent);
+    dlg.setWindowTitle(tr("Call from the phone on %1").arg(slotText(com)));
+    auto *form = new QFormLayout(&dlg);
+    auto *numE = new QLineEdit(&dlg);
+    numE->setPlaceholderText(tr("e.g. 555-0102"));
+    numE->setMinimumWidth(200);
+    form->addRow(tr("Number:"), numE);
+    form->addRow(new QLabel(tr("You talk on the host's microphone and hear the call on its speakers."), &dlg));
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    buttons->button(QDialogButtonBox::Ok)->setText(tr("Call"));
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    if ((dlg.exec() != QDialog::Accepted) || numE->text().trimmed().isEmpty())
+        return;
+    char_modem_handset(com, CHAR_MODEM_HANDSET_DIAL, numE->text().trimmed().toUtf8().constData());
     emit changed();
 }
 
