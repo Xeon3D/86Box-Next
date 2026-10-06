@@ -6,100 +6,80 @@
 
 ---
 
-(We need help in developing this emulator! See https://github.com/86Box/86Box/issues/7386 for details. Any and all help is appreciated.)
+86Box-Next
+==========
 
-86Box
-=====
+**86Box-Next is a fork of [86Box](https://github.com/86Box/86Box)**, the low level x86 emulator for IBM PC systems and compatibles from 1981 to the PCI era. It is merged with upstream 86Box every day. Everything 86Box does, this does too; below is what it adds.
 
-[![Build Status](https://ci.86box.net/job/86Box/badge/icon)](https://ci.86box.net/job/86Box/)
-[![License](https://img.shields.io/github/license/86Box/86Box)](COPYING)
-[![Latest release](https://img.shields.io/github/release/86Box/86Box.svg)](https://github.com/86Box/86Box/releases)
-[![Downloads](https://img.shields.io/github/downloads/86Box/86Box/total.svg)](https://github.com/86Box/86Box/releases)
-[![Translation status](https://weblate.86box.net/widget/86box/86box/language-badge.svg)](https://weblate.86box.net/engage/86box/)
+Windows x64 builds are on the [releases page](https://github.com/Xeon3D/86Box-Next/releases). They are static: one `86Box-Next.exe` and one `isp-server.exe`, no DLLs. The ROMs are not included: use the [86Box ROM set](https://github.com/86Box/roms).
 
-**86Box** is a low level x86 emulator that runs older operating systems and software designed for IBM PC systems and compatibles from 1981 through fairly recent system designs based on the PCI bus.
+Extra features
+--------------
 
-Features
---------
+### Dial-up, telephone lines and voice calls
+* **Modems on COM ports:** Diamond SupraExpress 56e PRO and ELSA MicroLink 56k, with a status bar icon to change the line while the machine runs. The line can be:
+  * not connected;
+  * a TCP host;
+  * isp-server's telephone network.
+* **isp-server**, a virtual ISP that runs as a program of its own:
+  * dial any number and you get PPP and NAT to the host's Internet;
+  * guests on it can reach each other;
+  * port forwarding;
+  * an optional modem-speed throttle;
+  * a status page in the browser, where you can hang up calls and change settings.
+* **Telephone numbers:** every VM's modem gets a number on isp-server's exchange, and VMs can call each other.
+  * A call rings the other modem, with caller ID; ATA or auto-answer picks it up, and the two modems connect byte for byte.
+  * BUSY and NO ANSWER work as on a real line.
+  * Any other number reaches the ISP.
+* **Voice calls:**
+  * Two voice command sets:
+    * Rockwell's, which Windows 9x's Unimodem/V and vgetty use.
+    * The ITU's V.253.
+  * Playing and recording are supported, including Rockwell ADPCM that matches Rockwell's own encoder bit for bit.
+  * Other supported features:
+    * DTMF;
+    * busy and silence detection;
+    * full duplex.
+  * Every modem also has a **phone beside it**, which is the host's microphone and speakers. Pick it up from the modem menu to answer, call a number, or join the guest's call.
+  * isp-server's page has a **phone** of its own, so you can call a VM from the browser.
 
-* Easy to use interface inspired by mainstream hypervisor software
-* Low level emulation of 8086-based processors up to the Mendocino-era Celeron with focus on accuracy
-* Great range of customizability of virtual machines
-* Many available systems, such as the very first IBM PC 5150 from 1981, or the more obscure IBM PS/2 line of systems based on the Micro Channel Architecture
-* Lots of supported peripherals including video adapters, sound cards, network adapters, hard disk controllers, and SCSI adapters
-* MIDI output to Windows built-in MIDI support, FluidSynth, or emulated Roland synthesizers
-* Supports running MS-DOS, older Windows versions, OS/2, many Linux distributions, or vintage systems such as BeOS or NEXTSTEP, and applications for these systems
+### PC Cards (PCMCIA)
+* A Cirrus CL-PD6722 controller with two sockets, and cards you can insert and remove while the machine runs, from a PC Card icon in the status bar.
+* Cards:
+  * 3Com 3C589D Ethernet;
+  * TRENDnet TE100-PC16 Fast Ethernet;
+  * 3Com 3C562D LAN + 33.6 modem (a multi-function card);
+  * SRAM memory card;
+  * Intel Series 2 flash card (works with TrueFFS);
+  * Adaptec APA-1460 SlimSCSI.
 
-Minimum system requirements and recommendations
------------------------------------------------
+### USB
+* VIA and Intel USB 1.1 (UHCI) and USB 2.0 (EHCI) controllers.
+* Host device passthrough (libusb, or UsbDk on Windows), including isochronous transfers such as USB audio.
+* A connect prompt, a USB menu and an activity trace.
 
-* 64-bit Intel Core 2, AMD Athlon 64 or ARMv8 processor or newer
-* 4 GB of RAM or higher
-* **Windows version:** Windows 7 Service Pack 1 or newer on Intel/AMD systems; Windows 11 or newer on ARM systems
-* **Linux version:** Ubuntu 16.04, Debian 9.0 or other distributions from 2016 onwards
-* **macOS version:** macOS 10.14 Mojave or newer
+### Input and arcade
+* Elo TouchSystems SmartSet serial touchscreen.
+* Arcade I/O boards: funworld Photo Play and Merit Megatouch XL/MAXX.
 
-Performance may vary depending on host and guest configuration. Most emulation logic is executed in a single thread. Therefore, systems with greater IPC (instructions per clock) capacity should be able to emulate higher clock speeds.
-
-For easier handling of multiple virtual machines, use a manager application:
-
-* [Avalonia 86](https://github.com/notBald/Avalonia86) by [notBald](https://github.com/notBald) (Windows and Linux)
-* [86Box Manager](https://github.com/86Box/86BoxManager) by [Overdoze](https://github.com/daviunic) (Windows only)
-* [86Box Manager X](https://github.com/RetBox/86BoxManagerX) by [xafero](https://github.com/xafero) (Cross platform Port of 86Box Manager using Avalonia)
-* [sl86](https://github.com/DDXofficial/sl86) by [DDX](https://github.com/DDXofficial) (Command-line 86Box machine manager written in Python)
-* [Linbox-qt5](https://github.com/Dungeonseeker/linbox-qt5) by [Dungeonseeker](https://github.com/Dungeonseeker/) (Linux focused, should work on Windows though untested)
-* [MacBox for 86Box](https://github.com/Moonif/MacBox) by [Moonif](https://github.com/Moonif) (MacOS only)
-
-To use 86Box on its own, use the `--vmpath`/`-P` command line option.
-
-Getting started
----------------
-
-See [our documentation](https://86box.readthedocs.io/en/latest/index.html) for an overview of the emulator's features and user interface.
-
-Community
----------
-
-We operate an IRC channel and a Discord server for discussing 86Box, its development, and anything related to retro computing. We look forward to hearing from you!
-
-[![Visit our IRC channel](https://kiwiirc.com/buttons/irc.ringoflightning.net/86Box.png)](https://kiwiirc.com/client/irc.ringoflightning.net/?nick=86box|?#86Box)
-
-[![Visit our Discord server](https://discordapp.com/api/guilds/262614059009048590/embed.png)](https://discord.gg/QXK9XTv)
-
-[Forum: SoftHistory](https://forum.softhistory.org/)
-
-[Wiki: SoftHistory](https://wiki.softhistory.org/)
-
-[Twitter: @86BoxEmulator](https://twitter.com/86BoxEmulator)
-
-[YouTube: 86Box](https://youtube.com/c/86Box)
-
-Contributions
--------------
-
-We welcome all contributions to the project, as long as the [contribution guidelines](CONTRIBUTING.md) are followed.
-
-Building
----------
-For instructions on how to build 86Box from source, see the [build guide](https://86box.readthedocs.io/en/latest/dev/buildguide.html).
+### Other
+* Every setting lives in the machine's own `86box.cfg`; there is no global configuration.
+* The VM Manager is optional and off by default.
+* A new icon set.
+* The release (or build number) in the title bar.
+* Static Windows builds.
 
 Licensing
 ---------
 
-86Box is released under the [GNU General Public License, version 2](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html) or later. For more information, see the `COPYING` file in the root of the repository.
+86Box-Next, like 86Box, is released under the [GNU General Public License, version 2](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html) or later. For more information, see the `COPYING` file in the root of the repository.
 
 The emulator can also optionally make use of [munt](https://github.com/munt/munt), [FluidSynth](https://www.fluidsynth.org/), [Ghostscript](https://www.ghostscript.com/) and [Discord Game SDK](https://discord.com/developers/docs/game-sdk/sdk-starter-guide), which are distributed under their respective licenses.
 
-Donations
----------
+Credits
+-------
 
-We do not charge you for the emulator but donations are still welcome:
-<https://paypal.me/86Box>.
-You can also support the project on Patreon:
-<https://www.patreon.com/86box>.
-
-Acknowledgments
----------------
-
-### Powered by
-[![JetBrains logo.](https://resources.jetbrains.com/storage/products/company/brand/logos/jetbrains.svg)](https://jb.gg/OpenSource)
+* **86Box and its developers** wrote the emulator this is built on: [86Box/86Box](https://github.com/86Box/86Box).
+* The COM port modems, the Elo touchscreen and the funworld I/O board come from PeepeeBox.
+* The PC Card controller and the Megatouch board come from MegaPPBox.
+* The Rockwell ADPCM coder is a port of Peter Jaeckel's fixed-point version in [mgetty/vgetty](https://github.com/Distrotech/mgetty) (GPL).
