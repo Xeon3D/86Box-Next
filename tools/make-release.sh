@@ -38,14 +38,19 @@ fi
     NEXT_RELEASE=$N cmake --build build-static
 )
 
-STAGE=$(mktemp -d)
-mkdir "$STAGE/$NAME"
+# Inside the build tree, not mktemp's /tmp: Git Bash and the native strip
+# would each take /tmp for a different folder.
+STAGE=build-static/release-stage
+rm -rf "$STAGE"
+mkdir -p "$STAGE/$NAME"
 "$UCRT/bin/strip" -o "$STAGE/$NAME/86Box-Next.exe" build-static/src/86Box-Next.exe
 "$UCRT/bin/strip" -o "$STAGE/$NAME/isp-server.exe" build-static/src/network/isp/isp-server.exe
 cp COPYING "$STAGE/$NAME/"
 mkdir -p "$ARCHIVE"
 ZIPWIN=$(cygpath -w "$(cd "$ARCHIVE" && pwd)")\\$NAME-win64.zip
-(cd "$STAGE" && powershell -NoProfile -Command "Compress-Archive -Path '$NAME' -DestinationPath '$ZIPWIN'")
+SRCWIN=$(cygpath -w "$(pwd)/$STAGE/$NAME")
+powershell -NoProfile -Command "Compress-Archive -Path '$SRCWIN' -DestinationPath '$ZIPWIN'"
+[ -f "$ZIP" ] || { echo "no $ZIP made" >&2; exit 1; }
 echo "Archived $ZIP"
 
 for d in "$OUT"/*/; do
