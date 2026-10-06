@@ -163,8 +163,31 @@ static const device_config_t c562_config[] = {
         .selection      = {
             { .description = "Not connected",             .value = 0 },
             { .description = "Dial out to a TCP/IP host", .value = 1 },
+            { .description = "Telephone network (isp-server)", .value = 2 },
             { .description = ""                                      }
         },
+        .bios           = { { 0 } }
+    },
+    {
+        .name           = "phone_number",
+        .description    = "Modem phone number (blank: the exchange gives one)",
+        .type           = CONFIG_STRING,
+        .default_string = "",
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = { { 0 } },
+        .bios           = { { 0 } }
+    },
+    {
+        .name           = "exchange",
+        .description    = "Telephone exchange (isp-server)",
+        .type           = CONFIG_STRING,
+        .default_string = "127.0.0.1:2323",
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = { { 0 } },
         .bios           = { { 0 } }
     },
     {

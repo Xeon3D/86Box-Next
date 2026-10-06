@@ -28,10 +28,11 @@
  *          X2/X4, or a blind dial that waits out S7 for NO CARRIER).  With a
  *          host configured, dialling any number opens a TCP connection to it
  *          and the modem becomes a transparent pipe -- what a guest PPP
- *          stack wants.  86Box-Next: the host can be isp-server
- *          (src/network/isp/), a PPP ISP with a NAT out to the host's
- *          Internet; "Dial the ISP" in the modem menu points the line at it.
- *          A call takes as long as a real one: dial tone, the
+ *          stack wants.  86Box-Next: or the line is the telephone network
+ *          of isp-server (src/network/isp/): the modem has a number, other
+ *          modems can ring it (RING, caller ID, ATA or S0), it can ring
+ *          them, and any other number reaches the ISP -- PPP and the host's
+ *          Internet.  A call takes as long as a real one: dial tone, the
  *          digits, ringback, then V.34 / V.90 training before CONNECT, all
  *          of it heard on the speaker (modem_sound.c) unless ATM0 or the
  *          device's Speaker option silences it.
@@ -46,6 +47,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <ctype.h>
 #define HAVE_STDARG_H
 #include <86box/86box.h>
@@ -95,14 +97,34 @@ char_modem_log(void *priv, const char *fmt, ...)
 #define MODEM_TXQ_LOW  2048 /* CTS on again  */
 
 enum { /* what is on the other side of the RJ11 */
-       MODEM_LINE_DEAD = 0, /* nothing: dialling fails the way it would */
-       MODEM_LINE_TCP  = 1  /* a TCP host stands in for the whole PSTN */
+       MODEM_LINE_DEAD  = 0, /* nothing: dialling fails the way it would */
+       MODEM_LINE_TCP   = 1, /* a TCP host stands in for the whole PSTN */
+       /* 86Box-Next: isp-server's telephone exchange.  (For a day 2 was an
+          ISP built into the emulator; the exchange still reaches the ISP
+          with any number that is no modem's, so such a configuration works
+          as it did.) */
+       MODEM_LINE_PHONE = 2
 };
 
-/* 86Box-Next: 2 was, for a day, an ISP built into the emulator.  That is
-   isp-server now, a program of its own, so a 2 found in a configuration
-   becomes the dial to it (CHAR_MODEM_ISP_HOST:CHAR_MODEM_ISP_PORT). */
-#define MODEM_LINE_OLD_ISP 2
+/* 86Box-Next: the telephone network.  isp_srv.h has the exchange's side. */
+#define EXCHANGE_GREETING "86BOX-EXCHANGE 1 "
+#define RING_PERIOD_MS    6000   /* a ring every six seconds...       */
+#define RING_ON_MS        2000   /* ...two of them ringing (RI on)     */
+#define RING_GIVE_UP_MS   130000 /* the exchange gives up at 120 s     */
+#define EXCHANGE_RETRY_MS 3000   /* isp-server not there: try again    */
+
+enum { /* the modem's line to the exchange */
+       PHONE_OFF = 0,
+       PHONE_CONNECTING,
+       PHONE_UP
+};
+
+enum { /* a call's connection to the exchange */
+       SIG_NONE = 0,
+       SIG_CONNECTING, /* the TCP connect in flight              */
+       SIG_ASKED,      /* DIAL or ANSWER sent; reading the reply */
+       SIG_DATA        /* CONNECT: the call's bytes from here on */
+};
 
 enum { /* line state machine */
        MODEM_ST_IDLE = 0,
@@ -334,6 +356,34 @@ typedef struct {
     int  pend_line;
     char pend_host[128];
     int  pend_port;
+    char pend_phone[24];
+    char pend_exchange[160];
+
+    /* 86Box-Next: the telephone network.  The modem keeps a connection to
+       the exchange (`ctl`), registers its number on it and is rung on it;
+       each call is a connection of its own, which opens with a request
+       (`sig_req`) and the exchange's answer before the call's bytes. */
+    char     phone_cfg[24];  /* the number asked for; "" lets the exchange choose */
+    char     exch_host[128];
+    int      exch_port;
+    char     number[24];     /* the number the exchange gave; under modem_mutex */
+    SOCKET   ctl;
+    int      ctl_state;      /* PHONE_* */
+    uint32_t ctl_at;         /* when to try again; when the attempt began */
+    uint32_t ctl_polls;
+    char     ctl_in[256];
+    int      ctl_len;
+    int      ring_id;        /* the call ringing this modem; 0: none */
+    char     ring_from[24];
+    uint32_t ring_next;
+    uint32_t ring_on_until;  /* RI is on until then */
+    uint32_t ring_started;
+    int      cid;            /* AT#CID=1 / AT+VCID=1: caller ID after the first RING */
+    char     sig_req[160];
+    int      sig;            /* SIG_* */
+    char     sig_in[64];
+    int      sig_len;
+    int      call_fail;      /* what a refused call reports: BUSY, NO ANSWER... */
 } modem_t;
 
 /* ------------------------------------------------------------------ output */
@@ -486,6 +536,97 @@ static const modem_line_ops_t modem_line_tcp = {
     .close     = modem_tcp_close
 };
 
+/* 86Box-Next: the telephone network.  A call is a connection to the
+   exchange that opens with DIAL (or ANSWER, for a call ringing this modem);
+   the exchange's answer comes back a line at a time -- RINGING, then
+   CONNECT, BUSY, NOANSWER... -- read a byte at a time so that nothing of
+   the call itself is taken with it. */
+static int
+modem_exchange_connect(modem_t *dev, SOCKET *s)
+{
+    *s = plat_netsocket_create(NET_SOCKET_TCP);
+    if (!CHAR_FD_VALID(*s))
+        return -1;
+    if (plat_netsocket_connect(*s, dev->exch_host, (unsigned short) dev->exch_port) != 0) {
+        plat_netsocket_close(*s);
+        *s = (SOCKET) -1;
+        return -1;
+    }
+    return 0;
+}
+
+/* One request, on a connection that has just come up: it goes whole. */
+static int
+modem_exchange_send(SOCKET s, const char *req)
+{
+    char      buf[256];
+    int       wouldblock = 0;
+    const int n          = snprintf(buf, sizeof(buf), EXCHANGE_GREETING "%s\r\n", req);
+
+    return plat_netsocket_send(s, (const uint8_t *) buf, (unsigned int) n, &wouldblock) == n;
+}
+
+static int
+modem_phone_open(modem_t *dev)
+{
+    if (modem_exchange_connect(dev, &dev->sock) != 0)
+        return -1;
+    dev->sig     = SIG_CONNECTING;
+    dev->sig_len = 0;
+    return 0;
+}
+
+static int
+modem_phone_connected(modem_t *dev)
+{
+    if (dev->sig == SIG_CONNECTING) {
+        const int c = plat_netsocket_connected(dev->sock);
+
+        if (c <= 0)
+            return c;
+        if (!modem_exchange_send(dev->sock, dev->sig_req))
+            return -1;
+        dev->sig = SIG_ASKED;
+    }
+    while (dev->sig == SIG_ASKED) {
+        uint8_t   ch;
+        int       wouldblock = 0;
+        const int r          = plat_netsocket_receive(dev->sock, &ch, 1, &wouldblock);
+
+        if (r < 0)
+            return wouldblock ? 0 : -1;
+        if (r == 0)
+            return -1; /* the exchange hung up */
+        if (ch == '\r')
+            continue;
+        if (ch != '\n') {
+            if (dev->sig_len < (int) (sizeof(dev->sig_in) - 1))
+                dev->sig_in[dev->sig_len++] = (char) ch;
+            continue;
+        }
+        dev->sig_in[dev->sig_len] = '\0';
+        dev->sig_len              = 0;
+        char_modem_log(dev->log, "exchange: %s\n", dev->sig_in);
+        if (!strcmp(dev->sig_in, "CONNECT"))
+            dev->sig = SIG_DATA;
+        else if (strcmp(dev->sig_in, "RINGING")) {
+            dev->call_fail = !strcmp(dev->sig_in, "BUSY")       ? RES_BUSY
+                             : !strcmp(dev->sig_in, "NOANSWER") ? RES_NO_ANSWER
+                                                                : RES_NO_CARRIER;
+            return -1;
+        }
+    }
+    return (dev->sig == SIG_DATA) ? 1 : 0;
+}
+
+static const modem_line_ops_t modem_line_phone = {
+    .open      = modem_phone_open,
+    .connected = modem_phone_connected,
+    .send      = modem_tcp_send,
+    .recv      = modem_tcp_recv,
+    .close     = modem_tcp_close
+};
+
 #ifdef ENABLE_CHAR_MODEM_LOG
 /* For the log, which is all that names the line. */
 static const char *
@@ -494,6 +635,8 @@ modem_line_name(const modem_t *dev)
     switch (dev->line) {
         case MODEM_LINE_TCP:
             return dev->host;
+        case MODEM_LINE_PHONE:
+            return "the telephone network";
         default:
             return "dead";
     }
@@ -536,6 +679,7 @@ modem_hangup(modem_t *dev)
     dev->txq_head = 0;
     dev->txq_tail = 0;
     dev->cts_held = 0;
+    dev->sig      = SIG_NONE;
     char_update_status(dev->port);
 }
 
@@ -609,8 +753,220 @@ modem_online(modem_t *dev)
     char_update_status(dev->port);
 }
 
+/* ----------------------------------------------- the telephone network */
+
+static void modem_lock(void);
+static void modem_unlock(void);
+
+static void
+modem_ring_stop(modem_t *dev)
+{
+    dev->ring_id       = 0;
+    dev->s[1]          = 0;
+    dev->ring_on_until = 0;
+    char_update_status(dev->port);
+}
+
+/* The connection to the exchange goes: no number, no ringing, until it is
+   back. */
+static void
+modem_phone_unplug(modem_t *dev, uint32_t retry_at)
+{
+    if (CHAR_FD_VALID(dev->ctl)) {
+        plat_netsocket_close(dev->ctl);
+        dev->ctl = (SOCKET) -1;
+    }
+    dev->ctl_state = PHONE_OFF;
+    dev->ctl_len   = 0;
+    dev->ctl_at    = retry_at;
+    modem_lock();
+    dev->number[0] = '\0';
+    modem_unlock();
+    if (dev->ring_id)
+        modem_ring_stop(dev);
+}
+
+/* One line from the exchange on the modem's own connection. */
+static void
+modem_phone_line(modem_t *dev, const char *line)
+{
+    char from[24];
+    int  id;
+
+    if (!strncmp(line, "NUMBER ", 7)) {
+        modem_lock();
+        snprintf(dev->number, sizeof(dev->number), "%s", line + 7);
+        modem_unlock();
+        char_modem_log(dev->log, "the exchange gives this line %s\n", line + 7);
+    } else if (sscanf(line, "RING %d %23s", &id, from) == 2) {
+        /* An off-hook modem is busy, and the exchange knows it; a second
+           call while one rings is the exchange's to refuse. */
+        if ((dev->state == MODEM_ST_IDLE) && (dev->ring_id == 0)) {
+            dev->ring_id      = id;
+            dev->ring_started = plat_get_ticks();
+            dev->ring_next    = dev->ring_started;
+            dev->s[1]         = 0;
+            snprintf(dev->ring_from, sizeof(dev->ring_from), "%s", from);
+        }
+    } else if (sscanf(line, "CANCEL %d", &id) == 1) {
+        if (dev->ring_id == id)
+            modem_ring_stop(dev); /* the caller gave up: the ringing just stops */
+    }
+}
+
+/* The modem's line to the exchange: connect, register, listen for RING.
+   Polled from modem_read(), every 32nd call: often enough for a ring,
+   little enough per character. */
+static void
+modem_phone_poll(modem_t *dev)
+{
+    const uint32_t now = plat_get_ticks();
+
+    if (dev->line != MODEM_LINE_PHONE) {
+        if (dev->ctl_state != PHONE_OFF)
+            modem_phone_unplug(dev, now);
+        return;
+    }
+    if ((++dev->ctl_polls & 31) != 0)
+        return;
+
+    switch (dev->ctl_state) {
+        case PHONE_OFF:
+            if ((int32_t) (now - dev->ctl_at) < 0)
+                break;
+            if (modem_exchange_connect(dev, &dev->ctl) != 0) {
+                dev->ctl_at = now + EXCHANGE_RETRY_MS;
+                break;
+            }
+            dev->ctl_state = PHONE_CONNECTING;
+            dev->ctl_at    = now;
+            break;
+
+        case PHONE_CONNECTING: {
+            const int c = plat_netsocket_connected(dev->ctl);
+
+            if (c == 1) {
+                /* "Windows 98 (COM2)": how the exchange's phone book lists it. */
+                char req[160];
+                char where[32];
+
+                char_modem_slot_label(dev->slot, where, sizeof(where));
+                snprintf(req, sizeof(req), "REGISTER %s %.80s (%s)", dev->phone_cfg[0] ? dev->phone_cfg : "-",
+                         vm_name[0] ? vm_name : dev->model->name, where);
+                for (char *q = req; *q; q++)
+                    if ((*q == '\r') || (*q == '\n'))
+                        *q = ' ';
+                if (modem_exchange_send(dev->ctl, req))
+                    dev->ctl_state = PHONE_UP;
+                else
+                    modem_phone_unplug(dev, now + EXCHANGE_RETRY_MS);
+            } else if ((c < 0) || ((int32_t) (now - dev->ctl_at) > 5000))
+                modem_phone_unplug(dev, now + EXCHANGE_RETRY_MS);
+            break;
+        }
+
+        case PHONE_UP:
+            for (;;) {
+                uint8_t   buf[128];
+                int       wouldblock = 0;
+                const int r          = plat_netsocket_receive(dev->ctl, buf, sizeof(buf), &wouldblock);
+
+                if (r > 0) {
+                    for (int i = 0; i < r; i++) {
+                        if (buf[i] == '\r')
+                            continue;
+                        if (buf[i] == '\n') {
+                            dev->ctl_in[dev->ctl_len] = '\0';
+                            dev->ctl_len              = 0;
+                            modem_phone_line(dev, dev->ctl_in);
+                        } else if (dev->ctl_len < (int) (sizeof(dev->ctl_in) - 1))
+                            dev->ctl_in[dev->ctl_len++] = (char) buf[i];
+                    }
+                    continue;
+                }
+                if ((r == 0) || !wouldblock)
+                    modem_phone_unplug(dev, now + EXCHANGE_RETRY_MS); /* isp-server went away */
+                break;
+            }
+            break;
+
+        default:
+            break;
+    }
+}
+
+/* Off hook for the call ringing this modem: ATA, or S0's rings counted.
+   0 if there is nothing to answer. */
+static int
+modem_answer(modem_t *dev)
+{
+    const uint32_t now = plat_get_ticks();
+
+    if ((dev->ring_id == 0) || (dev->state != MODEM_ST_IDLE))
+        return 0;
+    snprintf(dev->sig_req, sizeof(dev->sig_req), "ANSWER %d", dev->ring_id);
+    modem_ring_stop(dev);
+    dev->refused   = 0;
+    dev->call_fail = RES_NO_CARRIER;
+    if (modem_line_phone.open(dev) != 0)
+        return 0;
+    dev->call      = &modem_line_phone;
+    dev->state     = MODEM_ST_CONNECTING;
+    dev->answer_at = now; /* the caller is there already */
+    dev->deadline  = now + (dev->s[7] * 1000u);
+    char_update_status(dev->port);
+    return 1;
+}
+
+/* Caller ID, the Rockwell way (AT#CID=1, AT+VCID=1): between the first ring
+   and the second. */
+static void
+modem_caller_id(modem_t *dev)
+{
+    const time_t     t  = time(NULL);
+    const struct tm *tm = localtime(&t);
+    char             buf[48];
+
+    if (tm != NULL) {
+        snprintf(buf, sizeof(buf), "DATE = %02d%02d", tm->tm_mon + 1, tm->tm_mday);
+        modem_out_line(dev, buf);
+        snprintf(buf, sizeof(buf), "TIME = %02d%02d", tm->tm_hour, tm->tm_min);
+        modem_out_line(dev, buf);
+    }
+    /* "O": out of area, what a modem says for a number it was not told. */
+    snprintf(buf, sizeof(buf), "NMBR = %s", strcmp(dev->ring_from, "-") ? dev->ring_from : "O");
+    modem_out_line(dev, buf);
+}
+
+/* RING, every six seconds; RI with each; S1 counts them and S0 answers. */
+static void
+modem_phone_ring(modem_t *dev)
+{
+    const uint32_t now = plat_get_ticks();
+
+    if (dev->ring_id == 0)
+        return;
+    if ((int32_t) (now - dev->ring_started) > RING_GIVE_UP_MS) {
+        modem_ring_stop(dev);
+        return;
+    }
+    if ((int32_t) (now - dev->ring_next) < 0)
+        return;
+    dev->ring_next     = now + RING_PERIOD_MS;
+    dev->ring_on_until = now + RING_ON_MS;
+    if (dev->s[1] < 255)
+        dev->s[1]++;
+    modem_result(dev, RES_RING);
+    if (dev->cid && (dev->s[1] == 1))
+        modem_caller_id(dev);
+    char_update_status(dev->port);
+    if ((dev->s[0] > 0) && (dev->s[1] >= dev->s[0]) && !modem_answer(dev))
+        modem_result(dev, RES_NO_CARRIER);
+}
+
 /* Everything a dialled string can contain that is not a digit: the dial
-   modifiers.  The number itself is never used -- there is one host. */
+   modifiers.  On a TCP line the number itself is never used -- there is one
+   host; on the telephone network the exchange routes it. */
 static void
 modem_dial(modem_t *dev, const char *number)
 {
@@ -627,10 +983,23 @@ modem_dial(modem_t *dev, const char *number)
         modem_sound_event(dev->snd, MODEM_SOUND_DIAL, number, (dev->s[8] & 0xff) | (dev->pulse << 8));
     }
 
+    dev->call_fail = RES_NO_CARRIER;
     if (dev->line != MODEM_LINE_DEAD) {
         const modem_line_ops_t *ops = &modem_line_tcp;
 
-        if (ops->open(dev) != 0) {
+        if (dev->line == MODEM_LINE_PHONE) {
+            char from[24];
+
+            modem_lock();
+            snprintf(from, sizeof(from), "%s", dev->number[0] ? dev->number : "-");
+            modem_unlock();
+            snprintf(dev->sig_req, sizeof(dev->sig_req), "DIAL %s %s", from, number);
+            ops = &modem_line_phone;
+        }
+
+        /* On the telephone network a bare ATD reaches nobody. */
+        if (((dev->line == MODEM_LINE_PHONE) && (strpbrk(number, "0123456789*#") == NULL)) ||
+            (ops->open(dev) != 0)) {
             dev->state    = MODEM_ST_DIALING;
             dev->deadline = dev->answer_at + 5000;   /* it rings, and nobody answers */
             return;
@@ -674,14 +1043,23 @@ modem_poll_line(modem_t *dev)
                 if ((int32_t) (now - dev->answer_at) >= 0)
                     modem_answered(dev);
             } else if (connected == -1) {
-                /* Nobody there: a real call rings on unanswered, then gives up. */
                 if (!dev->refused) {
-                    dev->refused  = 1;
-                    dev->deadline = ((int32_t) (dev->answer_at - now) > 0 ? dev->answer_at : now) + 5000;
+                    dev->refused = 1;
+                    if (dev->call_fail == RES_BUSY) {
+                        /* Engaged: the busy tone, a few beats of it. */
+                        modem_sound_event(dev->snd, MODEM_SOUND_BUSY, NULL, 0);
+                        dev->deadline = now + 3000;
+                    } else {
+                        /* Nobody there: a real call rings on unanswered, then
+                           gives up. */
+                        dev->deadline = ((int32_t) (dev->answer_at - now) > 0 ? dev->answer_at : now) + 5000;
+                    }
                 }
                 if ((int32_t) (now - dev->deadline) >= 0) {
+                    const int res = dev->call_fail;
+
                     modem_hangup(dev);
-                    modem_result(dev, RES_NO_CARRIER);
+                    modem_result(dev, res);
                 }
             } else if ((int32_t) (now - dev->deadline) >= 0) {
                 modem_hangup(dev);
@@ -700,6 +1078,10 @@ modem_poll_line(modem_t *dev)
                 dev->deadline     = now + MODEM_SETTLE_MS;
             } else if (dev->out_tail == dev->out_head)
                 modem_online(dev); /* the DTE has read the line */
+            break;
+
+        case MODEM_ST_IDLE:
+            modem_phone_ring(dev);
             break;
 
         default:
@@ -762,7 +1144,32 @@ modem_load_defaults(modem_t *dev)
     dev->spk_mode  = 1;
     dev->spk_level = 2;
     dev->pulse     = 0;
+    dev->cid       = 0;
     modem_sound_speaker(dev->snd, dev->spk_mode, dev->spk_level);
+}
+
+/* Caller ID on or off: "=n", "?" or "=?".  -1 if malformed. */
+static int
+modem_cid_command(modem_t *dev, const char **p, const char *name)
+{
+    char buf[24];
+
+    if (**p == '?') {
+        (*p)++;
+        snprintf(buf, sizeof(buf), "%s: %d", name, dev->cid);
+        modem_out_line(dev, buf);
+        return 0;
+    }
+    if (**p != '=')
+        return -1;
+    (*p)++;
+    if (**p == '?') {
+        (*p)++;
+        modem_out_line(dev, "(0-1)");
+        return 0;
+    }
+    dev->cid = !!modem_arg(p);
+    return 0;
 }
 
 /* Returns the result code to report, or RES_NONE when the command has already
@@ -779,8 +1186,8 @@ modem_execute(modem_t *dev, const char *line)
             case ' ':
                 break;
 
-            case 'A': /* answer -- there is never an incoming call */
-                return RES_NO_CARRIER;
+            case 'A': /* answer: a call ringing on the telephone network */
+                return modem_answer(dev) ? RES_NONE : RES_NO_CARRIER;
 
             case 'D': { /* dial */
                 char number[64];
@@ -959,6 +1366,18 @@ modem_execute(modem_t *dev, const char *line)
                 break;
             }
 
+            case '#': { /* Rockwell's own set: #CID, caller ID */
+                char name[16];
+                int  n = 0;
+
+                while (isalpha((unsigned char) *p) && (n < ((int) sizeof(name) - 1)))
+                    name[n++] = (char) toupper((unsigned char) *p++);
+                name[n] = '\0';
+                if (strcmp(name, "CID") || (modem_cid_command(dev, &p, "#CID") != 0))
+                    return RES_ERROR;
+                break;
+            }
+
             case '+': { /* the ITU extended set */
                 char name[16];
                 int  n = 0;
@@ -983,6 +1402,9 @@ modem_execute(modem_t *dev, const char *line)
                         dev->country = (int) strtol(p + 1, &end, 16);
                         p            = end;
                     } else
+                        return RES_ERROR;
+                } else if (!strcmp(name, "VCID")) {
+                    if (modem_cid_command(dev, &p, "+VCID") != 0)
                         return RES_ERROR;
                 } else if (!strcmp(name, "MS") || !strcmp(name, "FCLASS") ||
                            !strcmp(name, "IFC") || !strcmp(name, "ES")) {
@@ -1136,18 +1558,44 @@ modem_unlock(void)
 static void
 modem_set_line(modem_t *dev, int line, const char *host, int port)
 {
-    if (line == MODEM_LINE_OLD_ISP) {
-        line = MODEM_LINE_TCP;
-        host = CHAR_MODEM_ISP_HOST;
-        port = CHAR_MODEM_ISP_PORT;
-    }
     dev->cfg_line  = line;
     dev->host_port = port;
     snprintf(dev->host, sizeof(dev->host), "%s", host);
 
     /* A host with nothing in it is a dead line however the selector is set --
-       otherwise every dial would stall on a connect to port 0. */
-    dev->line = ((line == MODEM_LINE_TCP) && (dev->host[0] != '\0')) ? MODEM_LINE_TCP : MODEM_LINE_DEAD;
+       otherwise every dial would stall on a connect to port 0.  The
+       telephone network has an address of its own. */
+    if (line == MODEM_LINE_PHONE)
+        dev->line = MODEM_LINE_PHONE;
+    else
+        dev->line = ((line == MODEM_LINE_TCP) && (dev->host[0] != '\0')) ? MODEM_LINE_TCP : MODEM_LINE_DEAD;
+}
+
+/* The number asked for and the exchange's address, "host" or "host:port";
+   1 if either changed. */
+static int
+modem_set_phone(modem_t *dev, const char *number, const char *exchange)
+{
+    char host[128];
+    int  port = CHAR_MODEM_ISP_PORT;
+    int  changed;
+
+    snprintf(host, sizeof(host), "%s", (exchange && exchange[0]) ? exchange : CHAR_MODEM_EXCHANGE);
+    {
+        char *colon = strrchr(host, ':');
+
+        if (colon != NULL) {
+            port   = atoi(colon + 1);
+            *colon = '\0';
+        }
+    }
+    if ((port < 1) || (port > 65535))
+        port = CHAR_MODEM_ISP_PORT;
+    changed = strcmp(dev->phone_cfg, number ? number : "") || strcmp(dev->exch_host, host) || (dev->exch_port != port);
+    snprintf(dev->phone_cfg, sizeof(dev->phone_cfg), "%s", number ? number : "");
+    snprintf(dev->exch_host, sizeof(dev->exch_host), "%s", host);
+    dev->exch_port = port;
+    return changed;
 }
 
 /* Take up a line change from the status bar.  A call in progress is on the
@@ -1158,16 +1606,27 @@ modem_apply_pending(modem_t *dev)
     char host[sizeof(dev->pend_host)];
     int  changed;
 
+    char phone[sizeof(dev->pend_phone)];
+    char exchange[sizeof(dev->pend_exchange)];
+    int  phone_changed;
+
     if (!dev->pending)
         return;
 
     modem_lock();
     memcpy(host, dev->pend_host, sizeof(host));
+    memcpy(phone, dev->pend_phone, sizeof(phone));
+    memcpy(exchange, dev->pend_exchange, sizeof(exchange));
     changed = (dev->pend_line != dev->cfg_line) || (dev->pend_port != dev->host_port) ||
               strcmp(host, dev->host);
     modem_set_line(dev, dev->pend_line, host, dev->pend_port);
     dev->pending = 0;
     modem_unlock();
+    phone_changed = modem_set_phone(dev, phone, exchange);
+
+    /* A new number or exchange: register again. */
+    if (phone_changed && (dev->ctl_state != PHONE_OFF))
+        modem_phone_unplug(dev, plat_get_ticks());
 
     char_modem_log(dev->log, "line now %s\n", modem_line_name(dev));
     if (changed && (dev->state != MODEM_ST_IDLE)) {
@@ -1208,6 +1667,67 @@ char_modem_name(int com)
         ret = modems[com]->model->name;
     modem_unlock();
     return ret;
+}
+
+/* A change from the UI starts from the line as it is (or as already
+   changed).  Under modem_mutex. */
+static void
+modem_pending_begin(modem_t *dev)
+{
+    if (dev->pending)
+        return;
+    dev->pend_line = dev->cfg_line;
+    dev->pend_port = dev->host_port;
+    snprintf(dev->pend_host, sizeof(dev->pend_host), "%s", dev->host);
+    snprintf(dev->pend_phone, sizeof(dev->pend_phone), "%s", dev->phone_cfg);
+    snprintf(dev->pend_exchange, sizeof(dev->pend_exchange), "%s:%d", dev->exch_host, dev->exch_port);
+}
+
+int
+char_modem_get_phone(int com, char *want, size_t want_len, char *exchange, size_t ex_len, char *number,
+                     size_t num_len)
+{
+    int ret = -1;
+
+    modem_lock();
+    if (char_modem_present(com)) {
+        const modem_t *dev = modems[com];
+
+        if (want != NULL)
+            snprintf(want, want_len, "%s", dev->pending ? dev->pend_phone : dev->phone_cfg);
+        if (exchange != NULL) {
+            if (dev->pending)
+                snprintf(exchange, ex_len, "%s", dev->pend_exchange);
+            else
+                snprintf(exchange, ex_len, "%s:%d", dev->exch_host, dev->exch_port);
+        }
+        if (number != NULL)
+            snprintf(number, num_len, "%s", dev->number);
+        ret = (dev->number[0] != '\0');
+    }
+    modem_unlock();
+    return ret;
+}
+
+void
+char_modem_set_phone(int com, const char *want, const char *exchange)
+{
+    modem_lock();
+    if (char_modem_present(com)) {
+        modem_t *dev = modems[com];
+
+        modem_pending_begin(dev);
+        snprintf(dev->pend_phone, sizeof(dev->pend_phone), "%s", want ? want : "");
+        snprintf(dev->pend_exchange, sizeof(dev->pend_exchange), "%s",
+                 (exchange && exchange[0]) ? exchange : CHAR_MODEM_EXCHANGE);
+        dev->pending = 1;
+
+        device_context_inst(dev->cfg_dev, dev->cfg_inst);
+        device_set_config_string("phone_number", dev->pend_phone);
+        device_set_config_string("exchange", dev->pend_exchange);
+        device_context_restore();
+    }
+    modem_unlock();
 }
 
 int
@@ -1263,7 +1783,10 @@ char_modem_set_line(int com, int line, const char *host, int port)
             host = "";
         if ((port < 1) || (port > 65535))
             port = 23;
-        dev->pend_line = (line == CHAR_MODEM_LINE_TCP) ? MODEM_LINE_TCP : MODEM_LINE_DEAD;
+        modem_pending_begin(dev);
+        dev->pend_line = (line == CHAR_MODEM_LINE_TCP)     ? MODEM_LINE_TCP
+                         : (line == CHAR_MODEM_LINE_PHONE) ? MODEM_LINE_PHONE
+                                                           : MODEM_LINE_DEAD;
         dev->pend_port = port;
         snprintf(dev->pend_host, sizeof(dev->pend_host), "%s", host);
         dev->pending = 1;
@@ -1288,6 +1811,7 @@ modem_read(uint8_t *buf, size_t len, void *priv)
     size_t   n   = 0;
 
     modem_apply_pending(dev);
+    modem_phone_poll(dev);
     modem_poll_line(dev);
 
     /* The escape sequence completes on silence, not on a fourth character. */
@@ -1374,6 +1898,10 @@ modem_status(void *priv)
     if ((dev->dcd_mode == 0) || (dev->state == MODEM_ST_ONLINE))
         status |= CHAR_COM_DCD;
 
+    /* RI rings with the phone. */
+    if (dev->ring_id && ((int32_t) (plat_get_ticks() - dev->ring_on_until) < 0))
+        status |= CHAR_COM_RI;
+
     return status;
 }
 
@@ -1431,6 +1959,7 @@ modem_close(void *priv)
     modem_unlock();
 
     modem_hangup(dev);
+    modem_phone_unplug(dev, 0);
     modem_sound_close(dev->snd);
     log_close(dev->log);
     free(dev);
@@ -1448,6 +1977,7 @@ modem_init(const device_t *info)
                                    ? model
                                    : MODEM_MODEL_SUPRA];
     dev->sock  = (SOCKET) -1;
+    dev->ctl   = (SOCKET) -1;
     dev->snd   = modem_sound_init(device_get_config_int("speaker"));
     modem_load_defaults(dev);
 
@@ -1464,6 +1994,12 @@ modem_init(const device_t *info)
     s = device_get_config_string("host");
     modem_set_line(dev, device_get_config_int("line"), (s != NULL) ? s : "",
                    device_get_config_int("host_port"));
+    {
+        const char *number   = device_get_config_string("phone_number");
+        const char *exchange = device_get_config_string("exchange");
+
+        modem_set_phone(dev, number ? number : "", exchange ? exchange : "");
+    }
 
     snprintf(dev->ident, sizeof(dev->ident), "%s", dev->model->ident);
     snprintf(dev->firmware, sizeof(dev->firmware), "%s", dev->model->fmw);
@@ -1501,8 +2037,31 @@ static const device_config_t modem_config[] = {
         .selection      = {
             { .description = "Not connected",             .value = MODEM_LINE_DEAD },
             { .description = "Dial out to a TCP/IP host", .value = MODEM_LINE_TCP  },
+            { .description = "Telephone network (isp-server)", .value = MODEM_LINE_PHONE },
             { .description = ""                                                    }
         },
+        .bios           = { { 0 } }
+    },
+    {
+        .name           = "phone_number",
+        .description    = "Phone number (blank: the exchange gives one)",
+        .type           = CONFIG_STRING,
+        .default_string = "",
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = { { 0 } },
+        .bios           = { { 0 } }
+    },
+    {
+        .name           = "exchange",
+        .description    = "Telephone exchange (isp-server)",
+        .type           = CONFIG_STRING,
+        .default_string = CHAR_MODEM_EXCHANGE,
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = { { 0 } },
         .bios           = { { 0 } }
     },
     {

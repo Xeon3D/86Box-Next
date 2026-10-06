@@ -55,6 +55,64 @@ isp_srv_endpoint(char *listen, size_t len, int *port)
     *port = 2323;
 }
 
+/* An exchange with two lines and a call between them. */
+static int  phone_unknown = 1;
+static char phone_numbers[128];
+static int  phone_hung_up;
+
+int
+isp_srv_lines(isp_srv_line_t *out, int max)
+{
+    if (max < 2)
+        return 0;
+    memset(out, 0, 2 * sizeof(*out));
+    snprintf(out[0].number, sizeof(out[0].number), "5550101");
+    snprintf(out[0].label, sizeof(out[0].label), "Win98 (COM2)");
+    out[0].state = ISP_LINE_BUSY;
+    snprintf(out[1].number, sizeof(out[1].number), "5550102");
+    snprintf(out[1].label, sizeof(out[1].label), "WfW \"3.11\"");
+    out[1].state = ISP_LINE_BUSY;
+    return 2;
+}
+
+int
+isp_srv_phone_calls(isp_srv_pcall_t *out, int max)
+{
+    if ((max < 1) || phone_hung_up)
+        return 0;
+    memset(out, 0, sizeof(*out));
+    out->id = 7;
+    snprintf(out->from, sizeof(out->from), "5550101");
+    snprintf(out->to, sizeof(out->to), "5550102");
+    out->state      = ISP_PCALL_ACTIVE;
+    out->from_bytes = 1234;
+    return 1;
+}
+
+int
+isp_srv_hangup_phone(int id)
+{
+    if ((id != 7) || phone_hung_up)
+        return 0;
+    phone_hung_up = 1;
+    return 1;
+}
+
+void
+isp_srv_get_phone(int *unknown, char *numbers, size_t len)
+{
+    *unknown = phone_unknown;
+    snprintf(numbers, len, "%s", phone_numbers);
+}
+
+void
+isp_srv_set_phone(int unknown, const char *numbers)
+{
+    phone_unknown = unknown;
+    snprintf(phone_numbers, sizeof(phone_numbers), "%s", numbers);
+    saves++;
+}
+
 static void
 check(const char *what, int ok)
 {
@@ -152,7 +210,29 @@ main(void)
         check("...and it ends (no PPP yet: at once)", ended);
     }
     isp_session_close(s);
-    check("every change was saved, and only those", saves == 3);
+
+    /* The telephone exchange. */
+    {
+        const int ok = (ask("GET", "/api/status", "127.0.0.1:2324", 0, "", body, sizeof(body)) == 200) &&
+                       strstr(body, "\"lines\":[{\"number\":\"5550101\",\"label\":\"Win98 (COM2)\",\"state\":\"in a call\"") &&
+                       strstr(body, "\"label\":\"WfW \\\"3.11\\\"\"") &&
+                       strstr(body, "\"phone_calls\":[{\"id\":7,\"from\":\"5550101\"") &&
+                       strstr(body, "\"from_bytes\":1234") && strstr(body, "\"phone\":{\"unknown_to_isp\":1");
+
+        check("status: the exchange's lines and the call between them", ok);
+        if (!ok)
+            printf("      %s\n", strstr(body, "\"phone\"") ? strstr(body, "\"phone\"") : body);
+    }
+    check("hang up the modem-to-modem call", ask("POST", "/api/hangup", "127.0.0.1:2324", 1, "call=7", NULL, 0) == 200);
+    check("...once", ask("POST", "/api/hangup", "127.0.0.1:2324", 1, "call=7", NULL, 0) == 404);
+    check("exchange: other numbers unknown, the ISP on 0191 and 555-1234",
+          (ask("POST", "/api/phone", "127.0.0.1:2324", 1, "unknown_to_isp=0&isp_numbers=0191%2C+555-1234", NULL, 0) == 200) &&
+          !phone_unknown && !strcmp(phone_numbers, "0191, 555-1234"));
+    check("ISP numbers with letters in: 400",
+          ask("POST", "/api/phone", "127.0.0.1:2324", 1, "isp_numbers=0800-FLOWERS", NULL, 0) == 400);
+    check("...and the exchange needs the page's header too",
+          ask("POST", "/api/phone", "127.0.0.1:2324", 0, "unknown_to_isp=1", NULL, 0) == 403);
+    check("every change was saved, and only those", saves == 4);
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "all checks passed", failures,
            (failures == 1) ? "" : "s");

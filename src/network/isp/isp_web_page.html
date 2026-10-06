@@ -75,6 +75,26 @@ code { background: var(--chip); padding: 1px 5px; border-radius: 4px; }
   </section>
 
   <section>
+    <h2>Telephone exchange</h2>
+    <table>
+      <thead><tr><th>Number</th><th>Line</th><th>Now</th><th>Plugged in</th></tr></thead>
+      <tbody id="lines"></tbody>
+    </table>
+    <div class="empty" id="nolines">No modem is on the telephone network. Set a modem's line to “Telephone network (isp-server)” to give it a number.</div>
+    <table id="pctable" style="margin-top:12px">
+      <thead><tr><th>Call</th><th>From</th><th>To</th><th>State</th><th>Time</th><th>Caller sent</th><th>Callee sent</th><th></th></tr></thead>
+      <tbody id="pcalls"></tbody>
+    </table>
+    <div class="form">
+      <label class="check"><input type="checkbox" id="p-unk"> Numbers that are no modem's reach the ISP</label>
+      <label>The ISP's own numbers <input id="p-nums" placeholder="0191, 555-1234" size="22"></label>
+      <button class="primary" id="p-save">Save</button>
+    </div>
+    <div class="hint">A modem's number rings that modem; dialling it with a prefix (9,555-0101) works too.</div>
+    <div class="msg" id="p-msg"></div>
+  </section>
+
+  <section>
     <h2>Port forwards</h2>
     <table>
       <thead><tr><th>Call</th><th>Protocol</th><th>Host port</th><th>Guest port</th><th>Listens on</th><th>Now</th><th></th></tr></thead>
@@ -120,6 +140,10 @@ const $ = id => document.getElementById(id);
 let configured = {};   /* call number -> "tcp:2121:21 udp:*:5000:5000" */
 let maxCalls = 16;
 let settingsLoaded = false;
+let phoneLoaded = false;
+
+/* "5550101" -> "555-0101" */
+function phone(n) { return /^\d{7}$/.test(n) ? n.slice(0, 3) + "-" + n.slice(3) : (n || "?"); }
 
 function esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
@@ -190,6 +214,31 @@ function render(st) {
   });
   $("nocalls").style.display = st.calls.length ? "none" : "";
 
+  setRows($("lines"), st.lines.map(l =>
+    "<tr><td class=num>" + esc(phone(l.number)) + "</td><td>" + esc(l.label) + "</td><td class='" +
+    (l.state === "idle" ? "s-end" : l.state === "ringing" ? "s-neg" : "s-on") + "'>" + esc(l.state) +
+    "</td><td class=num data-f=t></td></tr>").join(""));
+  st.lines.forEach((l, i) => { $("lines").rows[i].querySelector("[data-f=t]").textContent = duration(l.seconds); });
+  $("nolines").style.display = st.lines.length ? "none" : "";
+  setRows($("pcalls"), st.phone_calls.map(p =>
+    "<tr><td class=num>" + p.id + "</td><td>" + esc(phone(p.from) + (p.from_label ? " (" + p.from_label + ")" : "")) +
+    "</td><td>" + esc(phone(p.to) + (p.to_label ? " (" + p.to_label + ")" : "")) + "</td><td class='" +
+    (p.state === "connected" ? "s-on" : "s-neg") + "'>" + p.state + "</td><td class=num data-f=t></td>" +
+    "<td class=num data-f=a></td><td class=num data-f=b></td><td><button class=danger data-pcall=" + p.id +
+    ">Hang up</button></td></tr>").join(""));
+  st.phone_calls.forEach((p, i) => {
+    const tr = $("pcalls").rows[i];
+    tr.querySelector("[data-f=t]").textContent = duration(p.seconds);
+    tr.querySelector("[data-f=a]").textContent = bytes(p.from_bytes);
+    tr.querySelector("[data-f=b]").textContent = bytes(p.to_bytes);
+  });
+  $("pctable").style.display = st.phone_calls.length ? "" : "none";
+  if (!phoneLoaded) {
+    $("p-unk").checked = !!st.phone.unknown_to_isp;
+    $("p-nums").value = st.phone.isp_numbers;
+    phoneLoaded = true;
+  }
+
   const live = {};
   for (const c of st.calls) for (const f of c.forwards) live[c.number + " " + f.spec] = f.state;
   const frows = [];
@@ -232,6 +281,10 @@ document.addEventListener("click", async ev => {
     t.disabled = true;
     try { await post("/api/hangup", { n: t.dataset.hang }); } catch (e) { alert(e.message); }
     refresh();
+  } else if (t.dataset.pcall) {
+    t.disabled = true;
+    try { await post("/api/hangup", { call: t.dataset.pcall }); } catch (e) { alert(e.message); }
+    refresh();
   } else if (t.dataset.unfwd) {
     const [n, item] = t.dataset.unfwd.split(" ");
     const rest = parseSpec(configured[n]).map(f => f.text).filter(x => x !== item).join(" ");
@@ -249,6 +302,15 @@ $("f-add").onclick = async () => {
   const spec = ((configured[n] || "") + " " + item).trim();
   try { await post("/api/forwards", { n: n, spec: spec }); say($("f-msg"), "Added: host port " + h + " to guest port " + g + " on call " + n + ".", true); }
   catch (e) { say($("f-msg"), e.message, false); }
+  refresh();
+};
+
+$("p-save").onclick = async () => {
+  try {
+    await post("/api/phone", { unknown_to_isp: $("p-unk").checked ? 1 : 0, isp_numbers: $("p-nums").value });
+    say($("p-msg"), "Saved.", true);
+  } catch (e) { say($("p-msg"), e.message, false); }
+  phoneLoaded = false;
   refresh();
 };
 

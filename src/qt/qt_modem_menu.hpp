@@ -2,8 +2,9 @@
  * 86Box-Next  A fork of 86Box with extra features.
  *
  *             The modem menu, behind the modem icon in the status bar: what
- *             each COM port modem's telephone line reaches, changed while
- *             the machine runs.
+ *             each COM port modem's telephone line reaches -- nothing, a TCP
+ *             host, isp-server's telephone network and its number there --
+ *             changed while the machine runs.
  *
  *             Released under the GNU General Public License version 2 or
  *             later.  See COPYING for more information.
@@ -34,6 +35,7 @@ signals:
 
 private:
     void editHost(int com);
+    void editPhone(int com);
 
     QWidget *m_parent;
     QMenu   *m_menu;

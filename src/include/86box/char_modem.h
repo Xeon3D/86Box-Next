@@ -23,18 +23,21 @@
 extern "C" {
 #endif
 
-/* Saved in the configuration as these numbers: never renumber.  (2 was the
-   ISP built into the emulator for a day; char_modem.c reads it as a dial to
-   isp-server, CHAR_MODEM_ISP_HOST:CHAR_MODEM_ISP_PORT.) */
+/* Saved in the configuration as these numbers: never renumber. */
 enum {
-    CHAR_MODEM_LINE_DEAD = 0, /* not connected                  */
-    CHAR_MODEM_LINE_TCP  = 1  /* dialling reaches a TCP/IP host */
+    CHAR_MODEM_LINE_DEAD  = 0, /* not connected                                  */
+    CHAR_MODEM_LINE_TCP   = 1, /* dialling reaches a TCP/IP host                 */
+    CHAR_MODEM_LINE_PHONE = 2  /* isp-server's telephone network: a number, other
+                                  modems' numbers, and the ISP on any other one.
+                                  (For a day 2 was an ISP built into the
+                                  emulator; this still reaches the ISP.)       */
 };
 
-/* Where isp-server (src/network/isp/) listens by default: the modem menu's
-   "Dial the ISP". */
+/* Where isp-server (src/network/isp/) listens by default: its exchange, and
+   the plain TCP line to its ISP ("Dial the ISP"). */
 #define CHAR_MODEM_ISP_HOST "127.0.0.1"
 #define CHAR_MODEM_ISP_PORT 2323
+#define CHAR_MODEM_EXCHANGE "127.0.0.1:2323"
 
 enum {
     CHAR_MODEM_ABSENT = -1,
@@ -54,6 +57,14 @@ extern int         char_modem_get_line(int com, char *host, size_t host_len, int
    CARRIER.  Also saved in the modem's configuration section (a PC Card
    modem's: the card's). */
 extern void        char_modem_set_line(int com, int line, const char *host, int port);
+/* The telephone network: the number asked for ("" lets the exchange choose)
+   and the exchange's address, as set; and the number the exchange gave the
+   modem, "" while it is not registered (is isp-server running?).  Returns
+   1 when registered, 0 when not, -1 with no modem on that port. */
+extern int         char_modem_get_phone(int com, char *want, size_t want_len, char *exchange, size_t ex_len,
+                                        char *number, size_t num_len);
+/* Saved like the line; registers again with the new number or exchange. */
+extern void        char_modem_set_phone(int com, const char *want, const char *exchange);
 
 #ifdef __cplusplus
 }

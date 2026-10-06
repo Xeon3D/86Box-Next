@@ -4,10 +4,12 @@
  *             isp-server's status and control page.  See isp_web.h.
  *
  *               GET  /               the page (isp_web_page.html)
- *               GET  /api/status     settings, calls, forwards, as JSON
- *               POST /api/hangup     n=<call>
+ *               GET  /api/status     settings, calls, forwards, the
+ *                                    exchange's lines and calls, as JSON
+ *               POST /api/hangup     n=<ISP call> or call=<modem-to-modem call>
  *               POST /api/forwards   n=<call>&spec=tcp:2121:21 udp:*:5000:5000
  *               POST /api/settings   lan, throttle, rate, pap, echo, net, max
+ *               POST /api/phone      unknown_to_isp, isp_numbers
  *
  *             The page controls who gets on the Internet through this
  *             machine, so it answers only a browser that asked for this host
@@ -269,15 +271,65 @@ api_status(isp_web_response_t *resp)
         sb_add(&b, "}", 1);
         first = 0;
     }
+
+    /* The telephone exchange. */
+    {
+        static isp_srv_line_t  lines[WEB_MAX_CALLS];
+        static isp_srv_pcall_t pcalls[WEB_MAX_CALLS];
+        static const char     *line_state[] = { "idle", "ringing", "in a call" };
+        char                   numbers[128];
+        int                    unknown;
+        const int              nl = isp_srv_lines(lines, WEB_MAX_CALLS);
+        const int              np = isp_srv_phone_calls(pcalls, WEB_MAX_CALLS);
+
+        isp_srv_get_phone(&unknown, numbers, sizeof(numbers));
+        sb_printf(&b, "],\"phone\":{\"unknown_to_isp\":%d,\"isp_numbers\":", unknown);
+        sb_json(&b, numbers);
+        sb_add(&b, "},\"lines\":[", 11);
+        for (int i = 0; i < nl; i++) {
+            const char *open = i ? ",{\"number\":" : "{\"number\":";
+
+            sb_add(&b, open, strlen(open));
+            sb_json(&b, lines[i].number);
+            sb_add(&b, ",\"label\":", 9);
+            sb_json(&b, lines[i].label);
+            sb_printf(&b, ",\"state\":\"%s\",\"seconds\":%u}", line_state[lines[i].state % 3], lines[i].seconds);
+        }
+        sb_add(&b, "],\"phone_calls\":[", 17);
+        for (int i = 0; i < np; i++) {
+            const isp_srv_pcall_t *p = &pcalls[i];
+
+            sb_printf(&b, "%s{\"id\":%d,\"from\":", i ? "," : "", p->id);
+            sb_json(&b, p->from);
+            sb_add(&b, ",\"from_label\":", 14);
+            sb_json(&b, p->from_label);
+            sb_add(&b, ",\"to\":", 6);
+            sb_json(&b, p->to);
+            sb_add(&b, ",\"to_label\":", 12);
+            sb_json(&b, p->to_label);
+            sb_printf(&b, ",\"state\":\"%s\",\"seconds\":%u,\"from_bytes\":%llu,\"to_bytes\":%llu}",
+                      (p->state == ISP_PCALL_ACTIVE) ? "connected" : "ringing", p->seconds,
+                      (unsigned long long) p->from_bytes, (unsigned long long) p->to_bytes);
+        }
+    }
     sb_add(&b, "]}", 2);
     reply(resp, 200, "application/json", &b);
 }
 
+/* n=<ISP call number>, or call=<modem-to-modem call id>. */
 static void
 api_hangup(const char *body, isp_web_response_t *resp)
 {
     long n;
 
+    if (form_int(body, "call", 1, 0x7fffffff, &n) == 1) {
+        if (!isp_srv_hangup_phone((int) n)) {
+            reply_error(resp, 404, "there is no such call");
+            return;
+        }
+        reply_json(resp, 200, "{\"ok\":true}");
+        return;
+    }
     if (form_int(body, "n", 1, ISP_MAX_SESSIONS, &n) != 1) {
         reply_error(resp, 400, "which call?");
         return;
@@ -286,6 +338,32 @@ api_hangup(const char *body, isp_web_response_t *resp)
         reply_error(resp, 404, "there is no such call");
         return;
     }
+    reply_json(resp, 200, "{\"ok\":true}");
+}
+
+/* The exchange: unknown_to_isp=0|1, isp_numbers=<numbers the ISP answers>. */
+static void
+api_phone(const char *body, isp_web_response_t *resp)
+{
+    char numbers[128];
+    char cur[128];
+    int  unknown;
+    long v;
+    int  r;
+
+    isp_srv_get_phone(&unknown, cur, sizeof(cur));
+    if ((r = form_int(body, "unknown_to_isp", 0, 1, &v)) < 0) {
+        reply_error(resp, 400, "unknown_to_isp is 0 or 1");
+        return;
+    } else if (r)
+        unknown = (int) v;
+    if (!form_get(body, "isp_numbers", numbers, sizeof(numbers)))
+        snprintf(numbers, sizeof(numbers), "%s", cur);
+    if (strspn(numbers, "0123456789-*#,; ()+") != strlen(numbers)) {
+        reply_error(resp, 400, "ISP numbers are digits, separated by commas or spaces");
+        return;
+    }
+    isp_srv_set_phone(unknown, numbers);
     reply_json(resp, 200, "{\"ok\":true}");
 }
 
@@ -430,6 +508,8 @@ isp_web_handle(const isp_web_request_t *req, isp_web_response_t *resp)
             api_forwards(body, resp);
         else if (!strcmp(req->path, "/api/settings"))
             api_settings(body, resp);
+        else if (!strcmp(req->path, "/api/phone"))
+            api_phone(body, resp);
         else
             reply_error(resp, 404, "no such action");
         return;
