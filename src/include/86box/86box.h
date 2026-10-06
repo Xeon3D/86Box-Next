@@ -263,8 +263,10 @@ extern int  open_dir_usr_path;     /* default file open dialog directory of usr_
 extern char uuid[MAX_UUID_LEN];    /* UUID or machine identifier */
 extern char vmm_path[1024];        /* VM Manager path to scan */
 extern int  start_vmm;             /* the current execution will start the manager */
-extern int  board_reset_pending;
-extern const int next_build_number;    /* 86Box-Next: goes up with every build (next_build.c) */   /* 86Box-Next: pull the board RESET line at the next frame */
+extern int  board_reset_pending;   /* 86Box-Next: pull the board RESET line at the next frame */
+extern const int  next_build_number;   /* 86Box-Next: goes up with every build (next_build.c) */
+extern const char next_release[];      /* 86Box-Next: "1" in Release 1; empty when not a release */
+extern const char *next_version(void); /* 86Box-Next: "7.0 - Release 1" or "7.0 build 88" */
 extern int  portable_mode;         /* we are running in portable mode 
                                       (global dirs = exe path) */
 extern int global_cfg_overridden;  /* global config file was overriden on command line */

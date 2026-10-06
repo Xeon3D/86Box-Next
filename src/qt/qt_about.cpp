@@ -49,7 +49,10 @@ About::About(QWidget *parent)
 #    define DYNAREC_STR "no dynarec"
 #endif
     versioninfo.append(QString(" [%1, %2]").arg(QSysInfo::buildCpuArchitecture(), tr(DYNAREC_STR)));
-    setText(QString("<b>%1 v%2%3, build %4</b>").arg(EMU_DISPLAY_NAME, EMU_VERSION_FULL, versioninfo).arg(next_build_number));
+    if (next_release[0])
+        setText(QString("<b>%1 v%2 - Release %3, build %4%5</b>").arg(EMU_DISPLAY_NAME, EMU_VERSION_FULL, next_release).arg(next_build_number).arg(versioninfo));
+    else
+        setText(QString("<b>%1 v%2%3, build %4</b>").arg(EMU_DISPLAY_NAME, EMU_VERSION_FULL, versioninfo).arg(next_build_number));
     setInformativeText(tr("An emulator of old computers\n\nAuthors: Miran Grča (OBattler), RichardG867, Jasmine Iwanek, TC1995, coldbrewed, Teemu Korhonen (Manaatti), Joakim L. Gilje, Adrien Moulin (elyosh), Daniel Balsom (gloriouscow), Cacodemon345, Fred N. van Kempen (waltje), Tiseno100, reenigne, and others.\n\nWith previous core contributions from Sarah Walker, leilei, JohnElliott, greatpsycho, and others.\n\nReleased under the GNU General Public License version 2 or later. See LICENSE for more information.").replace("\n", "<br>"));
     setWindowTitle(tr("About %1").arg(EMU_DISPLAY_NAME));
     const auto closeButton = addButton("OK", QMessageBox::ButtonRole::AcceptRole);

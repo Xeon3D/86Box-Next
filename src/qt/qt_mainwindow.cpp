@@ -347,7 +347,7 @@ MainWindow::MainWindow(QWidget *parent)
     QString vmname(vm_name);
     if (vmname.at(vmname.size() - 1) == '"' || vmname.at(vmname.size() - 1) == '\'')
         vmname.truncate(vmname.size() - 1);
-    this->setWindowTitle(QString("%1 - %2 %3 build %4").arg(vmname, EMU_DISPLAY_NAME, EMU_VERSION_FULL).arg(next_build_number));
+    this->setWindowTitle(QString("%1 - %2 %3").arg(vmname, EMU_DISPLAY_NAME, next_version()));
 
     connect(this, &MainWindow::forceInterpretationCompleted, this, [this]() {
         const auto fi_icon      = cpu_force_interpreter ? QIcon(":/menuicons/qt/icons/recompiler.ico") : QIcon(":/menuicons/qt/icons/interpreter.ico");
