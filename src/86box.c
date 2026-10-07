@@ -109,6 +109,7 @@
 #include <86box/acpi.h>
 #include <86box/nv/vid_nv_rivatimer.h>
 #include <86box/vfio.h>
+#include <86box/debug_cmd.h>
 
 /* Stuff that used to be globally declared in plat.h but is now extern there
    and declared here instead. */
@@ -2095,6 +2096,8 @@ pc_run(void)
 #endif
     joystick_process(0); // Gameport 0
     endblit();
+
+    debug_cmd_poll();
 
     /* Done with this frame, update statistics. */
     framecount++;
