@@ -42,7 +42,7 @@
 #    include <poll.h>
 #endif
 #define _SSIZE_T_DEFINED
-#include <slirp/libslirp.h>
+#include <libslirp.h> /* pkg-config gives .../include/slirp */
 #include "isp_plat.h"
 #include "isp_nat_slirp.h"
 
