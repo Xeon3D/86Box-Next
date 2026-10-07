@@ -93,12 +93,13 @@ fake_close(void *priv)
 #define FAKE(n, t) \
     const device_t n = { .name = #n, .internal_name = #n, .local = t, .init = fake_init, .close = fake_close }
 
-/* In pcmcia.c's list order: 1 3C589D, 2 TE100, 3 3C562D, 4 APA-1460. */
+/* In pcmcia.c's list order: 1 3C589D, 2 TE100, 3 3C562D, 4 APA-1460, 5 Accura 56K. */
 const device_t device_none = { .name = "None", .internal_name = "none" };
 FAKE(threec589d_device, 1);
 FAKE(te100pc16_device, 2);
 FAKE(pccard_3c562d_device, 3);
 FAKE(apa1460_device, 4);
+FAKE(pccard_accura56k_device, 5);
 
 static void
 poll(int n)

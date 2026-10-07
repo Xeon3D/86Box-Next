@@ -440,12 +440,8 @@ MachineStatus::setPcCardMenu(PcCardMenu *menu)
     pcCardScsi = pcmciaHasSCSI();
     connect(menu, &PcCardMenu::changed, this, [this]() {
         updatePcCardIcon();
-        /* A card with a modem of its own went in or came out: the modem icon
-           comes or goes with it. */
-        if (modemMenu && (ModemMenu::any() != (d->modem != nullptr)))
-            ui_sb_update_panes();
         /* A SCSI card went in or came out: its drives come or go with it. */
-        else if (pcmciaHasSCSI() != pcCardScsi)
+        if (pcmciaHasSCSI() != pcCardScsi)
             ui_sb_update_panes();
         pcCardScsi = pcmciaHasSCSI();
     });
@@ -737,7 +733,11 @@ MachineStatus::refreshIcons()
         d->cassette.setPlay(!cassette->save);
     }
 
-    /* And whether a modem is in a call. */
+    /* And whether a modem is in a call.  A modem another device carries (a
+       PC Card's) comes and goes with that device, which the status bar is not
+       told of: the modem icon comes or goes with it. */
+    if (modemMenu && (ModemMenu::any() != (d->modem != nullptr)))
+        ui_sb_update_panes();
     updateModemIcon();
 
     /* Same for sound mute status. */
@@ -1233,7 +1233,7 @@ MachineStatus::refresh(QStatusBar *sbar)
     }
 
     /* 86Box-Next: the modem icon, while a modem is plugged into a COM port or
-       a PC Card with a modem is in a socket: a click opens each modem's line
+       another device (a PC Card) carries one: a click opens each modem's line
        settings, which apply without a reset. */
     d->modem.reset();
     if (modemMenu && ModemMenu::any()) {

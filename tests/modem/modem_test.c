@@ -72,6 +72,10 @@ char_attach(uint32_t flags,
     return &test_port;
 }
 
+/* A modem a device carries (char_modem_attach()): char_attach() above takes
+   whatever port is asked for. */
+void *char_open_unlisted(char_port_t *p, const device_t *d) { (void) p; return d->init(d); }
+
 void  char_update_status(char_port_t *p) { (void) p; }
 void *char_log_open(char_port_t *p, char *n) { (void) p; (void) n; return NULL; }
 void  log_close(void *p) { (void) p; }
@@ -695,6 +699,62 @@ run_plug_in(const device_t *device)
     fake_line = 0;
 }
 
+/* A modem another device carries (char_modem_attach(), a PC Card's): a slot
+   after the COM ports, under its device's label, its model's answers, no
+   voice commands on a data and fax model, and gone once detached.  And the
+   strings Windows 98's MDMHAY2.INF sends the Hayes Accura 56K PC Card. */
+static const char_modem_model_t carried_model = {
+    .name       = "Test 56K PC Card",
+    .ident_at   = 3, .ident = "Test 56K PC Card",
+    .fmw_at     = 7, .fmw   = "V1.0",
+    .country_at = 5,
+    .info       = { [0] = "56000", [2] = "OK" },
+    .voice      = 0
+};
+
+static void
+run_carried(void)
+{
+    char_port_t port;
+    char        label[32] = "";
+    int         slot      = -1;
+
+    printf("\n== a modem a device carries ==\n");
+    memset(&port, 0, sizeof(port));
+    dev = char_modem_attach(&port, &carried_model, "PC Card B");
+    for (int i = SERIAL_MAX; i < char_modem_slots(); i++) {
+        if (char_modem_present(i)) {
+            slot = i;
+            break;
+        }
+    }
+    expect("it takes a slot after the COM ports", (slot >= SERIAL_MAX) ? "yes" : "no", "yes");
+    char_modem_slot_label(slot, label, sizeof(label));
+    expect("...under its device's label", label, "PC Card B");
+    expect("...named by its model", char_modem_name(slot) ? char_modem_name(slot) : "", "Test 56K PC Card");
+
+    send_str("\r\r");
+    drain(label, sizeof(label));
+    at("ATE0");
+    expect("ATI3 is its model's", at("ATI3"), "Test 56K PC Card");
+    expect("ATI0 too", at("ATI0"), "56000");
+    expect("no Rockwell voice on a data/fax model", at("AT#CLS=8"), "ERROR");
+    expect("...nor V.253's", at("AT+FCLASS=8"), "ERROR");
+
+    expect("MDMHAY2 Init 2", at("AT&FE0V1&C1&D2S95=47S0=0"), "OK");
+    expect("MDMHAY2 ErrorControl_On", at("AT&Q5S36=7S48=7"), "OK");
+    expect("MDMHAY2 ErrorControl_Off", at("AT&Q6S36=3S48=128"), "OK");
+    expect("MDMHAY2 ErrorControl_Forced", at("AT&Q5S36=4S48=128"), "OK");
+    expect("MDMHAY2 Compression_On", at("ATS46=138"), "OK");
+    expect("MDMHAY2 Modulation_CCITT", at("ATB0 B15"), "OK");
+    expect("MDMHAY2 Modulation_Bell", at("ATB1 B16"), "OK");
+    expect("MDMHAY2 the rest", at("ATL0M1&K3N1X4S7=60S30=0"), "OK");
+    expect("MDMHAY2 Error...\\N2 (Modem6)", at("AT\\N2"), "OK");
+
+    char_modem_detach(dev);
+    expect("detached, its slot is free", char_modem_present(slot) ? "yes" : "no", "no");
+}
+
 /* ------------------------------------------------- the line, byte by byte */
 
 static int
@@ -1248,6 +1308,7 @@ main(void)
     run_model(&char_modem_supra_com_device, "Diamond SupraExpress 56e PRO");
     run_connect(&char_modem_supra_com_device);
     run_plug_in(&char_modem_elsa_com_device);
+    run_carried();
     run_transport(&char_modem_supra_com_device);
     run_two();
     run_isp();
