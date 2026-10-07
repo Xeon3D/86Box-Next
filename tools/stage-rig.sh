@@ -114,8 +114,9 @@ done
 
 # isp-server (the virtual ISP and telephone exchange the rigs' modems dial)
 # sits in Latest itself, shared by every rig.
+# A branch build that owns a rig stages only that rig, not the shared isp-server.
 ISP="$BUILD/isp-server/isp-server.exe"
-if [ -f "$ISP" ]; then
+if [ "$OWNED" != 1 ] && [ -f "$ISP" ]; then
     if tasklist //FI "IMAGENAME eq isp-server.exe" 2>/dev/null | grep -qi "isp-server.exe"; then
         echo "isp-server is running; not replaced (close it and stage again)" >&2
     else
