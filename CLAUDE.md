@@ -38,13 +38,18 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   multi-function card: `pccard_mfc.c` is a PC Card 95 MFC framework (per-function COR/CCSR/
   I/O base/limit registers, I/O routed by each function's decode, IREQ = OR of the functions),
   CIS with LONGLINK_MFC chains (Windows 9x's ID walk follows function 0's chain); its LAN is
-  `net_3c509b.c`'s `threec562_lan_device`, its modem `char_modem.c`'s engine on a detached
-  16550 (`serial_init_detached()`, no COM slot) opened with `char_open_unlisted()` in the card's
-  device context; the modem icon lists it as "PC Card A/B" and saves its line in the card's
-  section. Verified in Win98 (NET3C562.INF + MDMGATEW.INF, ping, ATI over ReadFile); caveat:
+  `net_3c509b.c`'s `threec562_lan_device`, its modem the modem engine on a detached
+  16550 (`serial_init_detached()`, no COM slot) opened with `char_modem_attach()` (its own
+  `char_modem_model_t`, label "PC Card A/B") in the card's device context, so its line is saved in
+  the card's section. Verified in Win98 (NET3C562.INF + MDMGATEW.INF, ping, ATI over ReadFile); caveat:
   Windows tends to give its modem COM4 at 2E8h, which the S3 cards' 8514/A register shadows
   (`vid_s3.c`, as on real hardware) -- reads come back 00h; move the modem's I/O in Device
-  Manager; see `mfchandoff.md`. Adaptec APA-1460 SlimSCSI (`scsi_apa1460.c`): the AIC-6360 of
+  Manager; see `mfchandoff.md`. Hayes Accura 56K PC Card (`pccard_accura56k.c`): a V.90
+  data/fax modem, single function -- a detached 16550 with the modem engine on it
+  (`char_modem_attach()`), COR/CCSR at 200h (index 0 memory-only, any other I/O; the UART decodes
+  A2-A0), CIS (`pccard_cis_accura56k()`): FUNCID serial, COM1-COM4 on ten lines (indexes 1-4) or
+  anywhere on three (5), matched to MDMHAY2.INF's `PCMCIA\Hayes-Accura_56K_PC_CARD-EBBB`; ATI
+  answers plausible, not dumped; not yet tried in a guest. Adaptec APA-1460 SlimSCSI (`scsi_apa1460.c`): the AIC-6360 of
   `scsi_aic6360.c` (`aic6360_chip_init()`: the chip without ISA I/O or IRQ), COR at 2000h as its
   Technical Reference has it (SRESET/IOEN/PRIMARY, so CIS indexes 09h = 340h, 08h = 140h), PORTA/B
   read FFh; Windows 98's SCSI.INF ID `...-BE89` (SPARROW.MPD). Its SCSI bus is its socket's
@@ -76,10 +81,16 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   speakers whose sound handlers are registered once per sound reset: `sound_has_handler()`).
   `DEVICE_HOTPLUG`, so attaching, removing or reconfiguring one is a soft change (the soft
   settings path refreshes the status bar). Status bar modem icon (`src/qt/qt_modem_menu.cpp`,
-  shown while a COM port is configured with a modem or a socket holds a PC Card with one;
-  `char_modem.h` slots: the COM ports, then one per socket) sets each modem's line live through
+  shown while a COM port is configured with a modem or a device carries one -- the status bar's
+  75 ms poll notices a carried modem come or go; `char_modem.h` slots: the COM ports, then the
+  carried modems) sets each modem's line live through
   `char_modem.h` (applied on the emulation thread; a call in progress gets NO CARRIER) and saves
   it in the modem's section (`<name> #<COM+1>`). Tests: `tests/modem/` (FN_SYS's tables).
+  The modem engine and the PC Card code know nothing of each other: another device carries a
+  modem with `char_modem_attach(port, model, label)` (a `char_modem_model_t`: ATI answers and
+  `voice`; settings from `CHAR_MODEM_CONFIG_LINE` / `CHAR_MODEM_CONFIG_SPEAKER` in its own
+  config), and `pcmcia.c` knows a modem card only as a device in its list. Only the modem cards
+  themselves (`pccard_3c562.c`, `pccard_accura56k.c`) include both.
   The modem's bytes to the line go through a queue (`MODEM_TXQ_*`): short sends and would-block
   lose nothing, CTS drops at the high-water mark, an overrun past CTS ends the call; a full
   receive ring is not a hangup. Lines are backends (`modem_line_ops_t`: TCP, phone) behind the
@@ -92,7 +103,7 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   menu: "Telephone network (isp-server)", "Set phone number...", the number in the status line.
   (Line 2 was the built-in ISP for a day; the exchange still reaches the ISP on any unknown
   number.)
-- Voice calls (Supra and ELSA, not the 3C562): Rockwell's `#` voice set, as Windows 9x's
+- Voice calls (models with `voice`: Supra and ELSA, not the PC Cards' data/fax modems): Rockwell's `#` voice set, as Windows 9x's
   Unimodem/V uses it (the Diamond INF: `#CLS=8`, `#VLS=0`, `#VBS=4`, `#VSR=7200`, `#VTX`/`#VRX`,
   `#VTS`) and vgetty's Rockwell driver. `AT#CLS=8` then ATD/ATA give VCON (`#VRN=0`: once
   dialled); ATD...; is a voice call too (OK once dialled). `#VTX` plays the DTE's audio

@@ -543,3 +543,35 @@ pccard_cis_apa1460(uint8_t *buf)
     pccard_cis_match_id(&c, 0xbe89);
     return c.len;
 }
+
+/* Hayes Accura 56K PC Card (pccard_accura56k.c): a data/fax modem, one
+   function -- a 16550 behind the standard configuration registers.  No dump
+   of the real card's CIS was found; this is the shape the modem cards of its
+   day share (pcmcia-cs's serial_cs binds any of them by FUNCID serial): the
+   COR and CCSR at 200h; eight ports at COM1-COM4's addresses on ten address
+   lines, configuration indexes 1 to 4, then anywhere on three lines, index 5;
+   8-bit, any of the usual IRQs.  Windows 98's MDMHAY2.INF knows it as
+   PCMCIA\Hayes-Accura_56K_PC_CARD-EBBB. */
+int
+pccard_cis_accura56k(uint8_t *buf, uint32_t *cfg_base)
+{
+    static const char   *vers[]      = { "Hayes", "Accura 56K PC CARD" };
+    static const uint8_t fn_serial[] = { CISTPL_FUNCID_SERIAL, 0x00 };
+    static const uint16_t com[4]     = { 0x03f8, 0x02f8, 0x03e8, 0x02e8 };
+    pccard_cis_t         c;
+
+    pccard_cis_init(&c, buf, 256);
+    pccard_cis_tuple(&c, CISTPL_DEVICE, no_device, 3);
+    pccard_cis_vers1(&c, vers, 2);
+    pccard_cis_tuple(&c, CISTPL_FUNCID, fn_serial, 2);
+    pccard_cis_config(&c, 0x0200, 0x03, 0x05);                  /* COR, CCSR */
+    for (int i = 0; i < 4; i++)
+        pccard_cis_cftable_io(&c, (uint8_t) ((i ? 0x00 : 0x40) | (i + 1)), com[i], 8, 10, 0, 0xdeb8);
+    pccard_cis_cftable_io(&c, 0x05, 0x0000, 8, 3, 0, 0xdeb8);
+    pccard_cis_tuple(&c, CISTPL_NO_LINK, NULL, 0);
+    pccard_cis_end(&c);
+    pccard_cis_match_id(&c, 0xebbb);
+    if (cfg_base)
+        *cfg_base = 0x0200;
+    return c.len;
+}

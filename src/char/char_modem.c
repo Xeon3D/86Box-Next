@@ -37,6 +37,10 @@
  *          of it heard on the speaker (modem_sound.c) unless ATM0 or the
  *          device's Speaker option silences it.
  *
+ *          86Box-Next: the same engine is the modem other devices carry on a
+ *          UART of their own -- a PC Card's -- opened with char_modem_attach()
+ *          and answering as the model the device gives it (char_modem.h).
+ *
  * Authors: The HUEG PP team (PeepeeBox).
  *
  *          Released under the GNU General Public License version 2 or
@@ -63,7 +67,6 @@
 #include <86box/snd_mic.h>
 #include <86box/thread.h>
 #include <86box/char_modem.h>
-#include <86box/pcmcia.h>
 
 #ifdef ENABLE_CHAR_MODEM_LOG
 int char_modem_do_log = ENABLE_CHAR_MODEM_LOG;
@@ -215,25 +218,13 @@ static const char *modem_res_text[] = {
    docs/research/33-modem.md walks all thirty. */
 enum {
     MODEM_MODEL_SUPRA = 0,
-    MODEM_MODEL_ELSA  = 1,
-    MODEM_MODEL_3C562 = 2  /* 86Box-Next: the 3Com 3C562D PC Card's modem */
+    MODEM_MODEL_ELSA  = 1
 };
 
-/* 86Box-Next: in a device's local, a modem that is no COM port's -- a PC
-   Card's, opened with char_open_unlisted() inside the card's device context
-   (instance = socket + 1), whose settings are the card's.  The status bar
-   finds it in the socket's slot of modems[]. */
-#define MODEM_UNLISTED 0x100
-
-typedef struct {
-    const char *name;        /* MD_NAME.CSV, verbatim                        */
-    int         ident_at;    /* which ATIn carries the identification string */
-    const char *ident;       /* ...and its default text                      */
-    int         fmw_at;      /* MD_NAME column 7, filed as MODEMFMW          */
-    const char *fmw;         /* ...and its default text                      */
-    int         country_at;  /* which ATIn reports the country code          */
-    const char *info[10];    /* the rest of ATI0..ATI9                       */
-} modem_model_t;
+/* char_modem_model_t (char_modem.h): `name` is MD_NAME.CSV's, verbatim, and
+   `fmw_at` MD_NAME column 7, filed as MODEMFMW.  Both are voice modems
+   (Rockwell's #CLS=8 set). */
+typedef char_modem_model_t modem_model_t;
 
 static const modem_model_t modem_models[] = {
     // clang-format off
@@ -248,7 +239,8 @@ static const modem_model_t modem_models[] = {
             [2] = "OK",                                      /* RAM test     */
             [4] = "Diamond Multimedia SupraExpress 56e PRO",
             [6] = "RCVDL56ACF/SP Rev 1.100"                  /* the chipset  */
-        }
+        },
+        .voice      = 1
     },
     [MODEM_MODEL_ELSA] = {
         .name       = "ELSA MicroLink 56k",
@@ -261,23 +253,8 @@ static const modem_model_t modem_models[] = {
             [2] = "OK",
             [4] = "ELSA MicroLink 56k",
             [7] = "ELSA AG, Aachen"
-        }
-    },
-    /* 86Box-Next: the modem function of the 3Com 3C562D/3C563D LAN+33.6
-       Modem PC Card (src/pcmcia/pccard_3c562.c).  A Rockwell V.34 data
-       pump; the answers are plausible ones, nothing reads them. */
-    [MODEM_MODEL_3C562] = {
-        .name       = "3Com 3C562D LAN+33.6 Modem",
-        .ident_at   = 3, .ident = "3Com 3C562D/3C563D 33.6 Modem",
-        .fmw_at     = 7, .fmw   = "V2.31",
-        .country_at = 5,
-        .info       = {
-            [0] = "33600",
-            [1] = "255",
-            [2] = "OK",
-            [4] = "3Com EtherLink III LAN+33.6 Modem PC Card",
-            [6] = "RC336ACi"
-        }
+        },
+        .voice      = 1
     }
     // clang-format on
 };
@@ -366,10 +343,11 @@ typedef struct {
     int            refused;    /* the connect failed: ring on, then give up   */
 
     /* Where it is plugged in, so the status bar can find it (slot: a COM port,
-       or SERIAL_MAX + a PC Card socket), and the device section its settings
-       are written back to: its own for a COM port modem, the card's for a PC
-       Card's. */
+       or from SERIAL_MAX on, a modem another device carries), what it is
+       called there, and the device section its settings are written back to:
+       its own for a COM port modem, its device's for a carried one. */
     int             slot;      /* -1: none */
+    char            label[32]; /* "COM1", or what its device calls it */
     const device_t *cfg_dev;
     int             cfg_inst;
 
@@ -946,7 +924,7 @@ modem_phone_poll(modem_t *dev)
                 char req[160];
                 char where[32];
 
-                char_modem_slot_label(dev->slot, where, sizeof(where));
+                snprintf(where, sizeof(where), "%s", dev->label[0] ? dev->label : dev->model->name);
                 snprintf(req, sizeof(req), "REGISTER %s %.80s (%s)", dev->phone_cfg[0] ? dev->phone_cfg : "-",
                          vm_name[0] ? vm_name : dev->model->name, where);
                 for (char *q = req; *q; q++)
@@ -2034,8 +2012,8 @@ modem_voice_command(modem_t *dev, const char *name, const char **p)
         { NULL, 0, 0, 0, NULL }
     };
 
-    /* The 3C562's Rockwell is data and fax only. */
-    if (dev->model == &modem_models[MODEM_MODEL_3C562])
+    /* A data and fax modem has no voice commands. */
+    if (!dev->model->voice)
         return RES_ERROR;
 
     if (!strcmp(name, "CLS")) {
@@ -2163,7 +2141,7 @@ modem_v253_command(modem_t *dev, const char *name, const char **p)
 {
     char buf[64];
 
-    if (dev->model == &modem_models[MODEM_MODEL_3C562])
+    if (!dev->model->voice)
         return RES_ERROR;
 
     if (!strcmp(name, "FCLASS")) {
@@ -2341,7 +2319,7 @@ modem_v253_command(modem_t *dev, const char *name, const char **p)
 static void
 modem_handset_apply(modem_t *dev, int action, const char *number)
 {
-    const int can_talk = (dev->model != &modem_models[MODEM_MODEL_3C562]);
+    const int can_talk = dev->model->voice;
 
     switch (action) {
         case CHAR_MODEM_HANDSET_PICKUP:
@@ -2894,10 +2872,12 @@ modem_data_byte(modem_t *dev, uint8_t val)
 
 /* ------------------------------------------------- the line, from the UI */
 
-/* The modems plugged in, by slot: the COM ports, then the PC Card sockets.
+/* The modems plugged in, by slot: the COM ports, then the modems other
+   devices carry (MODEM_CARRIED of them at once), each in the first slot free.
    The UI thread reads and queues; the emulation thread opens, closes and
    applies. */
-#define MODEM_SLOTS (SERIAL_MAX + PCMCIA_SOCKETS)
+#define MODEM_CARRIED 8
+#define MODEM_SLOTS   (SERIAL_MAX + MODEM_CARRIED)
 static modem_t *modems[MODEM_SLOTS];
 static mutex_t *modem_mutex = NULL;
 
@@ -3001,14 +2981,18 @@ char_modem_slots(void)
     return MODEM_SLOTS;
 }
 
-/* "COM1", or "PC Card A" for a PC Card's modem. */
+/* "COM1", or the label a carried modem's device gave it. */
 void
 char_modem_slot_label(int com, char *buf, size_t len)
 {
-    if (com < SERIAL_MAX)
+    modem_lock();
+    if (char_modem_present(com))
+        snprintf(buf, len, "%s", modems[com]->label);
+    else if ((com >= 0) && (com < SERIAL_MAX))
         snprintf(buf, len, "COM%d", com + 1);
     else
-        snprintf(buf, len, "PC Card %c", 'A' + (com - SERIAL_MAX));
+        snprintf(buf, len, "%s", "");
+    modem_unlock();
 }
 
 int
@@ -3113,7 +3097,7 @@ char_modem_handset_state(int com)
         const modem_t *dev = modems[com];
 
         ret = (dev->handset ? 1 : 0) | (dev->ring_id ? 2 : 0) |
-              (((dev->line == MODEM_LINE_PHONE) && (dev->model != &modem_models[MODEM_MODEL_3C562])) ? 4 : 0);
+              (((dev->line == MODEM_LINE_PHONE) && dev->model->voice) ? 4 : 0);
     }
     modem_unlock();
     return ret;
@@ -3368,31 +3352,26 @@ modem_close(void *priv)
     free(dev);
 }
 
-static void *
-modem_init(const device_t *info)
+/* A modem answering as model, its settings read from the current device
+   context (cfg_dev, instance cfg_inst), going into slot (-1: none) under
+   label. */
+static modem_t *
+modem_create(const modem_model_t *model, const device_t *cfg_dev, int slot, const char *label)
 {
     modem_t    *dev = (modem_t *) calloc(1, sizeof(modem_t));
     const char *s;
 
-    const int model = info->local & ~MODEM_UNLISTED;
-
-    dev->model = &modem_models[(model < (int) (sizeof(modem_models) / sizeof(modem_models[0])))
-                                   ? model
-                                   : MODEM_MODEL_SUPRA];
+    dev->model = model;
     dev->sock  = (SOCKET) -1;
     dev->ctl   = (SOCKET) -1;
     dev->vpeer = -1;
     dev->snd   = modem_sound_init(device_get_config_int("speaker"));
     modem_load_defaults(dev);
 
+    dev->cfg_dev  = cfg_dev;
     dev->cfg_inst = device_get_instance();
-    if (info->local & MODEM_UNLISTED) {
-        dev->cfg_dev = device_context_get_device();
-        dev->slot    = ((dev->cfg_inst >= 1) && (dev->cfg_inst <= PCMCIA_SOCKETS)) ? (SERIAL_MAX + dev->cfg_inst - 1) : -1;
-    } else {
-        dev->cfg_dev = info;
-        dev->slot    = ((dev->cfg_inst >= 1) && (dev->cfg_inst <= SERIAL_MAX)) ? (dev->cfg_inst - 1) : -1;
-    }
+    dev->slot     = slot;
+    snprintf(dev->label, sizeof(dev->label), "%s", label);
     dev->connect_rate = device_get_config_int("connect_rate");
 
     s = device_get_config_string("host");
@@ -3416,8 +3395,6 @@ modem_init(const device_t *info)
                    dev->model->name, dev->model->ident_at, dev->ident,
                    dev->model->fmw_at, dev->firmware, modem_line_name(dev));
 
-    if (modem_mutex == NULL)
-        modem_mutex = thread_create_mutex();
     modem_lock();
     if (dev->slot >= 0)
         modems[dev->slot] = dev;
@@ -3426,76 +3403,88 @@ modem_init(const device_t *info)
     return dev;
 }
 
-/* One config array for both parts.  What differs between them -- which ATIn
-   carries what, and the text of each -- lives in the model table. */
+static void *
+modem_init(const device_t *info)
+{
+    const int inst  = device_get_instance();
+    const int model = ((info->local >= 0) && (info->local < (int) (sizeof(modem_models) / sizeof(modem_models[0]))))
+        ? info->local
+        : MODEM_MODEL_SUPRA;
+    char      label[16] = "";
+
+    if ((inst >= 1) && (inst <= SERIAL_MAX))
+        snprintf(label, sizeof(label), "COM%d", inst);
+    if (modem_mutex == NULL)
+        modem_mutex = thread_create_mutex();
+    return modem_create(&modem_models[model], info, ((inst >= 1) && (inst <= SERIAL_MAX)) ? (inst - 1) : -1, label);
+}
+
+/* 86Box-Next: a modem another device carries, made by char_modem_attach()
+   through char_open_unlisted() -- which gives char_attach() the device's
+   port -- in that device's context, whose settings are the modem's. */
+static const modem_model_t *attach_model;
+static const char          *attach_label;
+
+static void *
+modem_carried_init(UNUSED(const device_t *info))
+{
+    int slot = -1;
+
+    if (modem_mutex == NULL)
+        modem_mutex = thread_create_mutex();
+    modem_lock();
+    for (int i = SERIAL_MAX; i < MODEM_SLOTS; i++) {
+        if (modems[i] == NULL) {
+            slot = i;
+            break;
+        }
+    }
+    modem_unlock();
+    return modem_create(attach_model, device_context_get_device(), slot, attach_label);
+}
+
+static const device_t modem_carried_device = {
+    .name          = "Modem",
+    .internal_name = "modem_carried",
+    .flags         = 0,
+    .local         = 0,
+    .init          = modem_carried_init,
+    .close         = modem_close,
+    .reset         = NULL,
+    .available     = NULL,
+    .speed_changed = NULL,
+    .force_redraw  = NULL,
+    .config        = NULL
+};
+
+void *
+char_modem_attach(char_port_t *port, const char_modem_model_t *model, const char *label)
+{
+    void *priv;
+
+    if ((port == NULL) || (model == NULL))
+        return NULL;
+    attach_model = model;
+    attach_label = label ? label : "";
+    priv         = char_open_unlisted(port, &modem_carried_device);
+    attach_model = NULL;
+    attach_label = NULL;
+    return priv;
+}
+
+void
+char_modem_detach(void *modem)
+{
+    if (modem != NULL)
+        modem_close(modem);
+}
+
+/* The config of both parts, and -- from the same entries -- of a device that
+   carries a modem.  What differs between the parts -- which ATIn carries
+   what, and the text of each -- lives in the model table. */
 // clang-format off
 static const device_config_t modem_config[] = {
-    {
-        .name           = "line",
-        .description    = "Telephone line",
-        .type           = CONFIG_SELECTION,
-        .default_string = NULL,
-        .default_int    = MODEM_LINE_DEAD,
-        .file_filter    = NULL,
-        .spinner        = { 0 },
-        .selection      = {
-            { .description = "Not connected",             .value = MODEM_LINE_DEAD },
-            { .description = "Dial out to a TCP/IP host", .value = MODEM_LINE_TCP  },
-            { .description = "Telephone network (isp-server)", .value = MODEM_LINE_PHONE },
-            { .description = ""                                                    }
-        },
-        .bios           = { { 0 } }
-    },
-    {
-        .name           = "phone_number",
-        .description    = "Phone number (blank: the exchange gives one)",
-        .type           = CONFIG_STRING,
-        .default_string = "",
-        .default_int    = 0,
-        .file_filter    = NULL,
-        .spinner        = { 0 },
-        .selection      = { { 0 } },
-        .bios           = { { 0 } }
-    },
-    {
-        .name           = "exchange",
-        .description    = "Telephone exchange (isp-server)",
-        .type           = CONFIG_STRING,
-        .default_string = CHAR_MODEM_EXCHANGE,
-        .default_int    = 0,
-        .file_filter    = NULL,
-        .spinner        = { 0 },
-        .selection      = { { 0 } },
-        .bios           = { { 0 } }
-    },
-    {
-        .name           = "host",
-        .description    = "Host",
-        .type           = CONFIG_STRING,
-        .default_string = "",
-        .default_int    = 0,
-        .file_filter    = NULL,
-        .spinner        = { 0 },
-        .selection      = { { 0 } },
-        .bios           = { { 0 } }
-    },
-    {
-        .name           = "host_port",
-        .description    = "Port",
-        .type           = CONFIG_SPINNER,
-        .default_string = NULL,
-        .default_int    = 23,
-        .file_filter    = NULL,
-        .spinner        = {
-            /* 32767 rather than 65535 because device_config_spinner_t is
-               int16_t: a wider maximum wraps negative and the box then refuses
-               to take a value at all.  Upstream's own modem stops here too. */
-            .min = 1,
-            .max = 32767
-        },
-        .selection      = { { 0 } },
-        .bios           = { { 0 } }
-    },
+    CHAR_MODEM_CONFIG_LINE,
     {
         .name           = "connect_rate",
         .description    = "Reported connection speed",
@@ -3515,17 +3504,7 @@ static const device_config_t modem_config[] = {
         },
         .bios           = { { 0 } }
     },
-    {
-        .name           = "speaker",
-        .description    = "Speaker",
-        .type           = CONFIG_BINARY,
-        .default_string = NULL,
-        .default_int    = 1,
-        .file_filter    = NULL,
-        .spinner        = { 0 },
-        .selection      = { { 0 } },
-        .bios           = { { 0 } }
-    },
+    CHAR_MODEM_CONFIG_SPEAKER,
     { .name = "", .description = "", .type = CONFIG_END }
 };
 // clang-format on
@@ -3549,24 +3528,6 @@ const device_t char_modem_elsa_com_device = {
     .internal_name = "modem_elsa",
     .flags         = DEVICE_COM | DEVICE_HOTPLUG,
     .local         = MODEM_MODEL_ELSA,
-    .init          = modem_init,
-    .close         = modem_close,
-    .reset         = NULL,
-    .available     = NULL,
-    .speed_changed = NULL,
-    .force_redraw  = NULL,
-    .config        = modem_config
-};
-
-/* 86Box-Next: the 3C562D PC Card's modem, opened by the card on its UART with
-   char_open_unlisted(): its settings are the card's (pccard_3c562.c repeats
-   modem_config's entries); the status bar's modem icon lists it under its
-   socket. */
-const device_t char_modem_3c562_device = {
-    .name          = "3Com 3C562D LAN+33.6 Modem",
-    .internal_name = "modem_3c562",
-    .flags         = 0,
-    .local         = MODEM_MODEL_3C562 | MODEM_UNLISTED,
     .init          = modem_init,
     .close         = modem_close,
     .reset         = NULL,

@@ -8,8 +8,8 @@
  *                  (threec562_lan_device), sixteen ports, its station
  *                  address in the CIS as well as its EEPROM;
  *               1  the modem: a 16550 that is no COM port
- *                  (serial_init_detached()) with char_modem.c's engine on it
- *                  as a 3Com 33.6 modem, eight ports.
+ *                  (serial_init_detached()) with the modem engine on it
+ *                  (char_modem_attach()) as a 3Com 33.6 modem, eight ports.
  *
  *             Both share the card's IREQ.  Windows 98 has drivers for both in
  *             the box: NET3C562.INF (elpc3r.sys) for DEV0 and MDMGATEW.INF for
@@ -33,6 +33,7 @@
 #include <86box/timer.h>
 #include <86box/char.h>
 #include <86box/serial.h>
+#include <86box/char_modem.h>
 #include <86box/pcmcia.h>
 #include <86box/plat_unused.h>
 
@@ -47,9 +48,26 @@ typedef struct {
     void         *lan;      /* net_3c509b.c's el3_t */
 
     serial_t     *uart;
-    void         *modem;    /* char_modem.c's, on the UART */
+    void         *modem;    /* the modem engine's, on the UART */
     pccard_func_t modem_fn;
 } c562_t;
+
+/* The modem function, a Rockwell V.34 data pump: data and fax, no voice.
+   The answers are plausible ones; nothing reads them. */
+static const char_modem_model_t c562_modem_model = {
+    .name       = "3Com 3C562D LAN+33.6 Modem",
+    .ident_at   = 3, .ident = "3Com 3C562D/3C563D 33.6 Modem",
+    .fmw_at     = 7, .fmw   = "V2.31",
+    .country_at = 5,
+    .info       = {
+        [0] = "33600",
+        [1] = "255",
+        [2] = "OK",
+        [4] = "3Com EtherLink III LAN+33.6 Modem PC Card",
+        [6] = "RC336ACi"
+    },
+    .voice      = 0
+};
 
 /* The modem function: the UART's eight registers. */
 static uint8_t
@@ -84,8 +102,7 @@ c562_close(void *priv)
     c562_t *dev = (c562_t *) priv;
 
     pcmcia_insert(dev->socket, NULL);
-    if (dev->modem)
-        char_modem_3c562_device.close(dev->modem);
+    char_modem_detach(dev->modem);
     serial_close_detached(dev->uart);
     if (dev->lan)
         threec562_lan_device.close(dev->lan);
@@ -100,6 +117,7 @@ c562_init(UNUSED(const device_t *info))
     uint8_t              mac[6];
     uint32_t             lan_cfg, modem_cfg;
     int                  len;
+    char                 label[16];
 
     dev->socket = device_get_instance() - 1;
     if ((dev->socket < 0) || (dev->socket >= PCMCIA_SOCKETS))
@@ -119,8 +137,9 @@ c562_init(UNUSED(const device_t *info))
     pccard_mfc_add(&dev->mfc, lan_fn, lan_cfg, 0x23);
 
     /* The modem: a 16550 with the modem engine on its port. */
+    snprintf(label, sizeof(label), "PC Card %c", 'A' + dev->socket);
     dev->uart  = serial_init_detached(SERIAL_16550, c562_modem_irq, dev);
-    dev->modem = char_open_unlisted(&dev->uart->char_port, &char_modem_3c562_device);
+    dev->modem = char_modem_attach(&dev->uart->char_port, &c562_modem_model, label);
     if (dev->uart->char_port.chardev.control)
         dev->uart->char_port.chardev.control((dev->uart->mctrl & 0x03) | (dev->uart->lcr & 0x40),
                                              dev->uart->char_port.chardev.priv);
@@ -137,8 +156,8 @@ c562_init(UNUSED(const device_t *info))
     return dev;
 }
 
-/* The station address, then the modem's settings as char_modem.c reads them
-   (modem_config's entries, so a COM port modem and this one agree). */
+/* The station address, then the modem's settings: char_modem.h's, so a COM
+   port modem and this one are set alike. */
 static const device_config_t c562_config[] = {
     // clang-format off
     {
@@ -152,66 +171,7 @@ static const device_config_t c562_config[] = {
         .selection      = { { 0 } },
         .bios           = { { 0 } }
     },
-    {
-        .name           = "line",
-        .description    = "Modem telephone line",
-        .type           = CONFIG_SELECTION,
-        .default_string = NULL,
-        .default_int    = 0,
-        .file_filter    = NULL,
-        .spinner        = { 0 },
-        .selection      = {
-            { .description = "Not connected",             .value = 0 },
-            { .description = "Dial out to a TCP/IP host", .value = 1 },
-            { .description = "Telephone network (isp-server)", .value = 2 },
-            { .description = ""                                      }
-        },
-        .bios           = { { 0 } }
-    },
-    {
-        .name           = "phone_number",
-        .description    = "Modem phone number (blank: the exchange gives one)",
-        .type           = CONFIG_STRING,
-        .default_string = "",
-        .default_int    = 0,
-        .file_filter    = NULL,
-        .spinner        = { 0 },
-        .selection      = { { 0 } },
-        .bios           = { { 0 } }
-    },
-    {
-        .name           = "exchange",
-        .description    = "Telephone exchange (isp-server)",
-        .type           = CONFIG_STRING,
-        .default_string = "127.0.0.1:2323",
-        .default_int    = 0,
-        .file_filter    = NULL,
-        .spinner        = { 0 },
-        .selection      = { { 0 } },
-        .bios           = { { 0 } }
-    },
-    {
-        .name           = "host",
-        .description    = "Host",
-        .type           = CONFIG_STRING,
-        .default_string = "",
-        .default_int    = 0,
-        .file_filter    = NULL,
-        .spinner        = { 0 },
-        .selection      = { { 0 } },
-        .bios           = { { 0 } }
-    },
-    {
-        .name           = "host_port",
-        .description    = "Port",
-        .type           = CONFIG_SPINNER,
-        .default_string = NULL,
-        .default_int    = 23,
-        .file_filter    = NULL,
-        .spinner        = { .min = 1, .max = 32767 },
-        .selection      = { { 0 } },
-        .bios           = { { 0 } }
-    },
+    CHAR_MODEM_CONFIG_LINE,
     {
         .name           = "connect_rate",
         .description    = "Reported connection speed",
@@ -228,17 +188,7 @@ static const device_config_t c562_config[] = {
         },
         .bios           = { { 0 } }
     },
-    {
-        .name           = "speaker",
-        .description    = "Modem speaker",
-        .type           = CONFIG_BINARY,
-        .default_string = NULL,
-        .default_int    = 1,
-        .file_filter    = NULL,
-        .spinner        = { 0 },
-        .selection      = { { 0 } },
-        .bios           = { { 0 } }
-    },
+    CHAR_MODEM_CONFIG_SPEAKER,
     { .name = "", .description = "", .type = CONFIG_END }
     // clang-format on
 };

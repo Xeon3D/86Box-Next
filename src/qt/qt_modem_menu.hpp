@@ -26,7 +26,8 @@ public:
 
     QMenu  *menu() const { return m_menu; }
     QString toolTip() const;   /* each modem, its line and what it is doing */
-    static bool any();         /* a modem is plugged into some COM port */
+    static bool any();         /* a modem on some COM port, or carried by a device */
+    static bool carried();     /* a modem another device carries (a PC Card's) */
     static bool busy();        /* ...and one of them is in a call */
     void        buildMenu();   /* also run before showing, to know its size */
 

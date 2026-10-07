@@ -446,6 +446,34 @@ test_apa1460(void)
     CHECK(!strcmp(id, "PCMCIA\\Adaptec__Inc.-APA-1460_SCSI_Host_Adapter-BE89"), "APA-1460: Windows 9x ID %s (SCSI.INF's)", id);
 }
 
+/* The Hayes Accura 56K PC Card: a serial function, the COR and CCSR, its
+   default range COM1's on ten lines, the last index an "anywhere" one on
+   three, and the ID Windows 98's MDMHAY2.INF lists. */
+static void
+test_accura56k(void)
+{
+    uint8_t    cis[256];
+    cis_info_t ci;
+    char       id[128];
+    uint32_t   cfg = 0;
+    const int  n   = pccard_cis_accura56k(cis, &cfg);
+
+    check_card("Accura 56K", cis, n, &ci);
+    CHECK(ci.funcid == CISTPL_FUNCID_SERIAL, "Accura 56K: a serial port (serial_cs binds it)");
+    CHECK(ci.config_base == 0x200 && cfg == 0x200 && ci.rmask == 0x03, "Accura 56K: COR and CCSR at 200h (%X, %X)",
+          ci.config_base, cfg);
+    CHECK(ci.last_idx == 5 && ci.cft_has_last, "Accura 56K: five configurations (last %d)", ci.last_idx);
+    CHECK(ci.io_lines == 3 && ci.io_len == 8, "Accura 56K: the last, 8 ports anywhere on 3 lines (%d on %d)", ci.io_len,
+          ci.io_lines);
+    int cft = 0;
+    while ((cft < n) && (cis[cft] != CISTPL_CFTABLE_ENTRY))
+        cft += 2 + cis[cft + 1];
+    CHECK((cft < n) && (cis[cft + 2] == (0x80 | 0x41)) && (cis[cft + 9] == 0xf8) && (cis[cft + 10] == 0x03),
+          "Accura 56K: the first, the default, index 1 at COM1's 3F8h");
+    pccard_cis_win9x_id(cis, n, id, sizeof(id));
+    CHECK(!strcmp(id, "PCMCIA\\Hayes-Accura_56K_PC_CARD-EBBB"), "Accura 56K: Windows 9x ID %s (MDMHAY2.INF's)", id);
+}
+
 static void
 test_sram(void)
 {
@@ -502,6 +530,7 @@ main(void)
     test_te100();
     test_3c589d();
     test_apa1460();
+    test_accura56k();
     test_sram();
     test_flash();
     printf("%d checks, %d failures\n", checks, failures);

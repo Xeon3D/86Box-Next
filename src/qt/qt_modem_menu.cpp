@@ -2,15 +2,15 @@
  * 86Box-Next  A fork of 86Box with extra features.
  *
  *             The modem menu, behind the modem icon in the status bar.  For
- *             each COM port with a modem on it, and each PC Card with a modem
- *             of its own (the 3C562D) (char_modem.c): leave its telephone
+ *             each COM port with a modem on it, and each modem another device
+ *             carries (a PC Card's) (char_modem.c): leave its telephone
  *             line unplugged, have dialling reach a TCP/IP host, or plug it
  *             into the telephone network of isp-server: a number of its own,
  *             other modems' numbers, and the ISP -- the Internet -- on any
  *             other.  The
  *             change is made at once, without a reset -- a call in progress
  *             ends with NO CARRIER -- and kept in the modem's configuration
- *             (a PC Card's: the card's), where Settings shows it too.
+ *             (a carried modem's: its device's), where Settings shows it too.
  *
  *             On the telephone network a voice modem also has a phone beside
  *             it, which is the host's speaker and microphone: pick it up to
@@ -42,10 +42,9 @@ extern "C" {
 #include <86box/char.h>
 #include <86box/serial.h>
 #include <86box/char_modem.h>
-#include <86box/pcmcia.h>
 }
 
-/* "COM1", or "PC Card A" for a PC Card's own modem. */
+/* "COM1", or what a carried modem's device calls it ("PC Card A"). */
 static QString
 slotText(int slot)
 {
@@ -113,8 +112,10 @@ ModemMenu::ModemMenu(QWidget *parent)
     connect(m_menu, &QMenu::aboutToShow, this, &ModemMenu::buildMenu);
 }
 
-/* From the configuration rather than from the modems themselves: the status
-   bar is built before the machine's devices are, at start-up. */
+/* A COM port's modem from the configuration rather than from the modem
+   itself: the status bar is built before the machine's devices are, at
+   start-up.  A modem another device carries is there once that device has
+   made it; the status bar watches for it (MachineStatus::refreshIcons()). */
 bool
 ModemMenu::any()
 {
@@ -125,12 +126,15 @@ ModemMenu::any()
         if ((d == &char_modem_supra_com_device) || (d == &char_modem_elsa_com_device))
             return true;
     }
-    /* Or a PC Card with a modem of its own in a socket. */
-    if (pcmcia_enabled) {
-        for (int s = 0; s < PCMCIA_SOCKETS; s++) {
-            if (pcmcia_card_has_modem(pcmcia_card_type[s]))
-                return true;
-        }
+    return carried();
+}
+
+bool
+ModemMenu::carried()
+{
+    for (int i = SERIAL_MAX; i < char_modem_slots(); i++) {
+        if (char_modem_present(i))
+            return true;
     }
     return false;
 }
