@@ -80,3 +80,8 @@ CMakeLists.txt.user
 
 # 86Box-Next build counter (cmake/NextBuildNumber.cmake)
 /.build-number
+
+# 86Box-Next: the vendored 88emu sources (src/sound/emu88/gearmulator) are all
+# code -- upstream's RC* above (rc.exe's temporary files) would otherwise hide
+# rcc/, rc4.* and rcp* from git wherever core.ignorecase is on (Windows).
+!/src/sound/emu88/**
