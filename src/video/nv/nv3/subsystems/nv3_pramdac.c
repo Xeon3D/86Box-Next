@@ -169,12 +169,12 @@ void nv3_pramdac_set_pixel_clock(void)
     if (nv3->pramdac.pixel_clock_m == 0)
         nv3->pramdac.pixel_clock_m = 1;
     
-    if (nv3->pramdac.memory_clock_n == 0)
-        nv3->pramdac.memory_clock_n = 1;
+    if (nv3->pramdac.pixel_clock_n == 0)
+        nv3->pramdac.pixel_clock_n = 1;
 
     frequency = (frequency * nv3->pramdac.pixel_clock_n) / (nv3->pramdac.pixel_clock_m << nv3->pramdac.pixel_clock_p); 
 
-    nv3->nvbase.svga.clock = cpuclock / frequency;
+    nv3->nvbase.svga.clock = (cpuclock * (double) (1ULL << 32)) / frequency;
 
     double time = 1000000.0 / (double)frequency; // needs to be a double for 86box
 
@@ -360,11 +360,21 @@ void nv3_pramdac_write(uint32_t address, uint32_t value)
             break;
         /* cursor start location */
         case NV3_PRAMDAC_CURSOR_START: 
-            // only 12 bits are used here instead of 16 for some stupid reason
-            nv3->pramdac.cursor_start.y = (value >> 16) & 0xFFF;  
+        {
+            /* 12-bit signed coordinates: the cursor can hang off the top/left edge */
+            svga_t *svga = &nv3->nvbase.svga;
+
+            nv3->pramdac.cursor_start.y = (value >> 16) & 0xFFF;
             nv3->pramdac.cursor_start.x = (value) & 0xFFF;
-            nv3_draw_cursor(&nv3->nvbase.svga, 0);//drawline doesn't matter here
-            break; 
+            svga->hwcursor.x    = ((int32_t) (value & 0xFFF) ^ 0x800) - 0x800;
+            svga->hwcursor.y    = ((int32_t) ((value >> 16) & 0xFFF) ^ 0x800) - 0x800;
+            svga->hwcursor.xoff = (svga->hwcursor.x < 0) ? -svga->hwcursor.x : 0;
+            svga->hwcursor.yoff = (svga->hwcursor.y < 0) ? -svga->hwcursor.y : 0;
+            svga->hwcursor.addr = ((svga->crtc[NV3_CRTC_REGISTER_CURSOR_ADDR0] & 0x7F) << 16)
+                                | ((svga->crtc[NV3_CRTC_REGISTER_CURSOR_ADDR1] & 0xF8) << 8);
+            svga->hwcursor.addr += svga->hwcursor.yoff * NV3_PRAMDAC_CURSOR_SIZE_X * 2;
+            break;
+        }
     }
 }
 

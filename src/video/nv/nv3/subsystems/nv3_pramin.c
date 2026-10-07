@@ -101,8 +101,6 @@ void nv3_ramin_write8(uint32_t addr, uint8_t val, void* priv)
 
     uint32_t ramin_addr = (addr ^ nv3->nvbase.svga.vram_max - 0x10);
     nv3->nvbase.svga.vram[ramin_addr] = val;
-    
-    nv3->nvbase.svga.vram[addr] = val;
 
     nv_log_verbose_only("Write byte to PRAMIN addr=0x%08x val=0x%02x (raw address=0x%08x)\n", ramin_addr, val, addr);
 }
