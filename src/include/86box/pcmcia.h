@@ -61,6 +61,8 @@ extern void pcmcia_insert(int socket, const pccard_t *card);
    (pcmcia_slots_poll()), with the card-detect change the guest's socket
    services wait for. */
 extern void        pcmcia_request_card(int socket, int type);
+/* The card in the socket again, with the settings it has now: out, then in. */
+extern void        pcmcia_request_reinsert(int socket);
 extern int         pcmcia_slots_active(void);
 extern void        pcmcia_slots_poll(void);
 extern const char *pcmcia_socket_card_name(int socket);   /* NULL: an empty socket */

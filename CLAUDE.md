@@ -187,6 +187,15 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   88emu's assets; SVG faces pre-rendered to PNG -- the dynamic Qt has no Svg module), its
   controls and key bindings in the skin's 612 x 187 dp. Tests: `tests/soundcanvas/`
   (SoundCanvas.emu88; board tests need `BOX86NEXT_SC_ROMS`).
+- Soft settings changes (no PC reset, `Settings::accept()`'s soft path): a PC Card put in, taken
+  out, swapped or reconfigured (settings page hands it to `pcmcia_request_card()` /
+  `pcmcia_request_reinsert()`; only fitting/removing the controller is hard; `tests/pcmcia/slots_test.c`);
+  every COM/LPT port device and its options, unless a non-hotplug device (a serial mouse) holds
+  the port (the LPT sound devices are `DEVICE_HOTPLUG`: their
+  close unregisters handlers with `sound_remove_handler()`/`music_remove_handler()`, OPL2/3LPT
+  closes its OPL with `device_close_priv()`); MIDI out/in and the standalone MPU-401 on ISA
+  (`mpu401_standalone_hotplug()`; MCA stays hard). Port enable/disable and the ECP DMA jumper
+  stay hard (the UARTs/ports are made at the hard reset).
 - Upstream's CI workflows and Dependabot are disabled/removed in this repo; only
   `sync-upstream.yml` runs.
 - Build number in the title bar / About box: `.build-number` (git-ignored, repo root)

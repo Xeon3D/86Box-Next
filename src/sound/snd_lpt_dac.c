@@ -238,6 +238,9 @@ dac_close(void *priv)
 {
     lpt_dac_t *const lpt_dac = (lpt_dac_t *) priv;
 
+    /* 86Box-Next: closed without a hard reset too (hot-pluggable). */
+    sound_remove_handler(dac_get_buffer, lpt_dac);
+
     lpt_dac_log(lpt_dac->log, "Close\n");
     if (lpt_dac->log)
         log_close(lpt_dac->log);
@@ -269,7 +272,7 @@ static const device_config_t lpt_dac_config[] = {
 const device_t lpt_dac_device = {
     .name          = "LPT DAC / Covox Speech Thing",
     .internal_name = "lpt_dac",
-    .flags         = DEVICE_LPT | DEVICE_HOTPLUG_IN,
+    .flags         = DEVICE_LPT | DEVICE_HOTPLUG,
     .local         = DAC_TYPE_COVOX,
     .init          = dac_init,
     .close         = dac_close,
@@ -283,7 +286,7 @@ const device_t lpt_dac_device = {
 const device_t lpt_dac_stereo_device = {
     .name          = "Stereo LPT DAC",
     .internal_name = "lpt_dac_stereo",
-    .flags         = DEVICE_LPT | DEVICE_HOTPLUG_IN,
+    .flags         = DEVICE_LPT | DEVICE_HOTPLUG,
     .local         = DAC_TYPE_STEREO,
     .init          = dac_init,
     .close         = dac_close,
@@ -297,7 +300,7 @@ const device_t lpt_dac_stereo_device = {
 const device_t lpt_dac_ftl_device = {
     .name          = "FTL Sound Adapter",
     .internal_name = "lpt_dac_ftl",
-    .flags         = DEVICE_LPT | DEVICE_HOTPLUG_IN,
+    .flags         = DEVICE_LPT | DEVICE_HOTPLUG,
     .local         = DAC_TYPE_FTL,
     .init          = dac_init,
     .close         = dac_close,
@@ -311,7 +314,7 @@ const device_t lpt_dac_ftl_device = {
 const device_t lpt_dac_soundjr_device = {
     .name          = "SiliconSoft SoundJr",
     .internal_name = "lpt_dac_soundjr",
-    .flags         = DEVICE_LPT | DEVICE_HOTPLUG_IN,
+    .flags         = DEVICE_LPT | DEVICE_HOTPLUG,
     .local         = DAC_TYPE_SOUNDJR,
     .init          = dac_init,
     .close         = dac_close,

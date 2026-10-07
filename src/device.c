@@ -625,6 +625,35 @@ device_close_by_flags(uint32_t match_flags)
     }
 }
 
+/* 86Box-Next: whether the device whose init gave priv is still open, and
+   closing just that one -- for a hot-unpluggable device that added a helper
+   device (an OPL chip) and has to take it with it.  A hard reset closes the
+   helper first (it was added later), so its owner finds it gone. */
+int
+device_has_priv(const void *priv)
+{
+    for (int16_t c = 0; c < DEVICE_MAX; c++) {
+        if ((devices[c] != NULL) && (device_priv[c] == priv))
+            return 1;
+    }
+    return 0;
+}
+
+void
+device_close_priv(void *priv)
+{
+    for (int16_t c = (DEVICE_MAX - 1); c >= 0; c--) {
+        if ((devices[c] != NULL) && (device_priv[c] == priv)) {
+            if (devices[c]->close != NULL)
+                devices[c]->close(device_priv[c]);
+            devices[c]     = NULL;
+            device_priv[c] = NULL;
+            memset(&(device_state[c]), 0x00, sizeof(device_state_t));
+            return;
+        }
+    }
+}
+
 void
 device_reset_all(uint32_t match_flags)
 {

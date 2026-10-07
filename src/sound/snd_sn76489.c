@@ -120,7 +120,7 @@ sn76489_update(sn76489_t *const sn76489)
     }
 }
 
-static void
+void
 sn76489_get_buffer(int32_t *buffer, uint16_t len, void *priv)
 {
     sn76489_t *const sn76489 = (sn76489_t *) priv;

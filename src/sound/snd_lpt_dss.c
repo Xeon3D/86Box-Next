@@ -206,6 +206,10 @@ dss_close(void *priv)
 {
     dss_t *const dss = (dss_t *) priv;
 
+    /* 86Box-Next: closed without a hard reset too (hot-pluggable). */
+    sound_remove_handler(dss_get_buffer, dss);
+    timer_disable(&dss->timer);
+
     fifo8_destroy(&dss->dss_fifo);
     lpt_dss_log(dss->log, "Close\n");
     if (dss->log)
@@ -217,7 +221,7 @@ dss_close(void *priv)
 const device_t dss_device = {
     .name          = "Disney Sound Source",
     .internal_name = "dss",
-    .flags         = DEVICE_LPT | DEVICE_HOTPLUG_IN,
+    .flags         = DEVICE_LPT | DEVICE_HOTPLUG,
     .local         = 0,
     .init          = dss_init,
     .close         = dss_close,

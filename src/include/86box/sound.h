@@ -123,6 +123,14 @@ extern int sound_has_handler(void (*get_buffer)(int32_t *buffer,
                                                 uint16_t len, void *priv),
                              void *priv);
 
+/* 86Box-Next: unregister a handler, for a device closed without a hard reset. */
+extern void sound_remove_handler(void (*get_buffer)(int32_t *buffer,
+                                                    uint16_t len, void *priv),
+                                 void *priv);
+extern void music_remove_handler(void (*get_buffer)(int32_t *buffer,
+                                                    uint16_t len, void *priv),
+                                 void *priv);
+
 extern void sound_in_add_handler(void (*put_buffer)(int16_t *buffer,
                                                      int len, void *priv),
                                  void *priv);

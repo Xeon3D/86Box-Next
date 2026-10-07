@@ -216,8 +216,13 @@ SettingsSound::changed()
     }
 
     has_changed  |= (fm_driver                  != ui->comboBoxFM->currentData().toInt());
-    has_changed  |= (mpu401_standalone_enable   != (ui->checkBoxMPU401->isChecked() ? 1 : 0));
-    has_changed  |= mpu401_cfg_changed;
+
+    /* 86Box-Next: the standalone MPU-401 (the MIDI port) is fitted, removed
+       or reconfigured live, except on MCA (mpu401_standalone_hotplug()). */
+    if (mpu401_standalone_hotplug_ok())
+        soft_changed |= mpu401Changed();
+    else
+        has_changed |= mpu401Changed();
     has_changed  |= (sound_is_float             != (ui->checkBoxFloat32->isChecked() ? 1 : 0));
     has_changed  |= (sound_sample_rate           != ui->comboBoxSampleRate->currentData().toInt());
 
@@ -238,6 +243,14 @@ SettingsSound::changed()
 void
 SettingsSound::restore()
 {
+}
+
+/* The standalone MPU-401 fitted or removed, or its settings changed. */
+bool
+SettingsSound::mpu401Changed() const
+{
+    return (mpu401_standalone_enable != (ui->checkBoxMPU401->isChecked() ? 1 : 0)) ||
+           (ui->checkBoxMPU401->isChecked() && mpu401_cfg_changed);
 }
 
 int
@@ -281,6 +294,11 @@ SettingsSound::save(int soft)
             sound_reopen_output();  
         else if (inputMoved)
             sound_reopen_input();
+
+        if (mpu401Changed()) {
+            mpu401_standalone_enable = ui->checkBoxMPU401->isChecked() ? 1 : 0;
+            mpu401_standalone_hotplug();
+        }
         return;
     }
 

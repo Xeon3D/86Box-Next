@@ -169,8 +169,11 @@ cmslpt_close(void *priv)
     if (cms_lpt->log)
         log_close(cms_lpt->log);
 
-    if (cms_lpt->cms)
+    /* 86Box-Next: closed without a hard reset too (hot-pluggable). */
+    if (cms_lpt->cms) {
+        sound_remove_handler(cms_get_buffer, cms_lpt->cms);
         free(cms_lpt->cms);
+    }
 
     timer_disable(&cms_lpt->ready_timer);
     free(cms_lpt);
@@ -179,7 +182,7 @@ cmslpt_close(void *priv)
 const device_t lpt_cms_device = {
     .name          = "Creative Music System-on-LPT (CMSLPT)",
     .internal_name = "lpt_cms",
-    .flags         = DEVICE_LPT | DEVICE_HOTPLUG_IN,
+    .flags         = DEVICE_LPT | DEVICE_HOTPLUG,
     .local         = 0,
     .init          = cmslpt_init,
     .close         = cmslpt_close,

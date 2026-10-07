@@ -372,7 +372,7 @@ SettingsPorts::on_pushButtonConfigureLpt2_clicked()
     int   lptDevice = ui->comboBoxLpt2->currentData().toInt();
     auto *device    = char_get_device(lptDevice);
 
-    lpt_device_cfg_changed[1] = DeviceConfig::ConfigureDevice(device, 1);
+    lpt_device_cfg_changed[1] = DeviceConfig::ConfigureDevice(device, 2);
 }
 
 void
@@ -393,7 +393,7 @@ SettingsPorts::on_pushButtonConfigureLpt3_clicked()
     int   lptDevice = ui->comboBoxLpt3->currentData().toInt();
     auto *device    = char_get_device(lptDevice);
 
-    lpt_device_cfg_changed[2] = DeviceConfig::ConfigureDevice(device, 1);
+    lpt_device_cfg_changed[2] = DeviceConfig::ConfigureDevice(device, 3);
 }
 
 void
@@ -414,7 +414,7 @@ SettingsPorts::on_pushButtonConfigureLpt4_clicked()
     int   lptDevice = ui->comboBoxLpt4->currentData().toInt();
     auto *device    = char_get_device(lptDevice);
 
-    lpt_device_cfg_changed[3] = DeviceConfig::ConfigureDevice(device, 1);
+    lpt_device_cfg_changed[3] = DeviceConfig::ConfigureDevice(device, 4);
 }
 
 void

@@ -1732,6 +1732,25 @@ mpu401_device_add(void)
         device_add(&mpu401_device);
 }
 
+/* 86Box-Next: the standalone MPU-401 fitted, removed or reconfigured from
+   Settings without a hard reset.  ISA only: an MCA card's slot registration
+   (mca_add()) stays until the next hard reset, so that takes one. */
+int
+mpu401_standalone_hotplug_ok(void)
+{
+    return !machine_has_bus(machine, MACHINE_BUS_MCA);
+}
+
+void
+mpu401_standalone_hotplug(void)
+{
+    if (!mpu401_standalone_hotplug_ok())
+        return;
+
+    device_close(&mpu401_device);
+    mpu401_device_add();
+}
+
 static uint8_t
 mpu401_mca_read(const uint16_t port, void *priv)
 {
@@ -1813,6 +1832,20 @@ static void
 mpu401_standalone_close(void *priv)
 {
     mpu_t *mpu = (mpu_t *) priv;
+
+    /* 86Box-Next: also closed without a hard reset (Settings: the standalone
+       MPU-401 removed or reconfigured), so take out everything that would
+       call it -- harmless at a hard reset, which resets all of it anyway. */
+    MPU401_UpdateIRQ(mpu, 0);
+    if (mpu->addr)
+        io_removehandler(mpu->addr, 2,
+                         mpu401_read, NULL, NULL, mpu401_write, NULL, NULL, mpu);
+    io_removehandler(0x2A20, 16,
+                     NULL, NULL, NULL, imf_write, NULL, NULL, mpu);
+    timer_disable(&mpu->mpu401_event_callback);
+    timer_disable(&mpu->mpu401_eoi_callback);
+    timer_disable(&mpu->mpu401_reset_callback);
+    midi_in_handler(0, MPU401_InputMsg, MPU401_InputSysex, MPU401_InputQueueRemain, mpu);
 
     free(mpu);
 }
