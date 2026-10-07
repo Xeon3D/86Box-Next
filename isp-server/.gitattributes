@@ -1,0 +1,4 @@
+# Run as they are in Linux and Docker, from a Windows checkout too.
+*.sh text eol=lf
+Dockerfile text eol=lf
+Dockerfile.dockerignore text eol=lf
