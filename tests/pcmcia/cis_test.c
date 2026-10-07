@@ -46,10 +46,6 @@ typedef struct {
     int      io_lines, io_len; /* the I/O entry's */
     uint32_t dev_size;         /* DEVICE: common memory size */
     int      dev_type;
-    int      has_jedec;        /* JEDEC_C: the first device's */
-    uint8_t  jedec_mfr, jedec_info;
-    int      has_geo;          /* DEVICE_GEO: the first device's, in bytes */
-    uint32_t geo_bus, geo_erase, geo_part, geo_interleave;
     int      end;              /* where CISTPL_END is */
 } cis_info_t;
 
@@ -309,24 +305,6 @@ walk(const uint8_t *cis, int len, cis_info_t *ci)
             case CISTPL_CFTABLE_ENTRY:
                 ok = parse_cftable(p, q, ci);
                 break;
-            case CISTPL_JEDEC_C: /* parse_jedec: two bytes a device */
-                ok = (n >= 2) && !(n & 1);
-                ci->has_jedec  = 1;
-                ci->jedec_mfr  = p[0];
-                ci->jedec_info = p[1];
-                break;
-            case CISTPL_DEVICE_GEO: /* parse_device_geo: six bytes a device, each 2^(n-1) */
-                ok = (n >= 6);
-                for (int k = 0; ok && (k < 6); k++)
-                    ok = (p[k] >= 1) && (p[k] <= 32);
-                if (ok) {
-                    ci->has_geo        = 1;
-                    ci->geo_bus        = 1u << (p[0] - 1);
-                    ci->geo_erase      = 1u << (p[1] - 1);
-                    ci->geo_part       = 1u << (p[4] - 1);
-                    ci->geo_interleave = 1u << (p[5] - 1);
-                }
-                break;
             default:
                 break;
         }
@@ -446,55 +424,6 @@ test_apa1460(void)
     CHECK(!strcmp(id, "PCMCIA\\Adaptec__Inc.-APA-1460_SCSI_Host_Adapter-BE89"), "APA-1460: Windows 9x ID %s (SCSI.INF's)", id);
 }
 
-static void
-test_sram(void)
-{
-    for (uint32_t kb = 64; kb <= 4096; kb *= 2) {
-        uint8_t    cis[256];
-        cis_info_t ci;
-        char       name[32];
-        const int  n = pccard_cis_sram(cis, kb << 10);
-
-        snprintf(name, sizeof(name), "SRAM %u KB", kb);
-        check_card(name, cis, n, &ci);
-        CHECK(ci.dev_type == 6 && ci.dev_size == (kb << 10), "%s: DEVICE says SRAM of %u bytes (type %d, %u)", name, kb << 10,
-              ci.dev_type, ci.dev_size);
-        CHECK(ci.funcid == CISTPL_FUNCID_MEMORY, "%s: a memory card", name);
-        CHECK(!ci.has_config, "%s: no configuration registers", name);
-    }
-}
-
-/* The Intel Series 2 flash card: what TrueFFS, FFS2 and Windows 9x key on
-   is the JEDEC ID -- Windows names the card PCMCIA\MTD-<info><manufacturer>
-   (PCCARD.VXD prints the two bytes as a little-endian word), and
-   TRUEFFS.INF / MTD.INF list MTD-A289 for the 28F008SA. */
-static void
-test_flash(void)
-{
-    static const uint32_t mb[] = { 2, 4, 10, 20 };
-
-    for (int i = 0; i < 4; i++) {
-        uint8_t    cis[256];
-        cis_info_t ci;
-        char       name[32], id[32];
-        const int  n = pccard_cis_flash(cis, mb[i] << 20);
-
-        snprintf(name, sizeof(name), "flash %u MB", mb[i]);
-        check_card(name, cis, n, &ci);
-        CHECK(ci.dev_type == 5 && ci.dev_size == (mb[i] << 20), "%s: DEVICE says flash of %u bytes (type %d, %u)", name,
-              mb[i] << 20, ci.dev_type, ci.dev_size);
-        CHECK(ci.has_jedec && ci.jedec_mfr == 0x89 && ci.jedec_info == 0xa2, "%s: JEDEC 89 A2, Intel 28F008SA", name);
-        snprintf(id, sizeof(id), "PCMCIA\\MTD-%04X", ci.jedec_mfr | (ci.jedec_info << 8));
-        CHECK(!strcmp(id, "PCMCIA\\MTD-A289"), "%s: Windows 9x ID %s", name, id);
-        /* PCCARD.VXD's region block size: bus width x erase block x interleave. */
-        CHECK(ci.has_geo && ci.geo_bus == 2 && ci.geo_bus * ci.geo_erase * ci.geo_interleave == 128 << 10,
-              "%s: DEVICE_GEO: 16-bit, 128 KB erase blocks (%u x %u x %u)", name, ci.geo_bus, ci.geo_erase,
-              ci.geo_interleave);
-        CHECK(ci.funcid == CISTPL_FUNCID_MEMORY, "%s: a memory card", name);
-        CHECK(!ci.has_config, "%s: no configuration registers", name);
-    }
-}
-
 int
 main(void)
 {
@@ -502,8 +431,6 @@ main(void)
     test_te100();
     test_3c589d();
     test_apa1460();
-    test_sram();
-    test_flash();
     printf("%d checks, %d failures\n", checks, failures);
     return failures != 0;
 }

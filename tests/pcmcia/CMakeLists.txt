@@ -23,18 +23,6 @@ if(BUILD_TESTING)
     )
     add_test(NAME Pcmcia.cis COMMAND pcmcia_cis_tests)
 
-    # The flash card under TrueFFS's Intel MTD.
-    add_executable(pcmcia_flash_tests
-        flash_test.c
-        ../../src/pcmcia/flash_card.c
-        ../../src/pcmcia/pccard_cis.c
-    )
-    target_include_directories(pcmcia_flash_tests PRIVATE
-        ${PROJECT_SOURCE_DIR}/src/include
-        ${PROJECT_BINARY_DIR}/src/include
-    )
-    add_test(NAME Pcmcia.flash COMMAND pcmcia_flash_tests)
-
     # Multi-function cards: the MFC CIS walked by cistpl.c's rules, the
     # functions' configuration registers, I/O routing and the shared IREQ.
     add_executable(pcmcia_mfc_tests

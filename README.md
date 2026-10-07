@@ -50,8 +50,6 @@ Extra features
   * 3Com 3C589D Ethernet;
   * TRENDnet TE100-PC16 Fast Ethernet;
   * 3Com 3C562D LAN + 33.6 modem (a multi-function card);
-  * SRAM memory card;
-  * Intel Series 2 flash card (works with TrueFFS);
   * Adaptec APA-1460 SlimSCSI.
 
 ### USB
