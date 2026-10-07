@@ -18,6 +18,7 @@
 add_library(mch OBJECT
     machine.c
     machine_table.c
+    machine_bios_vendor.c
     m_xt.c
     m_xt_t1000.c
     m_xt_jukost.c

@@ -304,6 +304,17 @@ SettingsMachine::on_comboBoxMachine_currentIndexChanged(int index)
         const auto *device    = machine_get_device(machineId);
         ui->pushButtonConfigure->setEnabled((device != nullptr) && (device->config != nullptr));
 
+        QStringList biosVendors;
+        for (int i = 0; const char *vendor = machine_get_bios_vendor(machineId, i); ++i)
+            biosVendors << QString::fromUtf8(vendor);
+        if (biosVendors.isEmpty())
+            ui->labelBiosVendor->setText(tr("Unknown"));
+        else if (biosVendors.size() == 1)
+            ui->labelBiosVendor->setText(biosVendors.first());
+        else
+            ui->labelBiosVendor->setText(tr("%1 (default); %2 selectable in Configure")
+                                             .arg(biosVendors.first(), biosVendors.mid(1).join(", ")));
+
         auto *modelCpu   = ui->comboBoxCPU->model();
         int   removeRows = modelCpu->rowCount();
 

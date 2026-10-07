@@ -444,6 +444,7 @@ extern const device_t *machine_get_ide_device(int m);
 extern const device_t *machine_get_scsi_device(int m);
 #endif
 extern const char *    machine_get_internal_name_ex(int m);
+extern const char *    machine_get_bios_vendor(int m, int idx);
 extern const char *    machine_get_nvr_name_ex(int m);
 extern int             machine_get_nvrmask(int m);
 extern int             machine_has_flags(int m, uintptr_t flags);
