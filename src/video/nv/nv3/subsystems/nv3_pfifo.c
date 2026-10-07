@@ -291,7 +291,7 @@ void nv3_pfifo_trigger_dma_if_required(void)
         // format seems to be the same as notifications
         if (!(tlb_pt_entry & NV3_PFIFO_CACHE1_DMA_TLB_PTE_IS_PRESENT))
         {
-            warning("NV3: Tried to DMA to a non-existent page! Big Problem!");
+            nv_warning("NV3: Tried to DMA to a non-existent page! Big Problem!");
             return; 
         }
 

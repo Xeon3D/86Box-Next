@@ -86,7 +86,7 @@ void nv3_class_00d_method(uint32_t param, uint32_t method_id, nv3_ramin_context_
             nv3->pgraph.notify_pending = true; 
             break;                            
         default:
-            warning("%s: Invalid or unimplemented method 0x%04x\n", nv3_class_names[context.class_id & 0x1F], method_id);
+            nv_warning("%s: Invalid or unimplemented method 0x%04x\n", nv3_class_names[context.class_id & 0x1F], method_id);
             nv3_pgraph_interrupt_invalid(NV3_PGRAPH_INTR_1_SOFTWARE_METHOD_PENDING);
             break;;
     }

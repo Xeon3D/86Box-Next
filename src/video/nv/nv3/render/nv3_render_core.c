@@ -101,10 +101,10 @@ nv3_color_expanded_t nv3_render_expand_color(uint32_t color, nv3_grobj_t grobj)
             color_final.r = color_final.g = color_final.b = (color & 0xFFFF) * 4; // convert to rgb10
             break;
         case nv3_pgraph_pixel_format_y420:
-            warning("nv3_render_expand_color: YUV420 not implemented\n");
+            nv_warning("nv3_render_expand_color: YUV420 not implemented\n");
             break;
         default:
-            warning("nv3_render_expand_color unknown format %d", format);
+            nv_warning("nv3_render_expand_color unknown format %d", format);
             break;
         
     }
@@ -160,7 +160,7 @@ uint32_t nv3_render_downconvert_color(nv3_grobj_t grobj, nv3_color_expanded_t co
             nv_log("nv3_render_downconvert_color: YUV420 not implemented\n");
             break; 
         default:
-            warning("nv3_render_downconvert_color unknown format %d", format);
+            nv_warning("nv3_render_downconvert_color unknown format %d", format);
             break;
 
     }

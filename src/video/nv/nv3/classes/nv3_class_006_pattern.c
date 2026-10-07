@@ -42,7 +42,7 @@ void nv3_class_006_method(uint32_t param, uint32_t method_id, nv3_ramin_context_
 
             if (param > NV3_PATTERN_SHAPE_LAST_VALID)
             {
-                warning("NV3 class 0x06 (Pattern) invalid shape %d (This is a bug)", param);
+                nv_warning("NV3 class 0x06 (Pattern) invalid shape %d (This is a bug)", param);
                 nv3_pgraph_interrupt_invalid(NV3_PGRAPH_INTR_1_INVALID_DATA);
                 return; 
             }
@@ -74,7 +74,7 @@ void nv3_class_006_method(uint32_t param, uint32_t method_id, nv3_ramin_context_
             nv3->pgraph.pattern_bitmap |= param;
             break;
         default:
-            warning("%s: Invalid or unimplemented method 0x%04x\n", nv3_class_names[context.class_id & 0x1F], method_id);
+            nv_warning("%s: Invalid or unimplemented method 0x%04x\n", nv3_class_names[context.class_id & 0x1F], method_id);
             nv3_pgraph_interrupt_invalid(NV3_PGRAPH_INTR_1_SOFTWARE_METHOD_PENDING);
             break;
     }

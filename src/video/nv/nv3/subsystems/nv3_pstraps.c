@@ -70,7 +70,7 @@ void nv3_pstraps_write(uint32_t address, uint32_t val)
     /* For some reason, all RIVA 128 ZX VBIOSes try to write to the straps. So only indicate this as a problem and return on Rev A/B */
     if (nv3->nvbase.gpu_revision != NV3_PCI_CFG_REVISION_C00)
     {
-        warning("Huh? Tried to write to the straps (val=%d). Something is wrong...\n", nv3->straps);
+        nv_warning("Huh? Tried to write to the straps (val=%d). Something is wrong...\n", nv3->straps);
         return;
     }
     else

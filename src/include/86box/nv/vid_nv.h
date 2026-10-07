@@ -41,6 +41,7 @@
 
 void nv_log_set_device(void* device);
 void nv_log(const char *fmt, ...);
+void nv_warning(const char *fmt, ...) __attribute__((format(printf, 1, 2)));               // Logged once per distinct message, never a message box
 
 // Verbose logging level.
 void nv_log_verbose_only(const char *fmt, ...);

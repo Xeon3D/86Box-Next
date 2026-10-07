@@ -188,7 +188,7 @@ void nv3_pmc_write(uint32_t address, uint32_t value)
             // This can only be done by software interrupts...
             if (!(nv3->pmc.intr & 0x7FFFFFFF))
             {
-                warning("Huh? This is a hardware interrupt...Please use the INTR_EN registers of the GPU subsystem you want to trigger "
+                nv_warning("Huh? This is a hardware interrupt...Please use the INTR_EN registers of the GPU subsystem you want to trigger "
                 " an interrupt on, rather than writing to NV3_PMC_INTR (Or this is a bug)...NV3_PMC_INTR=0x%08x)\n", nv3->pmc.intr_en);
                 return; 
             }

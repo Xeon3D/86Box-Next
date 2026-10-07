@@ -21,6 +21,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 #include <86box/86box.h>
 #ifndef RELEASE_BUILD
 #include <86box/device.h>
@@ -108,3 +109,34 @@ void nv_log_set_device(void* device)
 
 }
 #endif*/
+
+/* Something the driver did that we do not handle yet (an unimplemented method,
+   an odd format...). warning() would open a message box every time, and a
+   driver repeats these constantly, so each distinct message goes to the log
+   once instead. */
+#define NV_WARNING_SEEN_MAX 256
+static uint32_t nv_warning_seen[NV_WARNING_SEEN_MAX];
+static int      nv_warning_seen_count;
+
+void nv_warning(const char *fmt, ...)
+{
+    char     buf[512];
+    va_list  arg;
+    uint32_t hash = 2166136261u;
+
+    va_start(arg, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, arg);
+    va_end(arg);
+
+    for (const char *p = buf; *p; p++)
+        hash = (hash ^ (uint8_t) *p) * 16777619u;
+
+    for (int i = 0; i < nv_warning_seen_count; i++) {
+        if (nv_warning_seen[i] == hash)
+            return;
+    }
+    if (nv_warning_seen_count < NV_WARNING_SEEN_MAX)
+        nv_warning_seen[nv_warning_seen_count++] = hash;
+
+    always_log("NV: %s%s", buf, (buf[0] && buf[strlen(buf) - 1] == '\n') ? "" : "\n");
+}
