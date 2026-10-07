@@ -137,9 +137,13 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   plays the ring/ringback/busy tones itself. The microphone needs a secure context (127.0.0.1,
   localhost, or HTTPS through a proxy). `isp_srv` links `src/char/modem_voice.c` for it. Test:
   `isp-server/tests/web_phone_test.c` (Isp.web_phone: the test is the browser and a modem).
-- isp-server (`isp-server/` at the repo root, its own exe and its own tests in
-  `isp-server/tests/`; the emulator does not link it -- it only borrows `src/char/modem_voice.c`
-  and `src/include`): the virtual ISP and telephone exchange modems reach over the network.
+- isp-server (`isp-server/`, a **git submodule**: its own repository, `Xeon3D/ISP-Server`, public,
+  with the history from src/network/isp on; its own exe and tests in `isp-server/tests/`; the
+  emulator does not link it): the virtual ISP and telephone exchange modems reach over the network.
+  Work on it in `isp-server/` as in any clone of that repo -- commit and push there first, then
+  commit the new submodule pointer here. Fresh clones need `git submodule update --init`. It
+  carries its own copies of `modem_voice.c` (`voice/`) and `modem_voice.h` (`include/86box/`):
+  keep them in step with `src/char/modem_voice.c` and its header.
   `isp_srv.c` is the server (listeners, exchange, .ini; start/stop for in-process tests),
   `isp_server.c` only its command line, `isp_ui.h` its face: on Windows (`isp_ui_win.c`, a WIN32
   GUI exe, icon/manifest in `isp-server.rc`) a log window instead of a console -- minimizing hides
@@ -191,10 +195,10 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   SameSite=Strict HttpOnly cookie token (sha256 kept), 12 h idle / 7 days max, 5 wrong in a minute
   locks logins for 30 s. Changes need `X-ISP-Request` (CSRF). Settings, forwards, accounts
   (plain passwords, pct-encoded: CHAP needs them) and users persist in `isp-server.ini` next to
-  the exe (`--config`; `isp_config.c` has the words). `isp-server/` also builds on its own (Linux,
-  macOS, the container: `cmake -S isp-server`), `isp-server/Dockerfile` (build from the repo root:
-  Alpine, libslirp built static, tests run, a static musl `--target linux-binary` too; image
-  `xeon3d/86box-next-isp`, amd64+arm64), `.github/workflows/isp-server.yml` (manual: macOS
+  the exe (`--config`; `isp_config.c` has the words). The ISP-Server repo builds on its own
+  (`cmake -S .`; Linux, macOS, Windows/MSYS2), its `Dockerfile` (context: its root; Alpine,
+  libslirp built static, tests run, a static musl `--target linux-binary` too; image
+  `xeon3d/86box-next-isp`, amd64+arm64) and its `.github/workflows/build.yml` (manual: macOS
   arm64/x86_64 with dylibbundler, Linux static amd64/arm64, optional release upload). WSL's Ubuntu
   has docker, pppd and the build deps; root via `wsl -u root`. Tests: `isp-server/tests/` (framing,
   PPP automaton, sessions and controls through libslirp to host sockets, every auth method end to
