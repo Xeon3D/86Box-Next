@@ -29,7 +29,7 @@
  *          host configured, dialling any number opens a TCP connection to it
  *          and the modem becomes a transparent pipe -- what a guest PPP
  *          stack wants.  86Box-Next: or the line is the telephone network
- *          of isp-server (src/network/isp/): the modem has a number, other
+ *          of isp-server (isp-server/): the modem has a number, other
  *          modems can ring it (RING, caller ID, ATA or S0), it can ring
  *          them, and any other number reaches the ISP -- PPP and the host's
  *          Internet.  A call takes as long as a real one: dial tone, the

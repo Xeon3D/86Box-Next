@@ -1,0 +1,15 @@
+/*
+ * 86Box-Next  A fork of 86Box with extra features.
+ *
+ *             isp-server's resources: its icon (the window and the
+ *             notification area; isp_ui_win.c loads it as 1) and its
+ *             manifest (visual styles, per-monitor DPI).
+ *
+ *             Released under the GNU General Public License version 2 or
+ *             later.  See COPYING for more information.
+ */
+#include <windows.h>
+
+1 ICON "isp-server.ico"
+
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "isp-server.manifest"

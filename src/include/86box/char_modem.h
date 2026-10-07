@@ -33,7 +33,7 @@ enum {
                                   emulator; this still reaches the ISP.)       */
 };
 
-/* Where isp-server (src/network/isp/) listens by default: its exchange, and
+/* Where isp-server (isp-server/) listens by default: its exchange, and
    the plain TCP line to its ISP ("Dial the ISP"). */
 #define CHAR_MODEM_ISP_HOST "127.0.0.1"
 #define CHAR_MODEM_ISP_PORT 2323

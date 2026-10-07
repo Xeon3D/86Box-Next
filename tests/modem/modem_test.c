@@ -15,7 +15,7 @@
  *
  * 86Box-Next: the line's bytes, exactly -- short sends, would-block, a full
  * receive ring, CTS, EOF and errors, DTR, +++ and ATH, two modems at once --
- * and calls to isp-server -- its core, src/network/isp/, with libslirp, behind
+ * and calls to isp-server -- its core, isp-server/, with libslirp, behind
  * the fake sockets -- by a scripted PPP client talking through the modem as a
  * guest's UART would, routed to a UDP socket on the host's loopback and from
  * one guest to the other.

@@ -8,7 +8,6 @@ add_subdirectory(mem)
 add_subdirectory(usb)
 add_subdirectory(pcmcia)
 add_subdirectory(modem)
-add_subdirectory(isp)
 add_subdirectory(network)
 add_subdirectory(soundcanvas)
 

@@ -123,7 +123,7 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   V.253 answers OK where Rockwell says VCON, and reports silence as `q` after a voice, `s` before.
   The voice tests' guests must keep real time: `timeBeginPeriod(1)` (Windows' 15.6 ms Sleep starves
   mu-law at 8 KB/s).
-- The status page's phone (`src/network/isp/isp_phone.c`, the "Phone" section): `/api/phone` is a
+- The status page's phone (`isp-server/isp_phone.c`, the "Phone" section): `/api/phone` is a
   WebSocket (Host and Origin must be the page's own; SHA-1/base64 handshake in-file) that
   `http_serve()` hands over; each is a thread registering on the exchange over loopback as any
   modem (asks for 555-0100, label "Status page (browser)"), dialling/answering as VOICE, relaying
@@ -131,10 +131,17 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   in an AudioWorklet (the page's audio runs at the browser's rate: Firefox will not mix rates) and
   plays the ring/ringback/busy tones itself. The microphone needs the page as 127.0.0.1/localhost
   (a secure context). `isp_srv` links `src/char/modem_voice.c` for it. Test:
-  `tests/isp/web_phone_test.c` (Isp.web_phone: the test is the browser and a modem).
-- isp-server (`src/network/isp/`, its own exe; the emulator does not link it): the virtual ISP
-  and telephone exchange modems reach over the network. `isp_srv.c` is the server (listeners,
-  exchange, .ini; start/stop for in-process tests), `isp_server.c` only its command line. A
+  `isp-server/tests/web_phone_test.c` (Isp.web_phone: the test is the browser and a modem).
+- isp-server (`isp-server/` at the repo root, its own exe and its own tests in
+  `isp-server/tests/`; the emulator does not link it -- it only borrows `src/char/modem_voice.c`
+  and `src/include`): the virtual ISP and telephone exchange modems reach over the network.
+  `isp_srv.c` is the server (listeners, exchange, .ini; start/stop for in-process tests),
+  `isp_server.c` only its command line, `isp_ui.h` its face: on Windows (`isp_ui_win.c`, a WIN32
+  GUI exe, icon/manifest in `isp-server.rc`) a log window instead of a console -- minimizing hides
+  it to a notification-area icon (click: the log; right-click: status page / Exit), closing it or
+  WM_CLOSE (plain `taskkill`) stops the server cleanly, `--minimized` (or a "Run: Minimized"
+  shortcut) starts in the tray, usage/errors go to the parent console or a message box, and with
+  stdout redirected to a file the log goes there too; elsewhere (`isp_ui_term.c`) the terminal. A
   connection opening with `86BOX-EXCHANGE 1 ` is the exchange's (REGISTER / DIAL / ANSWER, see
   `isp_srv.h`): numbers from 555-0101 (the one asked for if free), a dial rings the line whose
   number it is or ends with (prefixes), RINGING/CONNECT/BUSY/NOANSWER/UNKNOWN, the answer's
@@ -150,11 +157,11 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   (guest LAN, `isp.c` routes between sessions). Each session has its own thread; other threads only
   copy bytes or snapshots under its lock (global lock before session lock). Its GUI is a web page
   on 127.0.0.1:2324 (`isp_web.c`, `isp_web_page.html` embedded by `embed.cmake`), opened at start
-  (`--no-open` to skip -- always use it when testing): calls, the exchange's phone book and
+  (`--no-open` to skip -- always use it when testing, with `--minimized`, so no window takes focus): calls, the exchange's phone book and
   modem-to-modem calls (hang-up), the exchange's settings, hang-up, per-call-number port
   forwards (libslirp hostfwd), settings (guest LAN, modem-speed throttle, PAP, keepalive, range);
   Host-header check and an `X-ISP-Request` header on changes against rebinding/CSRF. Settings and
-  forwards persist in `isp-server.ini` next to the exe (`--config`). Tests: `tests/isp/` (framing,
+  forwards persist in `isp-server.ini` next to the exe (`--config`). Tests: `isp-server/tests/` (framing,
   PPP automaton, sessions and controls through libslirp to host sockets; `isp_web_test.c` the
   page's API; `isp_probe` drives a running isp-server, `--internet NAME` adds DNS + HTTP, `--hold
   SECS` keeps a call up; `exchange_test.c` the exchange in-process with sockets as modems),

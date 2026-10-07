@@ -26,7 +26,8 @@ Extra features
   * guests on it can reach each other;
   * port forwarding;
   * an optional modem-speed throttle;
-  * a status page in the browser, where you can hang up calls and change settings.
+  * a status page in the browser, where you can hang up calls and change settings;
+  * on Windows, a log window that minimizes to the notification area (no console window).
 * **Telephone numbers:** every VM's modem gets a number on isp-server's exchange, and VMs can call each other.
   * A call rings the other modem, with caller ID; ATA or auto-answer picks it up, and the two modems connect byte for byte.
   * BUSY and NO ANSWER work as on a real line.

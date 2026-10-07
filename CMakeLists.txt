@@ -281,3 +281,7 @@ endif()
 set(CMAKE_TOP_LEVEL_PROCESSED TRUE)
 
 add_subdirectory(src)
+
+# 86Box-Next: isp-server, the virtual ISP and telephone exchange the modems
+# dial -- a program of its own, which 86Box does not link.
+add_subdirectory(isp-server)

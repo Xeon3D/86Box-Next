@@ -44,7 +44,7 @@ STAGE=build-static/release-stage
 rm -rf "$STAGE"
 mkdir -p "$STAGE/$NAME"
 "$UCRT/bin/strip" -o "$STAGE/$NAME/86Box-Next.exe" build-static/src/86Box-Next.exe
-"$UCRT/bin/strip" -o "$STAGE/$NAME/isp-server.exe" build-static/src/network/isp/isp-server.exe
+"$UCRT/bin/strip" -o "$STAGE/$NAME/isp-server.exe" build-static/isp-server/isp-server.exe
 cp COPYING "$STAGE/$NAME/"
 mkdir -p "$ARCHIVE"
 ZIPWIN=$(cygpath -w "$(cd "$ARCHIVE" && pwd)")\\$NAME-win64.zip

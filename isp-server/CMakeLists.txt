@@ -1,9 +1,15 @@
 #
 # 86Box-Next: isp-server, the virtual ISP -- a PPP server and a libslirp NAT
-# per call, with a status and control page in the browser.  A program of its
-# own: the emulator's modems reach it over their TCP line and are not linked
-# with any of this.  The `isp` library (the core) and `isp_web` (the page)
-# depend on nothing of the emulator's, so the tests link them on their own.
+# per call, with a status and control page in the browser -- and the
+# telephone exchange.  A program of its own, kept out of src/: the emulator's
+# modems reach it over their TCP line and are not linked with any of this.
+# The `isp` library (the core) and `isp_web` (the page) depend on nothing of
+# the emulator's, so the tests link them on their own; the exchange borrows
+# the modems' voice frames (src/char/modem_voice.c).
+#
+# On Windows it is a window, not a console: a log that minimizes to the
+# notification area (isp_ui_win.c).  Elsewhere it logs to the terminal
+# (isp_ui_term.c).
 #
 # libslirp by plain link flags rather than the PkgConfig::SLIRP imported
 # target, which is only visible below src/network, not to tests/.
@@ -73,15 +79,22 @@ add_library(isp_srv OBJECT isp_srv.c isp_phone.c ${PROJECT_SOURCE_DIR}/src/char/
 target_include_directories(isp_srv PRIVATE ${PROJECT_SOURCE_DIR}/src/include)
 target_link_libraries(isp_srv PUBLIC isp_web isp)
 
-add_executable(isp-server isp_server.c)
-target_link_libraries(isp-server PRIVATE isp_srv isp_web isp)
 if(WIN32)
+    enable_language(RC)
+    add_executable(isp-server WIN32 isp_server.c isp_ui_win.c isp-server.rc)
     target_link_libraries(isp-server PRIVATE shell32)
+    if(MSVC)
+        # main(), not WinMain(), in a window program.
+        target_link_options(isp-server PRIVATE "/ENTRY:mainCRTStartup")
+    endif()
+else()
+    add_executable(isp-server isp_server.c isp_ui_term.c)
 endif()
-if(MINGW)
-    # A console program, whatever the emulator's own link flags say.
-    target_link_options(isp-server PRIVATE "-mconsole")
-endif()
+target_link_libraries(isp-server PRIVATE isp_srv isp_web isp)
 if(STATIC_BUILD AND UNIX)
     target_link_options(isp-server PRIVATE "-static")
+endif()
+
+if(BUILD_TESTING)
+    add_subdirectory(tests)
 endif()

@@ -1,5 +1,5 @@
 /*
- * 86Box-Next: isp-server's telephone exchange (src/network/isp/isp_srv.c),
+ * 86Box-Next: isp-server's telephone exchange (isp-server/isp_srv.c),
  * the real server started in-process on ports of its own, and modems played
  * by sockets speaking its protocol.  No test framework; non-zero on failure.
  *

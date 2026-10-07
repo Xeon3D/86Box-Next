@@ -1,4 +1,4 @@
-# 86Box-Next: the virtual ISP (src/network/isp/) -- framing, the PPP
+# 86Box-Next: the virtual ISP (isp-server/) -- framing, the PPP
 # automaton, and whole sessions through libslirp to the host's loopback.
 # No test framework; non-zero on failure.  Offline.
 if(BUILD_TESTING)

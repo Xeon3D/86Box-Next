@@ -209,7 +209,7 @@ ModemMenu::buildMenu()
             emit changed();
         });
 
-        /* isp-server's telephone network (src/network/isp/): a number of the
+        /* isp-server's telephone network (isp-server/): a number of the
            modem's own, other modems' numbers, and the ISP on any other.  It
            has to be running; the modem keeps trying until it is. */
         QAction *phone = sub->addAction(tr("Telephone network (isp-server)"));

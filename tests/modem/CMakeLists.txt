@@ -1,18 +1,18 @@
 # 86Box-Next: the COM port modems' AT engine, identification and line, against
 # stubbed sockets, clock and speaker -- and calls through the modem to
-# isp-server's core (src/network/isp), behind the stubbed sockets.  No test
+# isp-server's core (isp-server/), behind the stubbed sockets.  No test
 # framework; non-zero on failure.
 if(BUILD_TESTING)
     add_executable(modem_tests
         modem_test.c
-        ../isp/ppp_client.c
+        ../../isp-server/tests/ppp_client.c
         ../../src/char/char_modem.c
         ../../src/char/modem_voice.c
     )
     target_include_directories(modem_tests PRIVATE
         ${PROJECT_SOURCE_DIR}/src/include
         ${PROJECT_BINARY_DIR}/src/include
-        ${PROJECT_SOURCE_DIR}/tests/isp
+        ${PROJECT_SOURCE_DIR}/isp-server/tests
     )
     target_link_libraries(modem_tests PRIVATE isp)
     if(WIN32)
@@ -29,14 +29,14 @@ if(BUILD_TESTING)
     endif()
     add_executable(phone_tests
         phone_test.c
-        ../isp/ppp_client.c
+        ../../isp-server/tests/ppp_client.c
         ../../src/char/char_modem.c
         ${PHONE_NETSOCKET}
     )
     target_include_directories(phone_tests PRIVATE
         ${PROJECT_SOURCE_DIR}/src/include
         ${PROJECT_BINARY_DIR}/src/include
-        ${PROJECT_SOURCE_DIR}/tests/isp
+        ${PROJECT_SOURCE_DIR}/isp-server/tests
     )
     # (modem_voice.c comes with isp_srv, whose page phone speaks it too)
     target_link_libraries(phone_tests PRIVATE isp_srv isp_web isp)
@@ -49,15 +49,15 @@ if(BUILD_TESTING)
     # real exchange, and the handset.
     add_executable(voice_tests
         voice_test.c
-        ../isp/ppp_client.c
+        ../../isp-server/tests/ppp_client.c
         ../../src/char/char_modem.c
         ${PHONE_NETSOCKET}
     )
     target_include_directories(voice_tests PRIVATE
         ${PROJECT_SOURCE_DIR}/src/include
         ${PROJECT_BINARY_DIR}/src/include
-        ${PROJECT_SOURCE_DIR}/tests/isp
-        ${PROJECT_SOURCE_DIR}/src/network/isp
+        ${PROJECT_SOURCE_DIR}/isp-server/tests
+        ${PROJECT_SOURCE_DIR}/isp-server
     )
     target_link_libraries(voice_tests PRIVATE isp_srv isp_web isp)
     if(WIN32)

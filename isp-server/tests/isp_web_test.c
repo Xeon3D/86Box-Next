@@ -1,5 +1,5 @@
 /*
- * 86Box-Next: isp-server's status page (src/network/isp/isp_web.c), its
+ * 86Box-Next: isp-server's status page (isp-server/isp_web.c), its
  * requests handled directly, with the ISP core underneath.  No test
  * framework; non-zero on failure.
  *

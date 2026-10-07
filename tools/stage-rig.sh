@@ -97,7 +97,7 @@ done
 
 # isp-server (the virtual ISP and telephone exchange the rigs' modems dial)
 # sits in Latest itself, shared by every rig.
-ISP="$BUILD/src/network/isp/isp-server.exe"
+ISP="$BUILD/isp-server/isp-server.exe"
 if [ -f "$ISP" ]; then
     if tasklist //FI "IMAGENAME eq isp-server.exe" 2>/dev/null | grep -qi "isp-server.exe"; then
         echo "isp-server is running; not replaced (close it and stage again)" >&2

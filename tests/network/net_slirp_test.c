@@ -1,7 +1,7 @@
 /*
  * 86Box-Next: the SLiRP network driver (src/network/net_slirp.c), the real
  * one, behind a network card made of stubs.  The guest is the virtual ISP
- * tests' scripted client (tests/isp/ppp_client.c) through an adapter that
+ * tests' scripted client (isp-server/tests/ppp_client.c) through an adapter that
  * turns its IPv4 packets into Ethernet frames on the card's transmit queue,
  * turns frames from SLiRP back into packets, and answers SLiRP's ARP for the
  * guest.  No test framework; non-zero on failure.

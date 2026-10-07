@@ -7,7 +7,7 @@ if(BUILD_TESTING)
 
     add_executable(net_slirp_tests
         net_slirp_test.c
-        ../isp/ppp_client.c
+        ../../isp-server/tests/ppp_client.c
         ../../src/network/net_slirp.c
         ../../src/network/net_event.c
     )
@@ -15,7 +15,7 @@ if(BUILD_TESTING)
         ${PROJECT_SOURCE_DIR}/src/include
         ${PROJECT_BINARY_DIR}/src/include
         ${PROJECT_SOURCE_DIR}/src/cpu
-        ${PROJECT_SOURCE_DIR}/tests/isp
+        ${PROJECT_SOURCE_DIR}/isp-server/tests
         ${NET_SLIRP_TEST_INCLUDE_DIRS}
     )
     if(STATIC_BUILD)
