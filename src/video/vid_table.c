@@ -185,6 +185,7 @@ video_cards[] = {
     { .device = &millennium_ii_device,                          .flags = VIDEO_FLAG_TYPE_SECONDARY },
     { .device = &mystique_device,                               .flags = VIDEO_FLAG_TYPE_SECONDARY },
     { .device = &mystique_220_device,                           .flags = VIDEO_FLAG_TYPE_SECONDARY },
+    { .device = &nv3_device_pci,                                .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &s3_86c928_pci_device,                          .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &s3_trio32_pci_device,                          .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &s3_trio3d2x_pci_device,                        .flags = VIDEO_FLAG_TYPE_NONE      },
