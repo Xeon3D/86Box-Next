@@ -759,17 +759,15 @@ phone_thread(void *arg)
 /* ------------------------------------------------------------- the API */
 
 int
-isp_phone_accept(uintptr_t sock, const char *head, int http_port, int exchange_port)
+isp_phone_accept(uintptr_t sock, const char *head, int allowed, int exchange_port)
 {
     const SOCKET s = (SOCKET) sock;
     char         method[8] = "", path[64] = "";
-    char         host[128], origin[160], upgrade[32], key[64], version[8];
-    char         want[3][48];
+    char         upgrade[32], key[64], version[8];
     char         reply[256];
     uint8_t      digest[20];
     char         accept[32];
     char         keyguid[128];
-    int          ok = 0;
     phone_t     *ph = NULL;
 
     if ((sscanf(head, "%7s %63s", method, path) != 2) || strcmp(method, "GET"))
@@ -778,24 +776,10 @@ isp_phone_accept(uintptr_t sock, const char *head, int http_port, int exchange_p
     if (strcmp(path, "/api/phone"))
         return 0;
     header(head, "Upgrade", upgrade, sizeof(upgrade));
-    header(head, "Host", host, sizeof(host));
-    header(head, "Origin", origin, sizeof(origin));
     header(head, "Sec-WebSocket-Key", key, sizeof(key));
     header(head, "Sec-WebSocket-Version", version, sizeof(version));
 
-    /* The page's own Host, and the page's own Origin: not another site's. */
-    snprintf(want[0], sizeof(want[0]), "127.0.0.1:%d", http_port);
-    snprintf(want[1], sizeof(want[1]), "localhost:%d", http_port);
-    snprintf(want[2], sizeof(want[2]), "[::1]:%d", http_port);
-    for (int i = 0; i < 3; i++)
-        ok |= !strcmp(host, want[i]);
-    if (ok) {
-        char page[160];
-
-        snprintf(page, sizeof(page), "http://%s", host);
-        ok = !strcmp(origin, page);
-    }
-    if (!ok || strncasecmp(upgrade, "websocket", 9) || (key[0] == '\0') || strcmp(version, "13")) {
+    if (!allowed || strncasecmp(upgrade, "websocket", 9) || (key[0] == '\0') || strcmp(version, "13")) {
         static const char refused[] = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 
         (void) send_all(s, refused, sizeof(refused) - 1);

@@ -20,6 +20,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "ppp_session.h" /* PPP_AUTH_*, PPP_AP_*, PPP_COMP_*, MPPX_* */
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,23 +28,42 @@ extern "C" {
 
 #define ISP_MAX_SESSIONS 254
 #define ISP_MAX_FORWARDS 16
+#define ISP_MAX_ACCOUNTS 256
 
 typedef struct isp_session isp_session_t;
 
 typedef struct isp_settings {
     uint32_t base_net;     /* host order; session n gets base_net + n * 256, a /24 (default 10.86.0.0) */
     int      max_sessions; /* 1 to ISP_MAX_SESSIONS                                                   */
-    int      require_pap;  /* ask the guest to authenticate (any name and password will do)           */
+    int      auth;         /* PPP_AUTH_*: nobody asked, anyone let in, or the accounts only           */
+    uint32_t auth_protos;  /* 1 << PPP_AP_*: PAP, CHAP-MD5, MS-CHAP, MS-CHAP-2, CHAP-SHA*              */
+    int      mppe;         /* PPP_MPPE_*: off, when asked for, or required                            */
+    uint32_t mppe_bits;    /* MPPX_L, MPPX_M, MPPX_S: the strengths allowed; MPPX_H: stateless too    */
+    uint32_t compression;  /* 1 << PPP_COMP_*: MPPC, Deflate, BSD-Compress, Predictor-1               */
+    uint32_t wins[2];      /* WINS servers the guests are told of (host order); 0: none               */
+    int      multilink;    /* a guest's calls with Multilink make one connection                      */
     uint32_t echo_secs;    /* LCP keepalive interval; 0 sends none                                    */
     int      guest_lan;    /* calls reach each other at their addresses, as on one real ISP          */
     int      throttle;     /* hold each call to its modem's speed rather than the serial port's      */
     uint32_t default_rate; /* the speed, in bit/s, of a call whose frontend does not say (isp-server)  */
 } isp_settings_t;
 
-/* Process-wide.  Address, PAP and keepalive apply to calls that open after
-   the change; guest LAN and throttle at once. */
+/* Process-wide.  Address, authentication, encryption, compression, WINS,
+   Multilink and keepalive apply to calls that open after the change; guest
+   LAN and throttle at once. */
 extern void isp_get_settings(isp_settings_t *s);
 extern void isp_set_settings(const isp_settings_t *s);
+
+/* The accounts guests dial in with, when authentication is by account. */
+typedef struct isp_account {
+    char user[64];
+    char password[128];
+} isp_account_t;
+
+extern int  isp_get_accounts(isp_account_t *out, int max);
+extern void isp_set_accounts(const isp_account_t *a, int n);
+/* 1 and the password copied if `user` has an account. */
+extern int  isp_account_password(const char *user, char *password, size_t len);
 
 /* A host port that reaches the guest: anything connecting to the host's
    `host_port` (on loopback, or on every interface) arrives at the guest's
@@ -77,7 +97,12 @@ typedef struct isp_call_info {
     uint32_t      guest_ip;   /* host order */
     uint32_t      dns_ip;
     int           state;      /* ISP_CALL_* */
-    char          user[64];   /* the PAP name, if the guest sent one */
+    char          user[64];   /* the name it authenticated with, if any */
+    char          auth[24];   /* the method: "MS-CHAP-2", "" if none */
+    char          ccp[96];    /* compression and encryption, "" if none */
+    int           encrypted;  /* MPPE both ways */
+    int           bundle;     /* a Multilink link of call `bundle`; 0 if not */
+    int           links;      /* links in its bundle (1 without Multilink) */
     uint32_t      seconds;    /* since the call came in */
     uint64_t      bytes_from_guest;
     uint64_t      bytes_to_guest;

@@ -18,7 +18,11 @@
  *             The exchange's tables are under ex_lock; a line's control
  *             socket is only written under it, so RING and CANCEL from
  *             different threads cannot interleave.  srv_lock covers the
- *             .ini and the forward table.
+ *             .ini and the forward table; log_lock the log's last lines,
+ *             which the page's Log tab shows.
+ *
+ *             The page is served on its own address (loopback unless told
+ *             otherwise), a thread per request, a few at a time.
  *
  *             Released under the GNU General Public License version 2 or
  *             later.  See COPYING for more information.
@@ -45,6 +49,7 @@ typedef int socklen_t;
 #    include <netinet/in.h>
 #    include <netinet/tcp.h>
 #    include <poll.h>
+#    include <signal.h>
 #    include <strings.h>
 #    include <sys/socket.h>
 #    include <unistd.h>
@@ -56,7 +61,9 @@ typedef int SOCKET;
 #    define sock_close(s)   close(s)
 #endif
 #include "isp.h"
+#include "isp_config.h"
 #include "isp_plat.h"
+#include "isp_users.h"
 #include "isp_web.h"
 #include "isp_srv.h"
 #include "isp_phone.h"
@@ -67,6 +74,8 @@ typedef int SOCKET;
 #define HTTP_MAX      65536
 #define RING_TIMEOUT  120 /* s a call rings before the exchange gives up */
 #define FIRST_NUMBER  5550101
+#define LOG_LINES     2000 /* the log the page can show */
+#define HTTP_WORKERS  16   /* page requests at once     */
 
 typedef struct conn {
     int           id;
@@ -125,6 +134,20 @@ static line_t       lines[MAX_LINES];
 static pcall_t      pcalls[MAX_LINES];
 static int          next_call_id = 1;
 
+static isp_mutex_t   *log_lock;
+static isp_log_line_t log_ring[LOG_LINES];
+static uint32_t       log_next = 1;
+
+typedef struct {
+    SOCKET        sock;
+    int           loopback;
+    isp_thread_t *thread;
+    volatile int  busy;
+} http_worker_t;
+
+static isp_mutex_t   *http_lock;
+static http_worker_t  http_workers[HTTP_WORKERS];
+
 /* ---------------------------------------------------------------- logging */
 
 static void
@@ -136,6 +159,18 @@ logf_(const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
+    if (log_lock != NULL) {
+        isp_log_line_t *l = &log_ring[log_next % LOG_LINES];
+        time_t          t = time(NULL);
+        struct tm      *tm;
+
+        isp_mutex_lock(log_lock);
+        tm   = localtime(&t);
+        l->n = log_next++;
+        strftime(l->time, sizeof(l->time), "%Y-%m-%d %H:%M:%S", tm);
+        snprintf(l->text, sizeof(l->text), "%s", buf);
+        isp_mutex_unlock(log_lock);
+    }
     if (cfg.log != NULL)
         cfg.log(buf);
     else {
@@ -172,25 +207,56 @@ number_digits(const char *s, char *out, size_t len)
     out[n] = '\0';
 }
 
+int
+isp_srv_log_lines(uint32_t after, isp_log_line_t *out, int max)
+{
+    int n = 0;
+
+    if (log_lock == NULL)
+        return 0;
+    isp_mutex_lock(log_lock);
+    {
+        uint32_t first = (log_next > LOG_LINES) ? (log_next - LOG_LINES) : 1;
+
+        if (after + 1 > first)
+            first = after + 1;
+        /* The newest `max`, if there are more. */
+        if ((log_next - first) > (uint32_t) max)
+            first = log_next - (uint32_t) max;
+        for (uint32_t i = first; i < log_next; i++)
+            out[n++] = log_ring[i % LOG_LINES];
+    }
+    isp_mutex_unlock(log_lock);
+    return n;
+}
+
 /* ------------------------------------------------------------- the .ini */
 
 int
 isp_srv_load(isp_srv_config_t *c)
 {
-    FILE          *f;
-    isp_settings_t st;
-    char           line[512];
+    FILE                *f;
+    isp_settings_t       st;
+    char                 line[1024];
+    static isp_account_t accounts[ISP_MAX_ACCOUNTS];
+    int                  n_accounts = 0;
 
     if (srv_lock == NULL) {
         srv_lock   = isp_mutex_new();
         conns_lock = isp_mutex_new();
         ex_lock    = isp_mutex_new();
+        log_lock   = isp_mutex_new();
+        http_lock  = isp_mutex_new();
+        isp_users_init();
     }
+    if (c->http_listen[0] == '\0')
+        snprintf(c->http_listen, sizeof(c->http_listen), "127.0.0.1");
     cfg = *c;
     if ((cfg.ini[0] == '\0') || ((f = fopen(cfg.ini, "r")) == NULL))
         return 0;
 
     isp_get_settings(&st);
+    isp_users_clear();
     while (fgets(line, sizeof(line), f) != NULL) {
         char *eq = strchr(line, '=');
         char *key;
@@ -216,6 +282,8 @@ isp_srv_load(isp_srv_config_t *c)
             c->port = atoi(val);
         else if (!strcmp(key, "http_port"))
             c->http_port = atoi(val) ? atoi(val) : -1; /* 0: no page */
+        else if (!strcmp(key, "http_listen"))
+            snprintf(c->http_listen, sizeof(c->http_listen), "%s", val);
         else if (!strcmp(key, "net")) {
             unsigned a, b;
 
@@ -223,8 +291,46 @@ isp_srv_load(isp_srv_config_t *c)
                 st.base_net = (a << 24) | (b << 16);
         } else if (!strcmp(key, "max"))
             st.max_sessions = atoi(val);
-        else if (!strcmp(key, "pap"))
-            st.require_pap = !!atoi(val);
+        else if (!strcmp(key, "pap")) {
+            /* Before accounts: 1 asked for a name and password, any. */
+            if (atoi(val) && (st.auth == PPP_AUTH_NONE))
+                st.auth = PPP_AUTH_ANY;
+        } else if (!strcmp(key, "auth")) {
+            const int a = isp_auth_parse(val);
+
+            if (a >= 0)
+                st.auth = a;
+        } else if (!strcmp(key, "auth_methods"))
+            isp_methods_parse(val, &st.auth_protos);
+        else if (!strcmp(key, "mppe")) {
+            const int m = isp_mppe_parse(val);
+
+            if (m >= 0)
+                st.mppe = m;
+        } else if (!strcmp(key, "mppe_strengths")) {
+            uint32_t s;
+
+            if (isp_strengths_parse(val, &s) == 0)
+                st.mppe_bits = (st.mppe_bits & ~MPPX_STRENGTHS) | s;
+        } else if (!strcmp(key, "mppe_stateless"))
+            st.mppe_bits = atoi(val) ? (st.mppe_bits | MPPX_H) : (st.mppe_bits & ~MPPX_H);
+        else if (!strcmp(key, "compression"))
+            isp_comp_parse(val, &st.compression);
+        else if (!strcmp(key, "wins"))
+            isp_wins_parse(val, st.wins);
+        else if (!strcmp(key, "multilink"))
+            st.multilink = !!atoi(val);
+        else if (!strcmp(key, "account")) {
+            char user[200], pass[400];
+
+            if ((n_accounts < ISP_MAX_ACCOUNTS) && (sscanf(val, "%199s %399s", user, pass) == 2)) {
+                isp_pct_decode(user, accounts[n_accounts].user, sizeof(accounts[n_accounts].user));
+                isp_pct_decode(pass, accounts[n_accounts].password, sizeof(accounts[n_accounts].password));
+                n_accounts++;
+            }
+            memset(pass, 0, sizeof(pass));
+        } else if (!strcmp(key, "user"))
+            isp_users_load(val);
         else if (!strcmp(key, "echo"))
             st.echo_secs = (uint32_t) atoi(val);
         else if (!strcmp(key, "lan"))
@@ -247,9 +353,12 @@ isp_srv_load(isp_srv_config_t *c)
         }
     }
     fclose(f);
+    memset(line, 0, sizeof(line));
     if ((st.max_sessions < 1) || (st.max_sessions > MAX_CONNS))
         st.max_sessions = MAX_CONNS;
     isp_set_settings(&st);
+    isp_set_accounts(accounts, n_accounts);
+    memset(accounts, 0, sizeof(accounts));
     cfg = *c;
     return 0;
 }
@@ -257,8 +366,11 @@ isp_srv_load(isp_srv_config_t *c)
 int
 isp_srv_save(void)
 {
-    FILE          *f;
-    isp_settings_t st;
+    FILE                *f;
+    isp_settings_t       st;
+    static isp_account_t accounts[ISP_MAX_ACCOUNTS];
+    int                  n_accounts;
+    char                 words[200];
 
     if (cfg.ini[0] == '\0')
         return 1;
@@ -267,15 +379,37 @@ isp_srv_save(void)
     f = fopen(cfg.ini, "w");
     if (f != NULL) {
         fprintf(f, "# isp-server: the 86Box-Next virtual ISP.  Written by the status page.\n"
+                   "# It holds the dial-in accounts' passwords as they are (CHAP needs them)\n"
+                   "# and the page users' password hashes: keep it to yourself.\n"
                    "[isp]\n");
-        fprintf(f, "listen = %s\nport = %d\nhttp_port = %d\n", cfg.listen, cfg.port, cfg.http_port);
-        fprintf(f, "net = %u.%u.0.0\nmax = %d\npap = %d\necho = %u\nlan = %d\nthrottle = %d\nrate = %u\n",
-                st.base_net >> 24, (st.base_net >> 16) & 0xff, st.max_sessions, st.require_pap, st.echo_secs,
-                st.guest_lan, st.throttle, st.default_rate);
+        fprintf(f, "listen = %s\nport = %d\nhttp_listen = %s\nhttp_port = %d\n", cfg.listen, cfg.port, cfg.http_listen,
+                cfg.http_port);
+        fprintf(f, "net = %u.%u.0.0\nmax = %d\necho = %u\nlan = %d\nthrottle = %d\nrate = %u\n", st.base_net >> 24,
+                (st.base_net >> 16) & 0xff, st.max_sessions, st.echo_secs, st.guest_lan, st.throttle, st.default_rate);
+        isp_methods_format(st.auth_protos, words, sizeof(words));
+        fprintf(f, "auth = %s\nauth_methods = %s\n", isp_auth_key(st.auth), words);
+        isp_strengths_format(st.mppe_bits, words, sizeof(words));
+        fprintf(f, "mppe = %s\nmppe_strengths = %s\nmppe_stateless = %d\n", isp_mppe_key(st.mppe), words,
+                !!(st.mppe_bits & MPPX_H));
+        isp_comp_format(st.compression, words, sizeof(words));
+        fprintf(f, "compression = %s\n", words);
+        isp_wins_format(st.wins, words, sizeof(words));
+        fprintf(f, "wins = %s\nmultilink = %d\n", words, st.multilink);
         fprintf(f, "unknown_to_isp = %d\nisp_numbers = %s\n", unknown_to_isp, isp_numbers);
         for (int n = 1; n <= ISP_MAX_SESSIONS; n++)
             if (fwd_spec[n][0] != '\0')
                 fprintf(f, "forward.%d = %s\n", n, fwd_spec[n]);
+        n_accounts = isp_get_accounts(accounts, ISP_MAX_ACCOUNTS);
+        for (int i = 0; i < n_accounts; i++) {
+            char user[200], pass[400];
+
+            isp_pct_encode(accounts[i].user, user, sizeof(user));
+            isp_pct_encode(accounts[i].password, pass, sizeof(pass));
+            fprintf(f, "account = %s %s\n", user, pass);
+            memset(pass, 0, sizeof(pass));
+        }
+        memset(accounts, 0, sizeof(accounts));
+        isp_users_save(f);
         fclose(f);
     }
     isp_mutex_unlock(srv_lock);
@@ -329,11 +463,18 @@ void
 isp_srv_settings_changed(void)
 {
     isp_settings_t st;
+    char           d[600];
 
     isp_get_settings(&st);
-    logf_("settings: %u.%u.0.0, up to %d calls, %s, keepalive %u s, guest LAN %s, %s", st.base_net >> 24,
-          (st.base_net >> 16) & 0xff, st.max_sessions, st.require_pap ? "PAP" : "no authentication", st.echo_secs,
-          st.guest_lan ? "on" : "off", st.throttle ? "held to modem speed" : "line speed");
+    isp_settings_describe(&st, d, sizeof(d));
+    logf_("settings: %s", d);
+    isp_srv_save();
+}
+
+void
+isp_srv_config_changed(const char *what)
+{
+    logf_("%s", what);
     isp_srv_save();
 }
 
@@ -1251,8 +1392,9 @@ http_header(const char *head, const char *name, char *out, size_t len)
         const char *line = p + 2;
         const char *eol  = strstr(line, "\r\n");
 
+        /* The head is cut at the empty line: the last header has no CRLF. */
         if (eol == NULL)
-            break;
+            eol = line + strlen(line);
 #ifdef _WIN32
         if (!_strnicmp(line, name, nlen) && (line[nlen] == ':')) {
 #else
@@ -1270,13 +1412,15 @@ http_header(const char *head, const char *name, char *out, size_t len)
             out[n] = '\0';
             return;
         }
+        if (*eol == '\0')
+            break;
         p = eol;
     }
 }
 
 /* One request.  1 if the socket was taken over (the page's phone). */
 static int
-http_serve(SOCKET cs)
+http_serve(SOCKET cs, int loopback)
 {
     char              *buf  = (char *) malloc(HTTP_MAX + 1);
     size_t             got  = 0;
@@ -1287,9 +1431,12 @@ http_serve(SOCKET cs)
     char               host[128];
     char               xisp[16];
     char               clen[16];
+    char               cookie[1024];
+    char               proto[16];
+    char               query[256];
     isp_web_request_t  req;
     isp_web_response_t resp;
-    char               head[512];
+    char               head[768];
     const uint64_t     until = isp_now_ms() + 3000;
 
     if (buf == NULL)
@@ -1323,31 +1470,50 @@ http_serve(SOCKET cs)
         free(buf);
         return 0;
     }
-    /* The page's phone: a WebSocket, which is the phone's from here. */
-    if (!strncmp(path, "/api/phone", 10)) {
-        const int taken = isp_phone_accept((uintptr_t) cs, buf, cfg.http_port, cfg.port);
+    {
+        char *q = strchr(path, '?');
 
-        free(buf);
-        return taken;
+        snprintf(query, sizeof(query), "%s", q ? q + 1 : "");
+        if (q != NULL)
+            *q = '\0';
     }
-    path[strcspn(path, "?")] = '\0';
     http_header(buf, "Host", host, sizeof(host));
     http_header(buf, "X-ISP-Request", xisp, sizeof(xisp));
-    buf[need] = '\0';
+    http_header(buf, "Cookie", cookie, sizeof(cookie));
+    http_header(buf, "X-Forwarded-Proto", proto, sizeof(proto));
 
     memset(&req, 0, sizeof(req));
     req.method    = method;
     req.path      = path;
     req.host      = host;
     req.from_page = (xisp[0] != '\0');
-    req.body      = hend + 4;
     req.http_port = cfg.http_port;
+    req.cookie    = cookie;
+    req.loopback  = loopback;
+    req.query     = query;
+    req.https     = !strcmp(proto, "https");
+
+    /* The page's phone: a WebSocket, which is the phone's from here. */
+    if (!strcmp(path, "/api/phone")) {
+        char      origin[160];
+        int       taken;
+
+        http_header(buf, "Origin", origin, sizeof(origin));
+        req.body = "";
+        taken    = isp_phone_accept((uintptr_t) cs, buf, isp_web_phone_allowed(&req, origin), cfg.port);
+        free(buf);
+        return taken;
+    }
+    buf[need] = '\0';
+    req.body  = hend + 4;
     isp_web_handle(&req, &resp);
 
     snprintf(head, sizeof(head),
              "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %u\r\nCache-Control: no-store\r\n"
-             "X-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nConnection: close\r\n\r\n",
-             resp.status, (resp.status == 200) ? "OK" : "Error", resp.type, (unsigned) resp.len);
+             "X-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\n"
+             "%s%s%sConnection: close\r\n\r\n",
+             resp.status, (resp.status == 200) ? "OK" : "Error", resp.type, (unsigned) resp.len,
+             resp.set_cookie[0] ? "Set-Cookie: " : "", resp.set_cookie, resp.set_cookie[0] ? "\r\n" : "");
     send_all(cs, head, strlen(head));
     send_all(cs, resp.body, resp.len);
     free(resp.body);
@@ -1356,21 +1522,73 @@ http_serve(SOCKET cs)
 }
 
 static void
+http_worker(void *arg)
+{
+    http_worker_t *w = (http_worker_t *) arg;
+
+    if (!http_serve(w->sock, w->loopback))
+        sock_close(w->sock);
+    w->busy = 0;
+}
+
+/* Workers that have finished are joined; all of them if `all`. */
+static void
+http_reap(int all)
+{
+    isp_mutex_lock(http_lock);
+    for (int i = 0; i < HTTP_WORKERS; i++) {
+        http_worker_t *w = &http_workers[i];
+
+        if ((w->thread != NULL) && (all || !w->busy)) {
+            isp_thread_join(w->thread);
+            w->thread = NULL;
+        }
+    }
+    isp_mutex_unlock(http_lock);
+}
+
+static void
 http_loop(void *arg)
 {
     (void) arg;
     while (!stop_requested) {
-        SOCKET cs;
+        struct sockaddr_in peer;
+        socklen_t          plen = sizeof(peer);
+        SOCKET             cs;
+        http_worker_t     *w = NULL;
 
+        http_reap(0);
         if (!wait_sock(http_sock, 0, 250))
             continue;
-        cs = accept(http_sock, NULL, NULL);
+        memset(&peer, 0, sizeof(peer));
+        cs = accept(http_sock, (struct sockaddr *) &peer, &plen);
         if (cs == INVALID_SOCKET)
             continue;
         set_nonblocking(cs);
-        if (!http_serve(cs))
+
+        isp_mutex_lock(http_lock);
+        for (int i = 0; i < HTTP_WORKERS; i++)
+            if ((http_workers[i].thread == NULL) && !http_workers[i].busy) {
+                w = &http_workers[i];
+                break;
+            }
+        if (w != NULL) {
+            w->sock     = cs;
+            w->loopback = (peer.sin_family == AF_INET) && ((ntohl(peer.sin_addr.s_addr) >> 24) == 127);
+            w->busy     = 1;
+            w->thread   = isp_thread_start(http_worker, w);
+            if (w->thread == NULL)
+                w->busy = 0;
+        }
+        isp_mutex_unlock(http_lock);
+        if ((w == NULL) || (w->thread == NULL)) {
+            static const char busy[] = "HTTP/1.1 503 Busy\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+            send_all(cs, busy, sizeof(busy) - 1);
             sock_close(cs);
+        }
     }
+    http_reap(1);
 }
 
 /* ------------------------------------------------------------ start, stop */
@@ -1418,6 +1636,11 @@ isp_srv_start(isp_srv_config_t *c)
         isp_srv_load(c);
     cfg            = *c;
     stop_requested = 0;
+#ifndef _WIN32
+    /* A peer gone mid-send is an error to handle, not a signal that ends
+       the process. */
+    signal(SIGPIPE, SIG_IGN);
+#endif
 
     listen_sock = listen_on(cfg.listen, &cfg.port, 16);
     if (listen_sock == INVALID_SOCKET) {
@@ -1425,11 +1648,15 @@ isp_srv_start(isp_srv_config_t *c)
               sock_error());
         return -1;
     }
+    if (cfg.http_listen[0] == '\0')
+        snprintf(cfg.http_listen, sizeof(cfg.http_listen), "127.0.0.1");
     if (cfg.http_port >= 0) {
-        /* The page controls the ISP: loopback only, whatever `listen` says. */
-        http_sock = listen_on("127.0.0.1", &cfg.http_port, 8);
+        /* The page controls the ISP: on loopback unless told otherwise, and
+           then behind logins. */
+        http_sock = listen_on(cfg.http_listen, &cfg.http_port, 16);
         if (http_sock == INVALID_SOCKET)
-            logf_("warning: the status page cannot have 127.0.0.1:%d (error %d)", cfg.http_port, sock_error());
+            logf_("warning: the status page cannot have %s:%d (error %d)", cfg.http_listen, cfg.http_port,
+                  sock_error());
         else
             http_thread_h = isp_thread_start(http_loop, NULL);
     }
@@ -1438,10 +1665,15 @@ isp_srv_start(isp_srv_config_t *c)
     c->http_port  = (http_sock != INVALID_SOCKET) ? cfg.http_port : -1;
 
     isp_get_settings(&st);
-    logf_("isp-server listening on %s:%d; calls get %u.%u.N.15/24 (N = 1..%d), DNS %u.%u.N.3; %s; guest LAN %s",
-          cfg.listen, cfg.port, st.base_net >> 24, (st.base_net >> 16) & 0xff, st.max_sessions, st.base_net >> 24,
-          (st.base_net >> 16) & 0xff, st.require_pap ? "PAP asked for (any name and password)" : "no authentication",
-          st.guest_lan ? "on" : "off");
+    logf_("isp-server listening on %s:%d; calls get %u.%u.N.15/24 (N = 1..%d), DNS %u.%u.N.3", cfg.listen, cfg.port,
+          st.base_net >> 24, (st.base_net >> 16) & 0xff, st.max_sessions, st.base_net >> 24,
+          (st.base_net >> 16) & 0xff);
+    {
+        char d[600];
+
+        isp_settings_describe(&st, d, sizeof(d));
+        logf_("settings: %s", d);
+    }
     logf_("telephone exchange: modems on a \"Telephone network\" line get numbers from 555-0101; other numbers %s",
           unknown_to_isp ? "reach the ISP" : "are unknown");
     if (cfg.ini[0] != '\0')
@@ -1450,9 +1682,20 @@ isp_srv_start(isp_srv_config_t *c)
         struct sockaddr_in sa;
 
         inet_pton(AF_INET, cfg.listen, &sa.sin_addr);
-        if ((ntohl(sa.sin_addr.s_addr) >> 24) != 127)
-            logf_("warning: not loopback -- anyone who can reach port %d gets Internet access through this host",
+        if (((ntohl(sa.sin_addr.s_addr) >> 24) != 127) && (st.auth != PPP_AUTH_ACCOUNTS))
+            logf_("warning: not loopback -- anyone who can reach port %d gets Internet access through this host "
+                  "(authentication by account keeps strangers out)",
                   cfg.port);
+        inet_pton(AF_INET, cfg.http_listen, &sa.sin_addr);
+        if ((http_sock != INVALID_SOCKET) && ((ntohl(sa.sin_addr.s_addr) >> 24) != 127)) {
+            if (isp_users_count() == 0)
+                logf_("the status page is open on %s:%d with no users yet: make the first one (the super admin) on "
+                      "the page, with setup token %s",
+                      cfg.http_listen, cfg.http_port, isp_users_setup_token());
+            else
+                logf_("the status page is on %s:%d, behind logins (%d users)", cfg.http_listen, cfg.http_port,
+                      isp_users_count());
+        }
     }
     return 0;
 }

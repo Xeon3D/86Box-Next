@@ -14,21 +14,62 @@
 # libslirp by plain link flags rather than the PkgConfig::SLIRP imported
 # target, which is only visible below src/network, not to tests/.
 #
+# It also builds on its own, for Linux, macOS and the container -- only the
+# repository's src/ beside it is needed, for modem_voice:
+#   cmake -S isp-server -B build-isp && cmake --build build-isp
+#
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    cmake_minimum_required(VERSION 3.16)
+    project(isp-server C)
+    set(CMAKE_C_STANDARD 11)
+    option(STATIC_BUILD "Link libslirp, glib and zlib statically" OFF)
+    option(BUILD_TESTING "Build the tests" OFF)
+    if(BUILD_TESTING)
+        enable_testing()
+    endif()
+    if(NOT CMAKE_BUILD_TYPE)
+        set(CMAKE_BUILD_TYPE Release)
+    endif()
+    if(NOT MSVC)
+        add_compile_options(-Wall)
+    endif()
+    include(GNUInstallDirs)
+    set(ISP_STANDALONE 1)
+endif()
+get_filename_component(ISP_NEXT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(ISP_SLIRP REQUIRED slirp)
 
 add_library(isp STATIC
     isp.c
+    isp_config.c
+    isp_crypto.c
     isp_plat.c
     isp_nat_slirp.c
+    ppp_auth.c
+    ppp_comp.c
     ppp_framing.c
+    ppp_mp.c
     ppp_session.c
+    isp_users.c
 )
 target_include_directories(isp
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}
     PRIVATE ${ISP_SLIRP_INCLUDE_DIRS}
 )
 target_compile_options(isp PRIVATE ${ISP_SLIRP_CFLAGS_OTHER})
+
+# zlib, for CCP's Deflate.
+pkg_check_modules(ISP_ZLIB REQUIRED zlib)
+target_include_directories(isp PRIVATE ${ISP_ZLIB_INCLUDE_DIRS})
+if(STATIC_BUILD)
+    target_link_directories(isp PUBLIC ${ISP_ZLIB_STATIC_LIBRARY_DIRS})
+    target_link_libraries(isp PUBLIC ${ISP_ZLIB_STATIC_LIBRARIES})
+else()
+    target_link_directories(isp PUBLIC ${ISP_ZLIB_LIBRARY_DIRS})
+    target_link_libraries(isp PUBLIC ${ISP_ZLIB_LIBRARIES})
+endif()
 
 if(STATIC_BUILD)
     target_compile_definitions(isp PRIVATE LIBSLIRP_STATIC)
@@ -40,7 +81,7 @@ else()
 endif()
 
 if(WIN32)
-    target_link_libraries(isp PUBLIC ws2_32 iphlpapi)
+    target_link_libraries(isp PUBLIC ws2_32 iphlpapi bcrypt)
     if(NOT MSVC)
         # glib and intl need it after them; pkg-config lists it before.
         target_link_libraries(isp PUBLIC iconv)
@@ -54,7 +95,7 @@ if(WIN32)
     endif()
 else()
     find_package(Threads REQUIRED)
-    target_link_libraries(isp PUBLIC Threads::Threads)
+    target_link_libraries(isp PUBLIC Threads::Threads m)
 endif()
 
 # The page, isp_web_page.html, goes into the program as a C string.
@@ -75,8 +116,8 @@ target_link_libraries(isp_web PUBLIC isp)
 # The server: listeners, ISP calls, the telephone exchange, the .ini -- and
 # the status page's phone, which speaks the modems' voice frames
 # (src/char/modem_voice.c).
-add_library(isp_srv OBJECT isp_srv.c isp_phone.c ${PROJECT_SOURCE_DIR}/src/char/modem_voice.c)
-target_include_directories(isp_srv PRIVATE ${PROJECT_SOURCE_DIR}/src/include)
+add_library(isp_srv OBJECT isp_srv.c isp_phone.c ${ISP_NEXT_ROOT}/src/char/modem_voice.c)
+target_include_directories(isp_srv PRIVATE ${ISP_NEXT_ROOT}/src/include)
 target_link_libraries(isp_srv PUBLIC isp_web isp)
 
 if(WIN32)
@@ -93,6 +134,10 @@ endif()
 target_link_libraries(isp-server PRIVATE isp_srv isp_web isp)
 if(STATIC_BUILD AND UNIX)
     target_link_options(isp-server PRIVATE "-static")
+endif()
+
+if(ISP_STANDALONE)
+    install(TARGETS isp-server RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
 if(BUILD_TESTING)

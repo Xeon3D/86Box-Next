@@ -1,0 +1,91 @@
+# 86Box-Next: isp-server for macOS (Apple Silicon and Intel) and Linux
+# (static, x86-64 and arm64), each with its tests.  Run by hand (Actions >
+# isp-server > Run workflow); with a release tag given, the zips are added to
+# that release too.  Windows' isp-server.exe comes with the emulator's
+# releases (tools/make-release.sh); the container is isp-server/Dockerfile.
+name: isp-server
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Add the builds to this release tag (e.g. release-2); empty: artifacts only"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            COPYING
+            isp-server
+            src/char/modem_voice.c
+            src/include/86box/modem_voice.h
+          sparse-checkout-cone-mode: false
+      - name: Dependencies
+        run: brew install cmake ninja pkgconf libslirp glib dylibbundler
+      - name: Build and test
+        run: |
+          cmake -S isp-server -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+          cmake --build build
+          ctest --test-dir build --output-on-failure
+      - name: Package (the Homebrew libraries beside it)
+        run: |
+          mkdir -p dist/isp-server
+          cp build/isp-server dist/isp-server/
+          dylibbundler -od -b -x dist/isp-server/isp-server -d dist/isp-server/libs -p @executable_path/libs/
+          codesign --force --deep -s - dist/isp-server/isp-server dist/isp-server/libs/*.dylib
+          dist/isp-server/isp-server --help | head -1
+          cp COPYING dist/isp-server/
+          cd dist && zip -r ../isp-server-macos-${{ matrix.arch }}.zip isp-server
+      - uses: actions/upload-artifact@v4
+        with:
+          name: isp-server-macos-${{ matrix.arch }}
+          path: isp-server-macos-${{ matrix.arch }}.zip
+
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build and test, static (x86-64 and arm64)
+        run: |
+          for arch in amd64 arm64; do
+            docker buildx build --platform linux/$arch -f isp-server/Dockerfile --target linux-binary --output out-$arch .
+            mkdir -p dist-$arch/isp-server
+            cp out-$arch/isp-server COPYING dist-$arch/isp-server/
+            tar -C dist-$arch -czf isp-server-linux-$arch.tar.gz isp-server
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: isp-server-linux
+          path: isp-server-linux-*.tar.gz
+
+  release:
+    if: ${{ inputs.release != '' }}
+    needs: [macos, linux]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Add to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ inputs.release }}" assets/* --clobber --repo "${{ github.repository }}"

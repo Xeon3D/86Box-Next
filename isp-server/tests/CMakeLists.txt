@@ -9,6 +9,15 @@ if(BUILD_TESTING)
     target_link_libraries(isp_tests PRIVATE isp)
     add_test(NAME Isp.core COMMAND isp_tests)
 
+    # The hashes, ciphers and authentication arithmetic, against published
+    # vectors; and CCP's compressors and decompressors, each with itself.
+    add_executable(crypto_tests crypto_test.c)
+    target_link_libraries(crypto_tests PRIVATE isp)
+    add_test(NAME Isp.crypto COMMAND crypto_tests)
+    add_executable(comp_tests comp_test.c)
+    target_link_libraries(comp_tests PRIVATE isp)
+    add_test(NAME Isp.comp COMMAND comp_tests)
+
     # isp-server's status page, requests handled directly.
     add_executable(isp_web_tests isp_web_test.c)
     target_link_libraries(isp_web_tests PRIVATE isp_web isp)
@@ -23,7 +32,7 @@ if(BUILD_TESTING)
     # The status page's phone: the test is the page (a WebSocket) and a
     # modem on the exchange.
     add_executable(web_phone_tests web_phone_test.c)
-    target_include_directories(web_phone_tests PRIVATE ${PROJECT_SOURCE_DIR}/src/include)
+    target_include_directories(web_phone_tests PRIVATE ${ISP_NEXT_ROOT}/src/include)
     target_link_libraries(web_phone_tests PRIVATE isp_srv isp_web isp)
     add_test(NAME Isp.web_phone COMMAND web_phone_tests)
 

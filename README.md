@@ -28,6 +28,9 @@ Extra features
   * an optional modem-speed throttle;
   * a status page in the browser, where you can hang up calls and change settings;
   * on Windows, a log window that minimizes to the notification area (no console window).
+  * real accounts with PAP, CHAP-MD5, MS-CHAP, MS-CHAP-2 and CHAP-SHA1 to SHA3-512, MPPE encryption, MPPC/Deflate/BSD-Compress/Predictor-1 compression, WINS and Multilink;
+  * a status page in tabs (status, phone, port forwards, settings, log, users) with logins for hosting it;
+  * Linux, macOS and Docker (`xeon3d/86box-next-isp`) builds too: see [isp-server/README.md](isp-server/README.md).
 * **Telephone numbers:** every VM's modem gets a number on isp-server's exchange, and VMs can call each other.
   * A call rings the other modem, with caller ID; ATA or auto-answer picks it up, and the two modems connect byte for byte.
   * BUSY and NO ANSWER work as on a real line.

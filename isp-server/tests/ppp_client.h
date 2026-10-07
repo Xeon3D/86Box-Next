@@ -42,6 +42,10 @@ typedef struct ppp_client {
     size_t   isp_lcp_req_len;
     int      isp_wants_pap;
     int      pap_acked;
+    int      isp_chap_alg;   /* CHAP_* the ISP asked for, 0 if none */
+    int      chap_ok;        /* Success received (MS-CHAP-2: its S= checked) */
+    int      auth_failed;    /* Authenticate-Nak or CHAP Failure */
+    char     chap_expect[44]; /* MS-CHAP-2: the authenticator response we want */
     int      terminated;     /* the ISP sent Terminate-Ack or -Request */
 
     /* IPCP. */

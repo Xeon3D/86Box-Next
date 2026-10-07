@@ -5,7 +5,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "isp_crypto.h"
 #include "isp_plat.h"
+#include "ppp_auth.h"
 #include "ppp_framing.h"
 #include "ppp_session.h"
 #include "ppp_client.h"
@@ -221,8 +223,91 @@ lcp_maybe_open(ppp_client_t *c)
         printf("    client: LCP open%s\n", c->isp_wants_pap ? ", ISP asks for PAP" : "");
     if (c->isp_wants_pap)
         send_pap(c);
-    else
+    else if (!c->isp_chap_alg)
         send_ipcp_req(c);
+    /* (CHAP: the ISP's challenge comes next) */
+}
+
+/* The answer to a CHAP challenge, by whichever method the ISP asked for. */
+static void
+answer_chap(ppp_client_t *c, const uint8_t *p, size_t n)
+{
+    const char *u = c->user ? c->user : "anyone";
+    const char *w = c->password ? c->password : "anything";
+    uint8_t     pkt[300];
+    uint8_t     value[64];
+    size_t      vlen = 0;
+    size_t      clen;
+    size_t      len;
+
+    if ((n < 5) || ((size_t) get16(&p[2]) > n))
+        return;
+    clen = p[4];
+    if ((5 + clen) > n)
+        return;
+    if (c->isp_chap_alg == CHAP_MSCHAP1) {
+        uint8_t ph[16];
+
+        memset(value, 0, 49);
+        nt_password_hash(w, ph);
+        if (clen == 8)
+            challenge_response(&p[5], ph, &value[24]);
+        value[48] = 1; /* the NT response */
+        vlen      = 49;
+    } else if (c->isp_chap_alg == CHAP_MSCHAP2) {
+        memset(value, 0, 49);
+        crypto_random(value, 16); /* the peer challenge */
+        if (clen == 16) {
+            mschap2_nt_response(&p[5], value, u, w, &value[24]);
+            mschap2_authenticator_response(w, &value[24], value, &p[5], u, c->chap_expect);
+        }
+        vlen = 49;
+    } else
+        vlen = chap_digest(c->isp_chap_alg, p[1], w, &p[5], clen, value);
+
+    pkt[0] = 2;
+    pkt[1] = p[1];
+    pkt[4] = (uint8_t) vlen;
+    memcpy(&pkt[5], value, vlen);
+    memcpy(&pkt[5 + vlen], u, strlen(u));
+    len    = 5 + vlen + strlen(u);
+    pkt[2] = (uint8_t) (len >> 8);
+    pkt[3] = (uint8_t) len;
+    ppp_client_send(c, PPP_PROTO_CHAP, pkt, len);
+    c->last_req_ms = ppp_client_ms();
+}
+
+static void
+handle_chap(ppp_client_t *c, const uint8_t *p, size_t n)
+{
+    if (n < 4)
+        return;
+    switch (p[0]) {
+        case 1:
+            if (!c->chap_ok)
+                answer_chap(c, p, n);
+            break;
+        case 3:
+            if (c->chap_ok)
+                break;
+            if (c->isp_chap_alg == CHAP_MSCHAP2) {
+                const size_t len = get16(&p[2]);
+
+                /* The ISP has to prove it knows the password too. */
+                if ((len < 4 + 42) || memcmp(&p[4], c->chap_expect, 42)) {
+                    c->auth_failed = 1;
+                    break;
+                }
+            }
+            c->chap_ok = 1;
+            send_ipcp_req(c);
+            break;
+        case 4:
+            c->auth_failed = 1;
+            break;
+        default:
+            break;
+    }
 }
 
 static void
@@ -244,9 +329,12 @@ handle_lcp(ppp_client_t *c, const uint8_t *p, size_t n)
             memcpy(c->isp_lcp_req, &p[4], len - 4);
             c->isp_lcp_req_len = len - 4;
             c->isp_wants_pap   = 0;
+            c->isp_chap_alg    = 0;
             while ((end - o) >= 2 && o[1] >= 2 && o[1] <= (end - o)) {
                 if ((o[0] == LCP_AUTH) && (o[1] == 4) && (get16(&o[2]) == PPP_PROTO_PAP))
                     c->isp_wants_pap = 1;
+                if ((o[0] == LCP_AUTH) && (o[1] == 5) && (get16(&o[2]) == PPP_PROTO_CHAP))
+                    c->isp_chap_alg = o[4];
                 o += o[1];
             }
             send_ctl(c, PPP_PROTO_LCP, PPP_CONF_ACK, p[1], &p[4], len - 4);
@@ -398,7 +486,11 @@ handle_frame(void *opaque, const uint8_t *f, size_t n)
             if ((n >= 4) && (f[0] == 2) && !c->pap_acked) {
                 c->pap_acked = 1;
                 send_ipcp_req(c);
-            }
+            } else if ((n >= 4) && (f[0] == 3))
+                c->auth_failed = 1;
+            break;
+        case PPP_PROTO_CHAP:
+            handle_chap(c, f, n);
             break;
         case PPP_PROTO_IPCP:
             handle_ipcp(c, f, n);
@@ -452,7 +544,7 @@ ppp_client_connect(ppp_client_t *c, uint32_t timeout_ms)
         if ((int32_t) (ppp_client_ms() - until) >= 0)
             return 0;
         ppp_client_poll(c);
-        if (c->terminated)
+        if (c->terminated || c->auth_failed)
             return 0;
         /* A request that went unanswered goes again. */
         if ((ppp_client_ms() - c->last_req_ms) >= 1000) {
@@ -460,6 +552,8 @@ ppp_client_connect(ppp_client_t *c, uint32_t timeout_ms)
                 send_lcp_req(c);
             else if (c->lcp_opened && c->isp_wants_pap && !c->pap_acked)
                 send_pap(c);
+            else if (c->lcp_opened && c->isp_chap_alg && !c->chap_ok)
+                c->last_req_ms = ppp_client_ms(); /* the ISP challenges again itself */
             else if (c->lcp_opened && !c->ipcp_ack_rcvd)
                 send_ipcp_req(c);
             else

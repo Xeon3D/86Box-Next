@@ -29,6 +29,7 @@
 #    include <windows.h>
 #endif
 #include "isp.h"
+#include "isp_config.h"
 #include "isp_plat.h"
 #include "isp_srv.h"
 #include "isp_ui.h"
@@ -68,7 +69,8 @@ usage(int error)
              "  --config FILE   settings and forwards (default: isp-server.ini by the program)\n"
              "  --listen ADDR   address modems connect to (default 127.0.0.1)\n"
              "  --port N        TCP port for modems (default 2323)\n"
-             "  --http-port N   the status page, always on 127.0.0.1 (default 2324; 0: none)\n"
+             "  --http-port N   the status page (default 2324; 0: none)\n"
+             "  --http-listen ADDR  the page's address (default 127.0.0.1; another needs users)\n"
              "  --no-open       do not open the status page in the browser\n"
 #ifdef _WIN32
              "  --minimized     start with the log hidden, in the notification area\n"
@@ -76,6 +78,10 @@ usage(int error)
              "  --net A.B.0.0   the /16 the per-call /24s come from (default 10.86.0.0)\n"
              "  --max N         concurrent ISP calls (default 16, at most %d)\n"
              "  --pap           ask the guest for a name and password (any will do)\n"
+             "  --auth MODE     none, any (any name and password) or accounts\n"
+             "  --account USER:PASSWORD  a dial-in account (more than one may be given)\n"
+             "  --mppe MODE     MPPE encryption: off, allowed or required\n"
+             "  --wins A[,B]    WINS servers for the guests\n"
              "  --echo SECS     LCP keepalive interval (default 0: none)\n"
              "  --no-lan        ISP calls cannot reach each other\n"
              "  --throttle BPS  hold every ISP call to this modem speed\n"
@@ -98,6 +104,7 @@ main(int argc, char **argv)
 
     memset(&cfg, 0, sizeof(cfg));
     snprintf(cfg.listen, sizeof(cfg.listen), "127.0.0.1");
+    snprintf(cfg.http_listen, sizeof(cfg.http_listen), "127.0.0.1");
     cfg.port      = 2323;
     cfg.http_port = 2324;
     cfg.log       = isp_ui_log;
@@ -130,6 +137,46 @@ main(int argc, char **argv)
             if (cfg.http_port == 0)
                 cfg.http_port = -1;
             i++;
+        } else if (!strcmp(a, "--http-listen") && next) {
+            snprintf(cfg.http_listen, sizeof(cfg.http_listen), "%s", next);
+            i++;
+        } else if (!strcmp(a, "--auth") && next) {
+            if ((st.auth = isp_auth_parse(next)) < 0) {
+                isp_ui_message(1, "--auth is none, any or accounts\n");
+                return 2;
+            }
+            i++;
+        } else if (!strcmp(a, "--mppe") && next) {
+            if ((st.mppe = isp_mppe_parse(next)) < 0) {
+                isp_ui_message(1, "--mppe is off, allowed or required\n");
+                return 2;
+            }
+            i++;
+        } else if (!strcmp(a, "--wins") && next) {
+            if (isp_wins_parse(next, st.wins) < 0) {
+                isp_ui_message(1, "--wins wants one or two addresses, a.b.c.d[,a.b.c.d]\n");
+                return 2;
+            }
+            i++;
+        } else if (!strcmp(a, "--account") && next) {
+            static isp_account_t acc[ISP_MAX_ACCOUNTS];
+            const char          *colon = strchr(next, ':');
+            int                  n     = isp_get_accounts(acc, ISP_MAX_ACCOUNTS);
+            int                  at    = n;
+
+            if ((colon == NULL) || (colon == next) || (colon[1] == '\0') || ((size_t) (colon - next) >= sizeof(acc[0].user))) {
+                isp_ui_message(1, "--account wants USER:PASSWORD\n");
+                return 2;
+            }
+            for (int k = 0; k < n; k++)
+                if (!strncmp(acc[k].user, next, (size_t) (colon - next)) && (acc[k].user[colon - next] == '\0'))
+                    at = k;
+            if (at < ISP_MAX_ACCOUNTS) {
+                snprintf(acc[at].user, sizeof(acc[at].user), "%.*s", (int) (colon - next), next);
+                snprintf(acc[at].password, sizeof(acc[at].password), "%s", colon + 1);
+                isp_set_accounts(acc, (at == n) ? n + 1 : n);
+            }
+            i++;
         } else if (!strcmp(a, "--no-open"))
             open_it = 0;
         else if (!strcmp(a, "--minimized"))
@@ -146,9 +193,10 @@ main(int argc, char **argv)
         } else if (!strcmp(a, "--max") && next) {
             st.max_sessions = atoi(next);
             i++;
-        } else if (!strcmp(a, "--pap"))
-            st.require_pap = 1;
-        else if (!strcmp(a, "--echo") && next) {
+        } else if (!strcmp(a, "--pap")) {
+            if (st.auth == PPP_AUTH_NONE)
+                st.auth = PPP_AUTH_ANY;
+        } else if (!strcmp(a, "--echo") && next) {
             st.echo_secs = (uint32_t) atoi(next);
             i++;
         } else if (!strcmp(a, "--no-lan"))

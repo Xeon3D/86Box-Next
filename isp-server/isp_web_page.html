@@ -8,27 +8,41 @@
 :root {
   --bg: #f4f5f7; --card: #ffffff; --text: #1d2330; --muted: #667085; --line: #e3e6eb;
   --accent: #2f6fdb; --accent-text: #ffffff; --ok: #1f8a4c; --warn: #b26b00; --bad: #c0362c;
-  --chip: #eef1f5;
+  --chip: #eef1f5; --log: #fbfbfc;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #14171c; --card: #1c2027; --text: #e6e8ec; --muted: #9aa3b2; --line: #2c323b;
     --accent: #5b8ff0; --accent-text: #0d1117; --ok: #4cc27f; --warn: #e0a64a; --bad: #ef6b5f;
-    --chip: #262b33;
+    --chip: #262b33; --log: #171a20;
   }
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text);
        font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-header { padding: 20px 24px 8px; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+header { padding: 16px 24px 0; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 h1 { font-size: 20px; margin: 0; font-weight: 650; }
 .sub { color: var(--muted); }
-.live { margin-left: auto; color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+.right { margin-left: auto; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.live { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
 .dot.lost { background: var(--bad); }
-main { padding: 8px 24px 32px; display: grid; gap: 16px; max-width: 1200px; }
+.who { font-size: 13px; color: var(--muted); }
+.who b { color: var(--text); font-weight: 600; }
+nav { padding: 12px 24px 0; display: flex; gap: 4px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+nav a { padding: 8px 14px; border-radius: 8px 8px 0 0; color: var(--muted); text-decoration: none; font-weight: 550;
+        border: 1px solid transparent; border-bottom: none; margin-bottom: -1px; }
+nav a:hover { color: var(--text); }
+nav a.on { color: var(--text); background: var(--card); border-color: var(--line); }
+nav .badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 6px; border-radius: 9px;
+             background: var(--chip); font-size: 11px; text-align: center; }
+main { padding: 16px 24px 32px; display: grid; gap: 16px; max-width: 1240px; }
+.tab { display: none; gap: 16px; }
+.tab.on { display: grid; }
 section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; overflow-x: auto; }
 h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+h3 { font-size: 13px; margin: 18px 0 8px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+h3:first-child { margin-top: 0; }
 table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 th { color: var(--muted); font-weight: 500; font-size: 12px; }
@@ -36,11 +50,13 @@ td.num { font-variant-numeric: tabular-nums; }
 tr:last-child td { border-bottom: none; }
 .empty { color: var(--muted); padding: 8px 0; }
 .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--chip); font-size: 12px; }
+.lock { color: var(--ok); }
 .s-on { color: var(--ok); } .s-neg { color: var(--warn); } .s-end { color: var(--muted); } .s-bad { color: var(--bad); }
 button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--text);
          border-radius: 7px; padding: 5px 12px; cursor: pointer; }
 button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 button.danger { color: var(--bad); }
+button.link { border: none; background: none; color: var(--accent); padding: 0; }
 button:disabled { opacity: .5; cursor: default; }
 input, select { font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--line);
                 border-radius: 7px; padding: 5px 8px; }
@@ -48,10 +64,13 @@ input[type=number] { width: 90px; }
 .form { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin-top: 12px; }
 .form label, .grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+.checks { display: flex; flex-wrap: wrap; gap: 8px 18px; }
 .check { flex-direction: row !important; align-items: center; gap: 8px !important; color: var(--text) !important; font-size: 14px !important; }
 .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
 .msg { min-height: 20px; margin-top: 10px; font-size: 13px; }
 .msg.err { color: var(--bad); } .msg.ok { color: var(--ok); }
+.banner { border: 1px solid var(--warn); color: var(--text); background: var(--card); border-radius: 10px; padding: 12px 16px; }
+.banner b { color: var(--warn); }
 code { background: var(--chip); padding: 1px 5px; border-radius: 4px; }
 .phone { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
 .ph-state { font-size: 18px; font-weight: 600; margin-bottom: 2px; }
@@ -60,107 +79,278 @@ code { background: var(--chip); padding: 1px 5px; border-radius: 4px; }
 @keyframes blink { 50% { opacity: .35; } }
 .keypad { display: grid; grid-template-columns: repeat(3, 44px); gap: 6px; }
 .keypad button { padding: 8px 0; font-size: 16px; font-variant-numeric: tabular-nums; }
+#log { background: var(--log); border: 1px solid var(--line); border-radius: 8px; height: 62vh; overflow: auto;
+       font: 12.5px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; padding: 8px 10px; white-space: pre; }
+#log .t { color: var(--muted); }
+#log .warn { color: var(--warn); } #log .bad { color: var(--bad); } #log .good { color: var(--ok); }
+.gate { position: fixed; inset: 0; background: var(--bg); display: none; align-items: center; justify-content: center; z-index: 10; }
+.gate.on { display: flex; }
+.gate section { width: min(420px, 92vw); }
+.gate label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); margin-top: 10px; }
+.gate input { width: 100%; }
+dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--text); padding: 16px; width: min(380px, 92vw); }
+dialog::backdrop { background: rgba(0, 0, 0, .35); }
+dialog label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); margin-top: 10px; }
+dialog input { width: 100%; }
+body.ro .admin { display: none !important; }
+body:not(.super) .super-only { display: none !important; }
 </style>
 </head>
-<body>
+<body class="ro">
+<div class="gate" id="gate-login">
+  <section>
+    <h2>86Box-Next ISP</h2>
+    <div class="sub">Log in to see and run this ISP.</div>
+    <form id="login-form">
+      <label>Name <input id="li-name" autocomplete="username" required></label>
+      <label>Password <input id="li-pass" type="password" autocomplete="current-password" required></label>
+      <div class="form"><button class="primary" type="submit">Log in</button></div>
+    </form>
+    <div class="msg" id="li-msg"></div>
+  </section>
+</div>
+<div class="gate" id="gate-setup">
+  <section>
+    <h2>86Box-Next ISP: the first user</h2>
+    <div class="sub">Nobody can use this page yet. The first user is the super admin, who can then add admins and viewers.</div>
+    <form id="setup-form">
+      <label id="su-token-l">Setup token (isp-server writes it in its log) <input id="su-token" autocomplete="off"></label>
+      <label>Name <input id="su-name" autocomplete="username" required></label>
+      <label>Password (6 characters or more) <input id="su-pass" type="password" autocomplete="new-password" required></label>
+      <label>The password again <input id="su-pass2" type="password" autocomplete="new-password" required></label>
+      <div class="form"><button class="primary" type="submit">Make the super admin</button></div>
+    </form>
+    <div class="msg" id="su-msg"></div>
+  </section>
+</div>
+
 <header>
   <h1>86Box-Next ISP</h1>
   <span class="sub" id="endpoint">&nbsp;</span>
-  <span class="live"><span class="dot" id="dot"></span><span id="livetext">connecting…</span></span>
+  <span class="right">
+    <span class="who" id="who"></span>
+    <span class="live"><span class="dot" id="dot"></span><span id="livetext">connecting…</span></span>
+  </span>
 </header>
+<nav id="tabs">
+  <a href="#status" data-tab="status">Status<span class="badge" id="b-calls">0</span></a>
+  <a href="#phone" data-tab="phone">Phone</a>
+  <a href="#forwards" data-tab="forwards">Port forwards</a>
+  <a href="#settings" data-tab="settings">Settings</a>
+  <a href="#log" data-tab="log">Log</a>
+  <a href="#users" data-tab="users" class="super-only">Users</a>
+</nav>
 <main>
-  <section>
-    <h2>Calls</h2>
-    <table>
-      <thead><tr>
-        <th>#</th><th>From</th><th>Guest address</th><th>State</th><th>User</th><th>On line</th>
-        <th>To guest</th><th>From guest</th><th>Errors</th><th>Speed</th><th>Port forwards</th><th></th>
-      </tr></thead>
-      <tbody id="calls"></tbody>
-    </table>
-    <div class="empty" id="nocalls">No calls.</div>
-  </section>
+  <div class="banner" id="nousers" style="display:none">
+    <b>No users yet.</b> Anyone on this computer can change this ISP from this page. To require logins (and
+    to open the page to other machines), make the first user in <a href="#users">Users</a>.
+  </div>
 
-  <section>
-    <h2>Telephone exchange</h2>
-    <table>
-      <thead><tr><th>Number</th><th>Line</th><th>Now</th><th>Plugged in</th></tr></thead>
-      <tbody id="lines"></tbody>
-    </table>
-    <div class="empty" id="nolines">No modem is on the telephone network. Set a modem's line to “Telephone network (isp-server)” to give it a number.</div>
-    <table id="pctable" style="margin-top:12px">
-      <thead><tr><th>Call</th><th>From</th><th>To</th><th>State</th><th>Time</th><th>Caller sent</th><th>Callee sent</th><th></th></tr></thead>
-      <tbody id="pcalls"></tbody>
-    </table>
-    <div class="form">
-      <label class="check"><input type="checkbox" id="p-unk"> Numbers that are no modem's reach the ISP</label>
-      <label>The ISP's own numbers <input id="p-nums" placeholder="0191, 555-1234" size="22"></label>
-      <button class="primary" id="p-save">Save</button>
-    </div>
-    <div class="hint">A modem's number rings that modem; dialling it with a prefix (9,555-0101) works too.</div>
-    <div class="msg" id="p-msg"></div>
-  </section>
+  <!-- ------------------------------------------------------------ status -->
+  <div class="tab" id="tab-status">
+    <section>
+      <h2>Calls</h2>
+      <table>
+        <thead><tr>
+          <th>#</th><th>From</th><th>Guest address</th><th>State</th><th>User</th><th>Security</th><th>On line</th>
+          <th>To guest</th><th>From guest</th><th>Errors</th><th>Speed</th><th>Port forwards</th><th class="admin"></th>
+        </tr></thead>
+        <tbody id="calls"></tbody>
+      </table>
+      <div class="empty" id="nocalls">No calls.</div>
+    </section>
+    <section>
+      <h2>This ISP</h2>
+      <div class="grid" id="summary"></div>
+    </section>
+  </div>
 
-  <section>
-    <h2>Phone</h2>
-    <div class="phone">
-      <div>
-        <div class="ph-state" id="ph-state">Off</div>
-        <div class="sub">This page's number: <b id="ph-num">–</b></div>
-        <div class="form">
-          <input id="ph-dial" placeholder="Number to call, e.g. 555-0101" inputmode="tel" size="24" autocomplete="off">
-          <button class="primary" id="ph-call">Call</button>
-          <button class="primary" id="ph-answer">Answer</button>
-          <button class="danger" id="ph-hang">Hang up</button>
+  <!-- ------------------------------------------------------------- phone -->
+  <div class="tab" id="tab-phone">
+    <section class="admin">
+      <h2>This page's phone</h2>
+      <div class="phone">
+        <div>
+          <div class="ph-state" id="ph-state">Off</div>
+          <div class="sub">This page's number: <b id="ph-num">–</b></div>
+          <div class="form">
+            <input id="ph-dial" placeholder="Number to call, e.g. 555-0101" inputmode="tel" size="24" autocomplete="off">
+            <button class="primary" id="ph-call">Call</button>
+            <button class="primary" id="ph-answer">Answer</button>
+            <button class="danger" id="ph-hang">Hang up</button>
+          </div>
+        </div>
+        <div class="keypad" id="ph-keys"></div>
+      </div>
+      <label class="check" style="margin-top:12px"><input type="checkbox" id="ph-on"> This page is a phone: it rings here, and can call</label>
+      <div class="hint">You talk on this computer's microphone and hear the call on its speakers (the microphone needs the page over HTTPS, or as 127.0.0.1 / localhost). A VM answers on its modem: with the modem menu's “Answer the phone”, or with voice software in the guest.</div>
+      <div class="msg" id="ph-msg"></div>
+    </section>
+    <section>
+      <h2>Telephone exchange</h2>
+      <table>
+        <thead><tr><th>Number</th><th>Line</th><th>Now</th><th>Plugged in</th></tr></thead>
+        <tbody id="lines"></tbody>
+      </table>
+      <div class="empty" id="nolines">No modem is on the telephone network. Set a modem's line to “Telephone network (isp-server)” to give it a number.</div>
+      <table id="pctable" style="margin-top:12px">
+        <thead><tr><th>Call</th><th>From</th><th>To</th><th>State</th><th>Time</th><th>Caller sent</th><th>Callee sent</th><th class="admin"></th></tr></thead>
+        <tbody id="pcalls"></tbody>
+      </table>
+      <div class="form admin">
+        <label class="check"><input type="checkbox" id="p-unk"> Numbers that are no modem's reach the ISP</label>
+        <label>The ISP's own numbers <input id="p-nums" placeholder="0191, 555-1234" size="22"></label>
+        <button class="primary" id="p-save">Save</button>
+      </div>
+      <div class="hint">A modem's number rings that modem; dialling it with a prefix (9,555-0101) works too.</div>
+      <div class="msg" id="p-msg"></div>
+    </section>
+  </div>
+
+  <!-- ---------------------------------------------------------- forwards -->
+  <div class="tab" id="tab-forwards">
+    <section>
+      <h2>Port forwards</h2>
+      <table>
+        <thead><tr><th>Call</th><th>Protocol</th><th>Host port</th><th>Guest port</th><th>Listens on</th><th>Now</th><th class="admin"></th></tr></thead>
+        <tbody id="fwds"></tbody>
+      </table>
+      <div class="empty" id="nofwds">None. A forward makes a host port reach a port on a guest: a BBS, a web or FTP server, a game host.</div>
+      <div class="form admin">
+        <label>Call <input type="number" id="f-n" min="1" value="1"></label>
+        <label>Protocol <select id="f-p"><option>tcp</option><option>udp</option></select></label>
+        <label>Host port <input type="number" id="f-h" min="1" max="65535" placeholder="2121"></label>
+        <label>Guest port <input type="number" id="f-g" min="1" max="65535" placeholder="21"></label>
+        <label class="check"><input type="checkbox" id="f-all"> every interface (the LAN too)</label>
+        <button class="primary" id="f-add">Add</button>
+      </div>
+      <div class="hint">Calls are numbered in the order they come in, lowest free number first; a forward stays with its number, so it applies to whichever call has it.</div>
+      <div class="msg" id="f-msg"></div>
+    </section>
+  </div>
+
+  <!-- ---------------------------------------------------------- settings -->
+  <div class="tab" id="tab-settings">
+    <section>
+      <h2>Network</h2>
+      <div class="grid">
+        <label class="check"><input type="checkbox" id="s-lan"> Guests can reach each other</label>
+        <label class="check"><input type="checkbox" id="s-thr"> Hold calls to modem speed</label>
+        <label>Speed (bit/s)
+          <select id="s-rate">
+            <option>57600</option><option>53333</option><option>48000</option><option>33600</option>
+            <option>28800</option><option>19200</option><option>14400</option><option>9600</option><option>2400</option>
+          </select>
+        </label>
+        <label>LCP keepalive, seconds (0: none) <input type="number" id="s-echo" min="0" max="3600"></label>
+        <label>Address range <input id="s-net" placeholder="10.86.0.0" size="12"></label>
+        <label>Calls at most <input type="number" id="s-max" min="1" max="64"></label>
+        <label>WINS servers (for the guests) <input id="s-wins" placeholder="10.0.0.5 10.0.0.6" size="22"></label>
+        <label class="check"><input type="checkbox" id="s-ml"> Multilink: a guest's calls make one connection</label>
+      </div>
+
+      <h3>Who gets in</h3>
+      <div class="grid">
+        <label>Authentication
+          <select id="s-auth">
+            <option value="none">None: nobody is asked</option>
+            <option value="any">Anyone: any name and password will do</option>
+            <option value="accounts">Accounts: only those below</option>
+          </select>
+        </label>
+      </div>
+      <div class="checks" id="s-methods" style="margin-top:10px"></div>
+      <div class="hint">The ISP asks for the strongest method allowed first; the guest may name another allowed one. MS-CHAP-2 needs accounts (it proves the ISP knows the password too).</div>
+
+      <h3>Encryption (MPPE)</h3>
+      <div class="grid">
+        <label>MPPE
+          <select id="s-mppe">
+            <option value="off">Off</option>
+            <option value="allowed">When the guest asks (after MS-CHAP)</option>
+            <option value="required">Required: no IP without it</option>
+          </select>
+        </label>
+        <div class="checks" style="align-items:center">
+          <label class="check"><input type="checkbox" id="s-m128"> 128-bit</label>
+          <label class="check"><input type="checkbox" id="s-m56"> 56-bit</label>
+          <label class="check"><input type="checkbox" id="s-m40"> 40-bit</label>
+          <label class="check"><input type="checkbox" id="s-mh"> stateless too</label>
         </div>
       </div>
-      <div class="keypad" id="ph-keys"></div>
-    </div>
-    <label class="check" style="margin-top:12px"><input type="checkbox" id="ph-on"> This page is a phone: it rings here, and can call</label>
-    <div class="hint">You talk on this computer's microphone and hear the call on its speakers. A VM answers on its modem: with the modem menu's “Answer the phone”, or with voice software in the guest.</div>
-    <div class="msg" id="ph-msg"></div>
-  </section>
+      <div class="hint">MPPE's keys come from MS-CHAP or MS-CHAP-2 with an account's password; required encryption needs accounts and one of those.</div>
 
-  <section>
-    <h2>Port forwards</h2>
-    <table>
-      <thead><tr><th>Call</th><th>Protocol</th><th>Host port</th><th>Guest port</th><th>Listens on</th><th>Now</th><th></th></tr></thead>
-      <tbody id="fwds"></tbody>
-    </table>
-    <div class="empty" id="nofwds">None. A forward makes a host port reach a port on a guest: a BBS, a web or FTP server, a game host.</div>
-    <div class="form">
-      <label>Call <input type="number" id="f-n" min="1" value="1"></label>
-      <label>Protocol <select id="f-p"><option>tcp</option><option>udp</option></select></label>
-      <label>Host port <input type="number" id="f-h" min="1" max="65535" placeholder="2121"></label>
-      <label>Guest port <input type="number" id="f-g" min="1" max="65535" placeholder="21"></label>
-      <label class="check"><input type="checkbox" id="f-all"> every interface (the LAN too)</label>
-      <button class="primary" id="f-add">Add</button>
-    </div>
-    <div class="hint">Calls are numbered in the order they come in, lowest free number first; a forward stays with its number, so it applies to whichever call has it.</div>
-    <div class="msg" id="f-msg"></div>
-  </section>
+      <h3>Compression (CCP)</h3>
+      <div class="checks" id="s-comp"></div>
+      <div class="hint">The ISP takes the first of the guest's choices it allows. With MPPE, only MPPC rides along. Guest LAN, speed and throttle apply at once; the rest to the next call.</div>
+      <div class="form admin"><button class="primary" id="s-save">Save</button></div>
+      <div class="msg" id="s-msg"></div>
+    </section>
 
-  <section>
-    <h2>Settings</h2>
-    <div class="grid">
-      <label class="check"><input type="checkbox" id="s-lan"> Guests can reach each other</label>
-      <label class="check"><input type="checkbox" id="s-thr"> Hold calls to modem speed</label>
-      <label>Speed (bit/s)
-        <select id="s-rate">
-          <option>57600</option><option>53333</option><option>48000</option><option>33600</option>
-          <option>28800</option><option>19200</option><option>14400</option><option>9600</option><option>2400</option>
-        </select>
-      </label>
-      <label class="check"><input type="checkbox" id="s-pap"> Ask for a name and password (any will do)</label>
-      <label>LCP keepalive, seconds (0: none) <input type="number" id="s-echo" min="0" max="3600"></label>
-      <label>Address range <input id="s-net" placeholder="10.86.0.0" size="12"></label>
-      <label>Calls at most <input type="number" id="s-max" min="1" max="64"></label>
-    </div>
-    <div class="hint">Guest LAN and speed apply at once; addresses, authentication and keepalive to the next call.</div>
-    <div class="form"><button class="primary" id="s-save">Save</button></div>
-    <div class="msg" id="s-msg"></div>
-  </section>
+    <section class="admin">
+      <h2>Dial-in accounts</h2>
+      <table>
+        <thead><tr><th>Name</th><th></th></tr></thead>
+        <tbody id="accounts"></tbody>
+      </table>
+      <div class="empty" id="noaccounts">No accounts. With authentication by account, nobody gets in until there is one.</div>
+      <div class="form">
+        <label>Name <input id="a-user" autocomplete="off" placeholder="alice"></label>
+        <label>Password <input id="a-pass" type="password" autocomplete="new-password"></label>
+        <button class="primary" id="a-add">Add</button>
+      </div>
+      <div class="hint">These are what guests type in their dial-up connection. A name may carry a domain (BIGCO\alice); MS-CHAP matches it without. Passwords are kept in isp-server.ini as they are (CHAP needs them), and never shown here.</div>
+      <div class="msg" id="a-msg"></div>
+    </section>
+  </div>
+
+  <!-- --------------------------------------------------------------- log -->
+  <div class="tab" id="tab-log">
+    <section>
+      <h2>Log</h2>
+      <div class="form" style="margin:0 0 10px">
+        <label>Show only lines with <input id="l-find" placeholder="session 3, PAP, refused…" size="28"></label>
+        <label class="check"><input type="checkbox" id="l-follow" checked> Follow the newest</label>
+        <button id="l-clear">Clear the view</button>
+      </div>
+      <div id="log"></div>
+    </section>
+  </div>
+
+  <!-- ------------------------------------------------------------- users -->
+  <div class="tab" id="tab-users">
+    <section>
+      <h2>Users of this page</h2>
+      <table>
+        <thead><tr><th>Name</th><th>Role</th><th></th></tr></thead>
+        <tbody id="users"></tbody>
+      </table>
+      <div class="empty" id="nousers2">None yet: the first is the super admin.</div>
+      <div class="form">
+        <label>Name <input id="u-name" autocomplete="off"></label>
+        <label>Password <input id="u-pass" type="password" autocomplete="new-password"></label>
+        <label id="u-role-l">Role
+          <select id="u-role"><option value="admin">Admin: everything but users</option><option value="viewer">Viewer: looks, changes nothing</option></select>
+        </label>
+        <button class="primary" id="u-add">Add</button>
+      </div>
+      <div class="hint">Admins change everything but the users; viewers see the status and the log. Passwords are kept as salted hashes.</div>
+      <div class="msg" id="u-msg"></div>
+    </section>
+  </div>
 </main>
+
+<dialog id="pw-dlg">
+  <form method="dialog" id="pw-form">
+    <h2 id="pw-title">Change your password</h2>
+    <label id="pw-cur-l">Current password <input id="pw-cur" type="password" autocomplete="current-password"></label>
+    <label>New password <input id="pw-new" type="password" autocomplete="new-password"></label>
+    <label>Again <input id="pw-new2" type="password" autocomplete="new-password"></label>
+    <div class="msg" id="pw-msg"></div>
+    <div class="form"><button class="primary" id="pw-ok" value="ok">Change</button><button value="cancel" formnovalidate>Cancel</button></div>
+  </form>
+</dialog>
+
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
@@ -168,10 +358,15 @@ let configured = {};   /* call number -> "tcp:2121:21 udp:*:5000:5000" */
 let maxCalls = 16;
 let settingsLoaded = false;
 let phoneLoaded = false;
+let session = { role: "none", user: "", setup: false, local: false };
+const METHODS = [["mschap2", "MS-CHAP-2"], ["mschap", "MS-CHAP"], ["chap-md5", "CHAP-MD5"], ["chap-sha1", "CHAP-SHA1"],
+                 ["chap-sha256", "CHAP-SHA256"], ["chap-sha384", "CHAP-SHA384"], ["chap-sha512", "CHAP-SHA512"],
+                 ["chap-sha3-256", "CHAP-SHA3-256"], ["chap-sha3-384", "CHAP-SHA3-384"], ["chap-sha3-512", "CHAP-SHA3-512"],
+                 ["pap", "PAP"]];
+const COMPS = [["mppc", "MPPC (Microsoft)"], ["deflate", "Deflate"], ["bsd", "BSD-Compress"], ["predictor1", "Predictor-1"]];
 
 /* "5550101" -> "555-0101" */
 function phone(n) { return /^\d{7}$/.test(n) ? n.slice(0, 3) + "-" + n.slice(3) : (n || "?"); }
-
 function esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 }
@@ -206,17 +401,113 @@ async function post(path, data) {
     body: new URLSearchParams(data)
   });
   const j = await r.json().catch(() => ({ error: "no answer" }));
+  if (r.status === 403 && !session.setup && session.role !== "local") checkSession();
   if (!r.ok || j.error) throw new Error(j.error || ("HTTP " + r.status));
   return j;
 }
+async function getJSON(path) {
+  const r = await fetch(path, { cache: "no-store" });
+  if (r.status === 403) { checkSession(); throw new Error("logged out"); }
+  return r.json();
+}
 function say(el, text, ok) { el.textContent = text; el.className = "msg " + (ok ? "ok" : "err"); }
+function canChange() { return ["admin", "super", "local"].includes(session.role); }
+function canKeepUsers() { return ["super", "local"].includes(session.role); }
+
+/* ------------------------------------------------------------ the session */
+async function checkSession() {
+  try {
+    session = await (await fetch("/api/session", { cache: "no-store" })).json();
+  } catch (e) { return; }
+  const out = session.role === "none";
+  $("gate-setup").classList.toggle("on", out && session.setup);
+  $("gate-login").classList.toggle("on", out && !session.setup);
+  $("su-token-l").style.display = session.local ? "none" : "";
+  document.body.classList.toggle("ro", !canChange());
+  document.body.classList.toggle("super", canKeepUsers());
+  $("nousers").style.display = session.role === "local" ? "" : "none";
+  $("who").innerHTML = session.role === "local" ? "this computer" :
+    out ? "" : "<b>" + esc(session.user) + "</b> · " + session.role +
+    " · <button class=link id=w-pw>password</button> · <button class=link id=w-out>log out</button>";
+  if (!out && session.role !== "local") {
+    $("w-pw").onclick = () => openPassword(null);
+    $("w-out").onclick = async () => { await post("/api/logout", {}).catch(() => {}); location.reload(); };
+  }
+  if (!canKeepUsers() && current() === "users") show("status");
+  if (!out) {
+    if (canChange() && !ph.started) { ph.started = true; phoneStart(); }
+    refresh();
+  }
+}
+
+$("login-form").onsubmit = async ev => {
+  ev.preventDefault();
+  try {
+    await post("/api/login", { name: $("li-name").value, password: $("li-pass").value });
+    $("li-pass").value = "";
+    $("li-msg").textContent = "";
+    settingsLoaded = phoneLoaded = false;
+    checkSession();
+  } catch (e) { say($("li-msg"), e.message, false); }
+};
+$("setup-form").onsubmit = async ev => {
+  ev.preventDefault();
+  if ($("su-pass").value !== $("su-pass2").value) return say($("su-msg"), "The passwords differ.", false);
+  try {
+    await post("/api/setup", { name: $("su-name").value, password: $("su-pass").value, token: $("su-token").value.trim() });
+    checkSession();
+  } catch (e) { say($("su-msg"), e.message, false); }
+};
+
+/* A password: one's own (with the current one), or the super admin's reset of another's. */
+let pwFor = null;
+function openPassword(name) {
+  pwFor = name;
+  $("pw-title").textContent = name ? "A new password for " + name : "Change your password";
+  $("pw-cur-l").style.display = name ? "none" : "";
+  $("pw-cur").value = $("pw-new").value = $("pw-new2").value = "";
+  $("pw-msg").textContent = "";
+  $("pw-dlg").showModal();
+}
+$("pw-ok").onclick = async ev => {
+  ev.preventDefault();
+  if ($("pw-new").value !== $("pw-new2").value) return say($("pw-msg"), "The new passwords differ.", false);
+  try {
+    if (pwFor) await post("/api/users", { op: "password", name: pwFor, password: $("pw-new").value });
+    else await post("/api/password", { current: $("pw-cur").value, password: $("pw-new").value });
+    $("pw-dlg").close();
+    if (pwFor) say($("u-msg"), "Password changed for " + pwFor + ".", true);
+  } catch (e) { say($("pw-msg"), e.message, false); }
+};
+
+/* ---------------------------------------------------------------- the tabs */
+function current() { return (location.hash || "#status").slice(1); }
+function show(name) {
+  if (!$("tab-" + name)) name = "status";
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("on", t.id === "tab-" + name));
+  document.querySelectorAll("nav a").forEach(a => a.classList.toggle("on", a.dataset.tab === name));
+  if (name === "log") pollLog();
+  if (name === "users") loadUsers();
+  if (name === "settings") loadAccounts();
+}
+window.addEventListener("hashchange", () => show(current()));
+
+/* ---------------------------------------------------------------- status */
+function security(c) {
+  const parts = [];
+  if (c.auth) parts.push(esc(c.auth));
+  if (c.ccp) parts.push((c.encrypted ? "<span class=lock title=encrypted>🔒</span> " : "") + esc(c.ccp));
+  if (c.bundle) parts.push("link of call " + c.bundle);
+  else if (c.links > 1) parts.push("Multilink, " + c.links + " links");
+  return parts.length ? parts.join(" · ") : "<span class=sub>–</span>";
+}
 
 function render(st) {
-  $("endpoint").innerHTML = "Modems dial <code>" + esc(st.server.listen) + ":" + st.server.port +
-                            "</code> &middot; any number, any name and password";
+  $("endpoint").innerHTML = "Modems dial <code>" + esc(st.server.listen) + ":" + st.server.port + "</code>";
   maxCalls = st.settings.max;
   configured = {};
   for (const f of st.forwards) configured[f.number] = f.spec;
+  $("b-calls").textContent = st.calls.length;
 
   /* Rows are rebuilt only when what they hold changes shape; the counters are
      written into the cells, so a button is never replaced under the mouse. */
@@ -226,9 +517,9 @@ function render(st) {
       esc(f.spec) + "</span>").join(" ") : "";
     return "<tr><td class=num>" + c.number + "</td><td>" + esc(c.label) + "</td><td>" + esc(c.ip) +
       "</td><td class='" + stateClass(c.state_id) + "'>" + esc(c.state) + "</td><td>" + esc(c.user) +
-      "</td><td class=num data-f=t></td><td class=num data-f=down></td><td class=num data-f=up></td>" +
+      "</td><td>" + security(c) + "</td><td class=num data-f=t></td><td class=num data-f=down></td><td class=num data-f=up></td>" +
       "<td class=num data-f=err></td><td class=num>" + (c.rate ? c.rate : "line speed") + "</td><td>" + fw +
-      "</td><td><button class=danger data-hang=" + c.number + (c.state_id === 5 ? " disabled" : "") +
+      "</td><td class=admin><button class=danger data-hang=" + c.number + (c.state_id === 5 ? " disabled" : "") +
       ">Hang up</button></td></tr>";
   });
   setRows($("calls"), rows.join(""));
@@ -240,6 +531,19 @@ function render(st) {
     tr.querySelector("[data-f=err]").textContent = c.bad + c.dropped;
   });
   $("nocalls").style.display = st.calls.length ? "none" : "";
+
+  const s = st.settings;
+  const auth = { none: "none", any: "anyone, any password", accounts: "accounts only" }[s.auth] || s.auth;
+  const summary = [
+    ["Authentication", auth + (s.auth !== "none" ? " (" + (s.methods || "no method") + ")" : "")],
+    ["Encryption", s.mppe === "off" ? "off" : "MPPE " + s.mppe + " (" + (s.strengths || "none") + (s.stateless ? ", stateless too" : "") + ")"],
+    ["Compression", s.compression || "none"],
+    ["Addresses", s.net + "/16, up to " + s.max + " calls"],
+    ["WINS", s.wins || "none"],
+    ["Multilink", s.multilink ? "on" : "off"],
+    ["Guest LAN", s.lan ? "guests reach each other" : "off"],
+    ["Speed", s.throttle ? "held to " + s.rate + " bit/s" : "line speed"]];
+  setRows($("summary"), summary.map(x => "<div><div class=hint>" + x[0] + "</div><div>" + esc(x[1]) + "</div></div>").join(""));
 
   setRows($("lines"), st.lines.map(l =>
     "<tr><td class=num>" + esc(phone(l.number)) + "</td><td>" + esc(l.label) + "</td><td class='" +
@@ -255,7 +559,7 @@ function render(st) {
     "<tr><td class=num>" + p.id + "</td><td>" + esc(phone(p.from) + (p.from_label ? " (" + p.from_label + ")" : "")) +
     "</td><td>" + esc(phone(p.to) + (p.to_label ? " (" + p.to_label + ")" : "")) + "</td><td class='" +
     (p.state === "connected" ? "s-on" : "s-neg") + "'>" + p.state + callKind(p) + "</td><td class=num data-f=t></td>" +
-    "<td class=num data-f=a></td><td class=num data-f=b></td><td><button class=danger data-pcall=" + p.id +
+    "<td class=num data-f=a></td><td class=num data-f=b></td><td class=admin><button class=danger data-pcall=" + p.id +
     ">Hang up</button></td></tr>").join(""));
   st.phone_calls.forEach((p, i) => {
     const tr = $("pcalls").rows[i];
@@ -279,27 +583,40 @@ function render(st) {
       frows.push("<tr><td class=num>" + n + "</td><td>" + f.proto.toUpperCase() + "</td><td class=num>" + f.host +
         "</td><td class=num>" + f.guest + "</td><td>" + (f.all ? "every interface" : "127.0.0.1") +
         "</td><td class='" + (now === "bound" ? "s-on" : now === "failed" ? "s-bad" : "s-end") + "'>" +
-        (now === "failed" ? "host port taken" : now) + "</td><td><button data-unfwd='" + n + " " + esc(f.text) +
+        (now === "failed" ? "host port taken" : now) + "</td><td class=admin><button data-unfwd='" + n + " " + esc(f.text) +
         "'>Remove</button></td></tr>");
     }
   setRows($("fwds"), frows.join(""));
   $("nofwds").style.display = frows.length ? "none" : "";
 
   if (!settingsLoaded) {
-    const s = st.settings;
-    $("s-lan").checked = !!s.lan; $("s-thr").checked = !!s.throttle; $("s-pap").checked = !!s.pap;
+    $("s-lan").checked = !!s.lan; $("s-thr").checked = !!s.throttle;
     $("s-echo").value = s.echo; $("s-net").value = s.net; $("s-max").value = s.max;
     const r = $("s-rate");
     if (![...r.options].some(o => +o.value === s.rate)) r.add(new Option(s.rate));
     r.value = s.rate;
+    $("s-auth").value = s.auth;
+    const methods = (s.methods || "").split(" ");
+    $("s-methods").innerHTML = METHODS.map(m => "<label class=check><input type=checkbox data-m='" + m[0] + "'" +
+      (methods.includes(m[0]) ? " checked" : "") + "> " + m[1] + "</label>").join("");
+    $("s-mppe").value = s.mppe;
+    const str = (s.strengths || "").split(" ");
+    $("s-m128").checked = str.includes("128"); $("s-m56").checked = str.includes("56"); $("s-m40").checked = str.includes("40");
+    $("s-mh").checked = !!s.stateless;
+    const comps = (s.compression || "").split(" ");
+    $("s-comp").innerHTML = COMPS.map(c => "<label class=check><input type=checkbox data-c='" + c[0] + "'" +
+      (comps.includes(c[0]) ? " checked" : "") + "> " + c[1] + "</label>").join("");
+    $("s-wins").value = s.wins;
+    $("s-ml").checked = !!s.multilink;
+    document.querySelectorAll("#tab-settings input, #tab-settings select").forEach(e => e.disabled = !canChange());
     settingsLoaded = true;
   }
 }
 
 async function refresh() {
+  if (session.role === "none") return;
   try {
-    const r = await fetch("/api/status", { cache: "no-store" });
-    render(await r.json());
+    render(await getJSON("/api/status"));
     $("dot").className = "dot"; $("livetext").textContent = "live";
   } catch (e) {
     $("dot").className = "dot lost"; $("livetext").textContent = "isp-server is not answering";
@@ -322,6 +639,31 @@ document.addEventListener("click", async ev => {
     try { await post("/api/forwards", { n: n, spec: rest }); say($("f-msg"), "Removed.", true); }
     catch (e) { say($("f-msg"), e.message, false); }
     refresh();
+  } else if (t.dataset.acctdel) {
+    if (!confirm("Remove the account " + t.dataset.acctdel + "?")) return;
+    try { await post("/api/accounts", { op: "delete", user: t.dataset.acctdel }); say($("a-msg"), "Removed.", true); }
+    catch (e) { say($("a-msg"), e.message, false); }
+    loadAccounts();
+  } else if (t.dataset.acctpw) {
+    const pw = prompt("A new password for " + t.dataset.acctpw + ":");
+    if (!pw) return;
+    try { await post("/api/accounts", { op: "password", user: t.dataset.acctpw, password: pw }); say($("a-msg"), "Password changed.", true); }
+    catch (e) { say($("a-msg"), e.message, false); }
+  } else if (t.dataset.userdel) {
+    if (!confirm("Remove the user " + t.dataset.userdel + "?")) return;
+    try { await post("/api/users", { op: "delete", name: t.dataset.userdel }); say($("u-msg"), "Removed.", true); }
+    catch (e) { say($("u-msg"), e.message, false); }
+    loadUsers();
+  } else if (t.dataset.userpw) {
+    openPassword(t.dataset.userpw);
+  }
+});
+document.addEventListener("change", async ev => {
+  const t = ev.target;
+  if (t.dataset.userrole) {
+    try { await post("/api/users", { op: "role", name: t.dataset.userrole, role: t.value }); say($("u-msg"), "Role changed.", true); }
+    catch (e) { say($("u-msg"), e.message, false); }
+    loadUsers();
   }
 });
 
@@ -346,10 +688,16 @@ $("p-save").onclick = async () => {
 };
 
 $("s-save").onclick = async () => {
+  const methods = [...document.querySelectorAll("#s-methods input:checked")].map(e => e.dataset.m).join(" ");
+  const comps = [...document.querySelectorAll("#s-comp input:checked")].map(e => e.dataset.c).join(" ");
+  const str = [["s-m40", "40"], ["s-m56", "56"], ["s-m128", "128"]].filter(x => $(x[0]).checked).map(x => x[1]).join(" ");
   try {
     await post("/api/settings", {
       lan: $("s-lan").checked ? 1 : 0, throttle: $("s-thr").checked ? 1 : 0, rate: $("s-rate").value,
-      pap: $("s-pap").checked ? 1 : 0, echo: $("s-echo").value, net: $("s-net").value, max: $("s-max").value
+      echo: $("s-echo").value, net: $("s-net").value, max: $("s-max").value,
+      auth: $("s-auth").value, methods: methods, mppe: $("s-mppe").value, strengths: str,
+      stateless: $("s-mh").checked ? 1 : 0, compression: comps, wins: $("s-wins").value,
+      multilink: $("s-ml").checked ? 1 : 0
     });
     say($("s-msg"), "Saved.", true);
   } catch (e) { say($("s-msg"), e.message, false); }
@@ -357,13 +705,101 @@ $("s-save").onclick = async () => {
   refresh();
 };
 
+/* --------------------------------------------------------------- accounts */
+async function loadAccounts() {
+  if (!canChange()) return;
+  try {
+    const j = await getJSON("/api/accounts");
+    setRows($("accounts"), j.accounts.map(a => "<tr><td>" + esc(a.user) + "</td><td><button data-acctpw='" + esc(a.user) +
+      "'>New password</button> <button class=danger data-acctdel='" + esc(a.user) + "'>Remove</button></td></tr>").join(""));
+    $("noaccounts").style.display = j.accounts.length ? "none" : "";
+  } catch (e) { }
+}
+$("a-add").onclick = async () => {
+  try {
+    await post("/api/accounts", { op: "add", user: $("a-user").value.trim(), password: $("a-pass").value });
+    say($("a-msg"), "Added " + $("a-user").value.trim() + ".", true);
+    $("a-user").value = $("a-pass").value = "";
+  } catch (e) { say($("a-msg"), e.message, false); }
+  loadAccounts();
+};
+
+/* ------------------------------------------------------------------ users */
+async function loadUsers() {
+  if (!canKeepUsers()) return;
+  try {
+    const j = await getJSON("/api/users");
+    setRows($("users"), j.users.map(u => "<tr><td>" + esc(u.name) + "</td><td>" +
+      (u.role === "super" ? "super admin" : "<select data-userrole='" + esc(u.name) + "'><option value=admin" +
+        (u.role === "admin" ? " selected" : "") + ">admin</option><option value=viewer" + (u.role === "viewer" ? " selected" : "") +
+        ">viewer</option></select>") + "</td><td>" +
+      (u.name === session.user ? "<span class=sub>you</span>" : "<button data-userpw='" + esc(u.name) + "'>New password</button> " +
+        (u.role === "super" ? "" : "<button class=danger data-userdel='" + esc(u.name) + "'>Remove</button>")) +
+      "</td></tr>").join(""));
+    $("nousers2").style.display = j.users.length ? "none" : "";
+    $("u-role-l").style.display = j.users.length ? "" : "none";
+    $("u-add").textContent = j.users.length ? "Add" : "Make the super admin";
+  } catch (e) { }
+}
+$("u-add").onclick = async () => {
+  try {
+    if (session.role === "local") {
+      /* The first user, from this computer: no token needed. */
+      await post("/api/setup", { name: $("u-name").value.trim(), password: $("u-pass").value });
+      location.reload();
+      return;
+    }
+    await post("/api/users", { op: "add", name: $("u-name").value.trim(), password: $("u-pass").value, role: $("u-role").value });
+    say($("u-msg"), "Added " + $("u-name").value.trim() + ".", true);
+    $("u-name").value = $("u-pass").value = "";
+  } catch (e) { say($("u-msg"), e.message, false); }
+  loadUsers();
+};
+
+/* -------------------------------------------------------------------- log */
+let logNext = 0;
+let logBusy = false;
+function logClass(t) {
+  return /refused|failed|error|cannot|warning|lost/i.test(t) ? "bad" : /let in|IPCP: up|CCP: up|joined/.test(t) ? "good" :
+    /hung up|disconnect|finished/i.test(t) ? "warn" : "";
+}
+async function pollLog() {
+  if (logBusy || current() !== "log" || session.role === "none") return;
+  logBusy = true;
+  try {
+    const j = await getJSON("/api/log?after=" + logNext);
+    const box = $("log");
+    const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 4;
+    const find = $("l-find").value.toLowerCase();
+    const frag = document.createDocumentFragment();
+    for (const l of j.lines) {
+      const d = document.createElement("div");
+      d.dataset.text = l.text.toLowerCase();
+      d.className = logClass(l.text);
+      d.innerHTML = "<span class=t>" + esc(l.t) + "</span>  " + esc(l.text);
+      if (find && !d.dataset.text.includes(find)) d.style.display = "none";
+      frag.appendChild(d);
+    }
+    box.appendChild(frag);
+    while (box.childElementCount > 4000) box.firstElementChild.remove();
+    logNext = j.next;
+    if ($("l-follow").checked && (atEnd || j.lines.length)) box.scrollTop = box.scrollHeight;
+  } catch (e) { }
+  logBusy = false;
+}
+$("l-find").oninput = () => {
+  const find = $("l-find").value.toLowerCase();
+  for (const d of $("log").children) d.style.display = !find || d.dataset.text.includes(find) ? "" : "none";
+};
+$("l-clear").onclick = () => { $("log").innerHTML = ""; };
+
 /* ------------------------------------------------------------- the phone
    A WebSocket to /api/phone makes this page a telephone on the exchange
    (isp_phone.c): JSON to and fro for the calls, and 8000 Hz 16-bit audio,
    binary, both ways.  The browser's own audio rate is converted here, in an
    AudioWorklet; the tones (ring, ringback, busy) are played here too. */
 const ph = { ws: null, on: true, state: "off", number: "", peer: "", voice: 1, ctx: null, node: null,
-             mic: null, tone: null, retry: null };
+             mic: null, tone: null, retry: null, started: false };
 
 const WORKLET = `
 class PhoneProc extends AudioWorkletProcessor {
@@ -424,7 +860,7 @@ async function phoneAudio(withMic) {
   if (ph.ctx.state !== "running") await ph.ctx.resume();
   if (withMic && !ph.mic) {
     if (!navigator.mediaDevices || !window.isSecureContext)
-      throw new Error("The microphone needs this page opened as http://127.0.0.1 or http://localhost.");
+      throw new Error("The microphone needs this page over HTTPS, or opened as http://127.0.0.1 or http://localhost.");
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     ph.mic = ph.ctx.createMediaStreamSource(stream);
@@ -491,10 +927,10 @@ function phoneEvent(m) {
 
 function phoneConnect() {
   clearTimeout(ph.retry);
-  if (!ph.on || ph.ws) return;
+  if (!ph.on || ph.ws || !canChange()) return;
   ph.state = "connecting";
   phoneShow();
-  const ws = new WebSocket("ws://" + location.host + "/api/phone");
+  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api/phone");
   ws.binaryType = "arraybuffer";
   ws.onmessage = e => {
     if (typeof e.data === "string") { try { phoneEvent(JSON.parse(e.data)); } catch (x) { } }
@@ -535,21 +971,25 @@ $("ph-hang").onclick = () => phoneSend({ cmd: "hangup" });
   $("ph-keys").appendChild(b);
 });
 /* Any click lets the page's audio start, so a call can be heard ringing. */
-document.addEventListener("click", () => { phoneAudio(false).catch(() => {}); }, { once: true });
+document.addEventListener("click", () => { if (canChange()) phoneAudio(false).catch(() => {}); }, { once: true });
 
-try { ph.on = localStorage.getItem("phone-off") !== "1"; } catch (e) { }
-$("ph-on").checked = ph.on;
-$("ph-on").onchange = () => {
-  ph.on = $("ph-on").checked;
-  try { localStorage.setItem("phone-off", ph.on ? "0" : "1"); } catch (e) { }
-  if (ph.on) phoneConnect();
-  else if (ph.ws) ph.ws.close();
-};
-phoneShow();
-phoneConnect();
+function phoneStart() {
+  try { ph.on = localStorage.getItem("phone-off") !== "1"; } catch (e) { }
+  $("ph-on").checked = ph.on;
+  $("ph-on").onchange = () => {
+    ph.on = $("ph-on").checked;
+    try { localStorage.setItem("phone-off", ph.on ? "0" : "1"); } catch (e) { }
+    if (ph.on) phoneConnect();
+    else if (ph.ws) ph.ws.close();
+  };
+  phoneShow();
+  phoneConnect();
+}
 
-refresh();
-setInterval(refresh, 1000);
+show(current());
+checkSession();
+setInterval(() => { if (["status", "phone", "forwards", "settings"].includes(current())) refresh(); }, 1000);
+setInterval(pollLog, 1000);
 </script>
 </body>
 </html>

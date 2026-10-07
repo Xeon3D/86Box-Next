@@ -128,14 +128,14 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   V.253 answers OK where Rockwell says VCON, and reports silence as `q` after a voice, `s` before.
   The voice tests' guests must keep real time: `timeBeginPeriod(1)` (Windows' 15.6 ms Sleep starves
   mu-law at 8 KB/s).
-- The status page's phone (`isp-server/isp_phone.c`, the "Phone" section): `/api/phone` is a
-  WebSocket (Host and Origin must be the page's own; SHA-1/base64 handshake in-file) that
-  `http_serve()` hands over; each is a thread registering on the exchange over loopback as any
+- The status page's phone (`isp-server/isp_phone.c`, the "Phone" tab): `/api/phone` is a
+  WebSocket (an admin's request from the page's own Origin, `isp_web_phone_allowed()`; SHA-1/base64
+  handshake in-file) that `http_serve()` hands over; each is a thread registering on the exchange over loopback as any
   modem (asks for 555-0100, label "Status page (browser)"), dialling/answering as VOICE, relaying
   JSON commands/events and 8000 Hz 16-bit audio (binary) to and from the browser, which resamples
   in an AudioWorklet (the page's audio runs at the browser's rate: Firefox will not mix rates) and
-  plays the ring/ringback/busy tones itself. The microphone needs the page as 127.0.0.1/localhost
-  (a secure context). `isp_srv` links `src/char/modem_voice.c` for it. Test:
+  plays the ring/ringback/busy tones itself. The microphone needs a secure context (127.0.0.1,
+  localhost, or HTTPS through a proxy). `isp_srv` links `src/char/modem_voice.c` for it. Test:
   `isp-server/tests/web_phone_test.c` (Isp.web_phone: the test is the browser and a modem).
 - isp-server (`isp-server/` at the repo root, its own exe and its own tests in
   `isp-server/tests/`; the emulator does not link it -- it only borrows `src/char/modem_voice.c`
@@ -153,23 +153,56 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   connection handed to the caller's thread and bridged; other numbers reach the ISP (switchable;
   explicit ISP numbers); dialling oneself is BUSY. Anything else is a plain TCP line: PPP from the
   first byte. The ISP: one session per call: PPP server
-  (`ppp_framing.c` RFC 1662, `ppp_session.c` RFC 1661 LCP passive until the guest's first request,
-  optional PAP accepting anything, IPCP with address and DNS; rejects PFC/ACFC/callback/VJ/NBNS,
-  Protocol-Rejects CCP/IPX/NBF) and a libslirp instance per session (`isp_nat_slirp.c`: synthetic
+  (`ppp_framing.c` RFC 1662, `ppp_session.c` RFC 1661 LCP passive until the guest's first request;
+  rejects PFC/ACFC/callback/VJ, Protocol-Rejects IPX/NBF) with: authentication none / anyone /
+  accounts (`isp_settings_t.auth`, `auth_protos`; accounts in `isp.c`, `isp_account_password()`,
+  names case-blind, `DOMAIN\` dropped as a fallback) by PAP, CHAP-MD5, MS-CHAP, MS-CHAP-2 (with
+  the S= authenticator response; only with accounts) and CHAP-SHA1/256/384/512/SHA3-256/384/512
+  (IANA 6-12), strongest asked first, the guest's NAK'd choice taken if allowed (`ppp_auth.c`: the
+  arithmetic; `isp_crypto.c`: MD4/MD5/SHA-1/2/3, DES, RC4, HMAC, PBKDF2, OS random -- no library);
+  IPCP DNS and WINS (`wins[2]`); CCP (`ppp_comp.c`) offering one method at a time (MPPE/MPPC option
+  18, Deflate via zlib, BSD-Compress ported from RFC 1977's code, Predictor-1) and taking the
+  guest's first allowed one; MPPE 40/56/128, stateless/stateful, keys from MS-CHAP (RFC 3079: NT
+  hash for 128, LM hash for 40/56) or MS-CHAP-2, off/allowed/required (required: no IP until CCP
+  encrypts both ways). Stateful MPPE follows Linux's kernel (proven against Windows): FLUSHED on
+  flag packets and on the answer to a Reset-Request means a key change; an MPPC flush's FLUSHED
+  only re-inits RC4 (RFC 3078) -- see the comments in `mppx_compress()`. Multilink (RFC 1990,
+  `ppp_mp.c` reassembly/fragmenting; on by default): a link with MRRU asks `link_ready()`, and joins
+  the call whose guest has the same name + endpoint discriminator (`isp.c` bundle_*): the member
+  keeps LCP/auth and hands packets to the owner's `mpq` ring; the owner's IPCP/CCP/NAT serve the
+  bundle and write MP fragments into members' output rings; the owner's end hangs up its members.
+  pppd 2.5 bug to remember: its MS-CHAP (v1) MPPE receive key is zeroed (mppe_set_chapv1 passes one
+  buffer as both keys), so v1+MPPE cannot be tested against pppd. And a libslirp instance per session (`isp_nat_slirp.c`: synthetic
   Ethernet/ARP, wall-clock timers, select()/poll() -- not WSAEventSelect, which loses FD_CONNECT --
   and no "readable" fallback, which makes libslirp send the guest ICMP unreachables). Session N
   gets 10.86.N.0/24: guest .15, gateway .2 (= host loopback), DNS .3; guests reach each other
   (guest LAN, `isp.c` routes between sessions). Each session has its own thread; other threads only
   copy bytes or snapshots under its lock (global lock before session lock). Its GUI is a web page
-  on 127.0.0.1:2324 (`isp_web.c`, `isp_web_page.html` embedded by `embed.cmake`), opened at start
-  (`--no-open` to skip -- always use it when testing, with `--minimized`, so no window takes focus): calls, the exchange's phone book and
-  modem-to-modem calls (hang-up), the exchange's settings, hang-up, per-call-number port
-  forwards (libslirp hostfwd), settings (guest LAN, modem-speed throttle, PAP, keepalive, range);
-  Host-header check and an `X-ISP-Request` header on changes against rebinding/CSRF. Settings and
-  forwards persist in `isp-server.ini` next to the exe (`--config`). Tests: `isp-server/tests/` (framing,
-  PPP automaton, sessions and controls through libslirp to host sockets; `isp_web_test.c` the
-  page's API; `isp_probe` drives a running isp-server, `--internet NAME` adds DNS + HTTP, `--hold
-  SECS` keeps a call up; `exchange_test.c` the exchange in-process with sockets as modems),
+  (`isp_web.c`, `isp_web_page.html` embedded by `embed.cmake`) on `http_listen` (127.0.0.1 by
+  default, `--http-listen`), port 2324, a thread per request (16 at most), opened at start
+  (`--no-open` to skip -- always use it when testing, with `--minimized`, so no window takes
+  focus). Tabs: Status (calls with auth/CCP/encryption/Multilink, a summary), Phone (the browser
+  phone, the exchange's lines/calls/settings), Port forwards (libslirp hostfwd per call number),
+  Settings (network, who gets in + dial-in accounts, MPPE, compression, WINS, Multilink), Log
+  (`/api/log?after=N`, a 2000-line ring in `isp_srv.c`), Users. Logins (`isp_users.c`): with no users
+  the page is for loopback only (Host must be a loopback name: anti-rebinding), role "local";
+  the first user is the super admin (from loopback, or remotely with the setup token logged at
+  start); super adds admins (all but users) and viewers (status + log); PBKDF2-SHA-256 hashes, a
+  SameSite=Strict HttpOnly cookie token (sha256 kept), 12 h idle / 7 days max, 5 wrong in a minute
+  locks logins for 30 s. Changes need `X-ISP-Request` (CSRF). Settings, forwards, accounts
+  (plain passwords, pct-encoded: CHAP needs them) and users persist in `isp-server.ini` next to
+  the exe (`--config`; `isp_config.c` has the words). `isp-server/` also builds on its own (Linux,
+  macOS, the container: `cmake -S isp-server`), `isp-server/Dockerfile` (build from the repo root:
+  Alpine, libslirp built static, tests run, a static musl `--target linux-binary` too; image
+  `xeon3d/86box-next-isp`, amd64+arm64), `.github/workflows/isp-server.yml` (manual: macOS
+  arm64/x86_64 with dylibbundler, Linux static amd64/arm64, optional release upload). WSL's Ubuntu
+  has docker, pppd and the build deps; root via `wsl -u root`. Tests: `isp-server/tests/` (framing,
+  PPP automaton, sessions and controls through libslirp to host sockets, every auth method end to
+  end (`test_auth`); `crypto_test.c` RFC vectors; `comp_test.c` every codec with itself, lossy too;
+  `isp_web_test.c` the page's API incl. roles; `isp_probe` drives a running isp-server, `--internet NAME` adds DNS + HTTP, `--hold
+  SECS` keeps a call up; `exchange_test.c` the exchange in-process with sockets as modems;
+  `pppd_interop.sh`, run as root on Linux, Linux's pppd as the guest for every method, MPPE,
+  Deflate, BSD-Compress and Multilink with checked transfers),
   `tests/modem/` (transport, two modems, calls to isp-server's core behind the fake sockets;
   `phone_test.c`: two real modems with real sockets ringing each other through the real exchange)
   and `tests/network/` (`net_slirp.c` behind a stub card).

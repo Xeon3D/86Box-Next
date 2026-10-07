@@ -565,7 +565,8 @@ test_session(void)
 
     /* PAP: asked for, any pair let in, then IPCP. */
     memset(&s, 0, sizeof(s));
-    pc.require_pap = 1;
+    pc.auth = PPP_AUTH_ANY;
+    pc.auth_protos = 1u << PPP_AP_PAP;
     ppp_init(&ppp, &pc, &sink_cb, &s, now);
     ppp_lower_up(&ppp, now);
     bring_up(&ppp, &s, &now);
@@ -581,11 +582,12 @@ test_session(void)
     i = find(&s, 0xc023, 2);
     check("any name and password: Authenticate-Ack", (i >= 0) && (s.info[i][1] == 5));
     check("...then IPCP starts", find(&s, 0x8021, 1) >= 0);
-    pc.require_pap = 0;
+    pc.auth = PPP_AUTH_NONE;
 
     /* The guest refusing PAP does not keep it out. */
     memset(&s, 0, sizeof(s));
-    pc.require_pap = 1;
+    pc.auth = PPP_AUTH_ANY;
+    pc.auth_protos = 1u << PPP_AP_PAP;
     ppp_init(&ppp, &pc, &sink_cb, &s, now);
     ppp_lower_up(&ppp, now);
     {
@@ -600,7 +602,7 @@ test_session(void)
         feed(&ppp, 0xc021, 2, s.info[i][1], &s.info[i][4], s.len[i] - 4, now);
         check("...and the link comes up without", (ppp.lcp.state == FSM_OPENED) && (find(&s, 0x8021, 1) >= 0));
     }
-    pc.require_pap = 0;
+    pc.auth = PPP_AUTH_NONE;
 }
 
 /* -------------------------------------------------------------------- isp */
@@ -871,7 +873,8 @@ test_control(void)
     hs = udp_listener(&hport);
     isp_get_settings(&old);
     st             = old;
-    st.require_pap = 1;
+    st.auth        = PPP_AUTH_ANY;
+    st.auth_protos = 1u << PPP_AP_PAP;
     isp_set_settings(&st);
 
     d1.s = isp_session_open(&cb, err, sizeof(err));
@@ -1023,6 +1026,72 @@ test_control(void)
     }
 }
 
+/* One call with one method allowed, by account: 1 if the client got on. */
+static int
+auth_call(int ap, const char *user, const char *password, char *method, size_t mlen)
+{
+    const isp_session_callbacks_t cb = { NULL, isp_log, NULL };
+    static isp_call_info_t        calls[4];
+    isp_settings_t                st;
+    char                          err[128];
+    direct_t                      d;
+    ppp_client_t                  c;
+    int                           ok;
+
+    isp_get_settings(&st);
+    st.auth        = PPP_AUTH_ACCOUNTS;
+    st.auth_protos = 1u << ap;
+    st.compression = 0;
+    st.mppe        = PPP_MPPE_OFF;
+    isp_set_settings(&st);
+    d.s = isp_session_open(&cb, err, sizeof(err));
+    if (d.s == NULL)
+        return 0;
+    memset(&c, 0, sizeof(c));
+    c.write    = direct_write;
+    c.read     = direct_read;
+    c.idle     = direct_idle;
+    c.opaque   = &d;
+    c.user     = user;
+    c.password = password;
+    ppp_client_init(&c);
+    ok = ppp_client_connect(&c, 8000);
+    method[0] = '\0';
+    for (int i = 0; (i < 50) && ok && !method[0]; i++) {
+        if (isp_list_calls(calls, 4) == 1)
+            snprintf(method, mlen, "%s", calls[0].auth);
+        sleep_ms(10);
+    }
+    isp_session_close(d.s);
+    return ok;
+}
+
+static void
+test_auth(void)
+{
+    static const isp_account_t acc[2] = { { "alice", "s3cr\xc3\xa9t" }, { "BIGCO\\bob", "hunter2" } };
+    isp_settings_t             old;
+    char                       what[96];
+    char                       method[24];
+
+    printf("\n== isp: authentication by account, every method ==\n");
+    isp_get_settings(&old);
+    isp_set_accounts(acc, 2);
+    for (int ap = 0; ap < PPP_AP_COUNT; ap++) {
+        int ok = auth_call(ap, "alice", "s3cr\xc3\xa9t", method, sizeof(method));
+
+        snprintf(what, sizeof(what), "%s: alice, a non-ASCII password, let in", ppp_ap_name(ap));
+        check(what, ok && !strcmp(method, ppp_ap_name(ap)));
+        snprintf(what, sizeof(what), "%s: a wrong password, kept out", ppp_ap_name(ap));
+        check(what, !auth_call(ap, "alice", "s3cret", method, sizeof(method)));
+    }
+    check("MS-CHAP-2: a name with a domain matches the account's",
+          auth_call(PPP_AP_MSCHAP2, "BIGCO\\bob", "hunter2", method, sizeof(method)));
+    check("CHAP-SHA256: nobody's name, kept out", !auth_call(PPP_AP_CHAP_SHA256, "mallory", "x", method, sizeof(method)));
+    isp_set_accounts(NULL, 0);
+    isp_set_settings(&old);
+}
+
 int
 main(void)
 {
@@ -1035,6 +1104,7 @@ main(void)
     test_session();
     test_isp();
     test_control();
+    test_auth();
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "all checks passed", failures,
            (failures == 1) ? "" : "s");

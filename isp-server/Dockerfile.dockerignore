@@ -1,0 +1,6 @@
+# The build sends only what isp-server needs, not the whole repository.
+*
+!isp-server/
+!src/char/modem_voice.c
+!src/include/86box/modem_voice.h
+isp-server/build*/

@@ -50,6 +50,7 @@ typedef struct isp_srv_config {
     char listen[64];    /* where modems connect (default 127.0.0.1)          */
     int  port;          /* 2323; 0 picks one, and isp_srv_start() says which */
     int  http_port;     /* 2324; 0 picks one; -1 for no status page          */
+    char http_listen[64]; /* the page's address (default 127.0.0.1)          */
     char ini[1024];     /* isp-server.ini; "" for none                       */
     int  quiet;
     void (*log)(const char *line); /* NULL: stdout, timestamped */

@@ -17,12 +17,12 @@
 #define ISP_PHONE_NUMBER "555-0100"
 
 /* A status page connection whose request (head: its headers, NUL-ended)
-   asks for GET /api/phone as a WebSocket: if the Host and Origin are the
-   page's own, the socket becomes a phone of its own thread, registered on
-   the exchange at exchange_port, and this returns 1 -- the socket is the
-   phone's.  0: not such a request, or refused (an error has been sent);
-   the caller closes the socket. */
-extern int  isp_phone_accept(uintptr_t sock, const char *head, int http_port, int exchange_port);
+   asks for GET /api/phone as a WebSocket: if `allowed` (the page decided:
+   an admin's request, from the page's own Origin), the socket becomes a
+   phone of its own thread, registered on the exchange at exchange_port, and
+   this returns 1 -- the socket is the phone's.  0: not such a request, or
+   refused (an error has been sent); the caller closes the socket. */
+extern int  isp_phone_accept(uintptr_t sock, const char *head, int allowed, int exchange_port);
 /* Every phone hangs up and its thread ends (isp_srv_stop). */
 extern void isp_phone_stop_all(void);
 

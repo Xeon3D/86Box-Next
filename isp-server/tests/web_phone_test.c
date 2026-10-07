@@ -432,6 +432,8 @@ main(void)
         ws_open(w, origin, status, sizeof(status), accept, sizeof(accept));
     }
     check("the page's own: 101 Switching Protocols", !strncmp(status, "HTTP/1.1 101", 12));
+    if (strncmp(status, "HTTP/1.1 101", 12))
+        printf("      (got \"%s\")\n", status);
     check("...with RFC 6455's accept key for its sample key", !strcmp(accept, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="));
     check("the phone gets its number: 555-0100", ws_wait(w, "\"number\":\"5550100\"", 3000));
     check("...in the phone book as the status page",
