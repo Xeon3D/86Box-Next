@@ -97,6 +97,7 @@ static int           live_type[PCMCIA_SOCKETS];
 static void         *live_priv[PCMCIA_SOCKETS];
 static volatile int  want_type[PCMCIA_SOCKETS];
 static volatile int  want_pending[PCMCIA_SOCKETS];
+static volatile int  want_again[PCMCIA_SOCKETS];   /* the same card out and in again */
 static int           swap_wait[PCMCIA_SOCKETS];   /* polls until the new card goes in */
 static uint8_t       scsi_bus[PCMCIA_SOCKETS];   /* 0xFF: none kept yet */
 
@@ -133,6 +134,8 @@ slots_init(UNUSED(const device_t *info))
     }
     for (int s = 0; s < PCMCIA_SOCKETS; s++) {
         want_pending[s] = 0;
+        want_type[s]    = pcmcia_card_type[s];
+        want_again[s]   = 0;
         swap_wait[s]    = 0;
         card_open(s, pcmcia_card_type[s]);
     }
@@ -189,6 +192,19 @@ pcmcia_request_card(int s, int type)
     want_pending[s]     = 1;
 }
 
+/* From the UI: the card in socket s with new settings (its own, or its
+   network link) -- taken out and put back, so it comes up with them, as a
+   card taken out and put in again by hand.  An empty socket: nothing. */
+void
+pcmcia_request_reinsert(int s)
+{
+    if ((s < 0) || (s >= PCMCIA_SOCKETS))
+        return;
+    want_type[s]    = pcmcia_card_type[s];
+    want_again[s]   = 1;
+    want_pending[s] = 1;
+}
+
 /* On the emulation thread (the controller's poll, every 10 ms): carry the
    requests out.  A card for another is the old one out now, the new one in
    after the socket has been seen empty. */
@@ -201,8 +217,11 @@ pcmcia_slots_poll(void)
         return;
     for (int s = 0; s < PCMCIA_SOCKETS; s++) {
         if (want_pending[s]) {
+            const int again = want_again[s];
+
             want_pending[s] = 0;
-            if (want_type[s] != live_type[s]) {
+            want_again[s]   = 0;
+            if ((want_type[s] != live_type[s]) || (again && live_type[s])) {
                 if (live_type[s] && want_type[s]) {
                     card_close(s);
                     swap_wait[s] = SWAP_POLLS;

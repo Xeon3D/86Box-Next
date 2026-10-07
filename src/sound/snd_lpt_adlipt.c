@@ -210,8 +210,15 @@ adlipt_close(void *priv)
     if (adlipt->log)
         log_close(adlipt->log);
 
+    /* 86Box-Next: closed without a hard reset too (hot-pluggable), when the
+       OPL chip device it added is still open: quiet it and close it with us.
+       At a hard reset the chip (added later) is closed first -- don't touch it. */
     if (adlipt->adlib) {
-        adlipt_reset_opl(adlipt);
+        music_remove_handler(adlib_get_buffer, adlipt->adlib);
+        if (adlipt->adlib->opl.priv && device_has_priv(adlipt->adlib->opl.priv)) {
+            adlipt_reset_opl(adlipt);
+            device_close_priv(adlipt->adlib->opl.priv);
+        }
         free(adlipt->adlib);
     }
 
@@ -222,7 +229,7 @@ adlipt_close(void *priv)
 const device_t lpt_adlipt_device = {
     .name          = "AdLib-on-LPT (adlipt/OPL2LPT)",
     .internal_name = "lpt_adlipt",
-    .flags         = DEVICE_LPT | DEVICE_HOTPLUG_IN,
+    .flags         = DEVICE_LPT | DEVICE_HOTPLUG,
     .local         = 0,
     .init          = adlipt_init,
     .close         = adlipt_close,
@@ -236,7 +243,7 @@ const device_t lpt_adlipt_device = {
 const device_t lpt_opl3_device = {
     .name          = "AdLib-on-LPT (OPL3LPT)",
     .internal_name = "lpt_opl3",
-    .flags         = DEVICE_LPT | DEVICE_HOTPLUG_IN,
+    .flags         = DEVICE_LPT | DEVICE_HOTPLUG,
     .local         = 1,
     .init          = adlipt_init,
     .close         = adlipt_close,

@@ -179,23 +179,46 @@ SettingsPcmcia::hostIndex(int s) const
     return sock[s].host->currentData().isValid() ? sock[s].host->currentData().toInt() : -1;
 }
 
+/* The card in socket s is the same one but its settings (its own, or a
+   network card's link) are not. */
+bool
+SettingsPcmcia::cardSettingsChanged(int s) const
+{
+    const int c       = sock[s].card->currentData().toInt();
+    bool      changed = sock[s].cfgChanged;
+
+    if (pcmcia_card_is_network(c)) {
+        const int t = sock[s].netType->currentData().toInt();
+        changed |= (t != pcmcia_net_type[s]);
+        if ((t == NET_TYPE_PCAP) && (hostIndex(s) >= 0))
+            changed |= strcmp(network_devs[hostIndex(s)].device, pcmcia_net_host[s]) != 0;
+    }
+    return changed;
+}
+
+/* 86Box-Next: PC Cards are hot-pluggable, so with the controller fitted
+   before and after, a card put in, taken out, swapped or reconfigured is a
+   soft change: save() hands it to the sockets as the PC Card icon does.
+   Fitting or removing the controller (an ISA card) takes a hard reset. */
 int
 SettingsPcmcia::changed()
 {
-    const bool on      = hasIsaBus(machineId) && enable->isChecked();
-    bool       changed = (on != !!pcmcia_enabled);
+    const bool on = hasIsaBus(machineId) && enable->isChecked();
 
-    for (int s = 0; s < PCMCIA_SOCKETS; s++) {
-        const int c = sock[s].card->currentData().toInt();
-        changed |= (c != pcmcia_card_type[s]) || sock[s].cfgChanged;
-        if (pcmcia_card_is_network(c)) {
-            const int t = sock[s].netType->currentData().toInt();
-            changed |= (t != pcmcia_net_type[s]);
-            if ((t == NET_TYPE_PCAP) && (hostIndex(s) >= 0))
-                changed |= strcmp(network_devs[hostIndex(s)].device, pcmcia_net_host[s]) != 0;
-        }
-    }
-    return changed ? (SETTINGS_CHANGED | SETTINGS_REQUIRE_HARD_RESET) : 0;
+    if (on != !!pcmcia_enabled)
+        return SETTINGS_CHANGED | SETTINGS_REQUIRE_HARD_RESET;
+    if (!on)
+        return 0;
+
+    bool changed = false;
+    for (int s = 0; s < PCMCIA_SOCKETS; s++)
+        changed |= (sock[s].card->currentData().toInt() != pcmcia_card_type[s]) || cardSettingsChanged(s);
+    if (!changed)
+        return 0;
+
+    /* The sockets are not running (the controller was fitted only in the
+       saved settings so far): the next hard reset makes the cards anyway. */
+    return pcmcia_slots_active() ? SETTINGS_CHANGED : (SETTINGS_CHANGED | SETTINGS_REQUIRE_HARD_RESET);
 }
 
 int
@@ -207,12 +230,25 @@ SettingsPcmcia::socketCard(int s) const
 void
 SettingsPcmcia::save(int soft)
 {
-    (void) soft;
+    /* A soft change: what each socket gets, worked out before the settings
+       below take the new values. */
+    int  type[PCMCIA_SOCKETS];
+    bool again[PCMCIA_SOCKETS];
+    for (int s = 0; s < PCMCIA_SOCKETS; s++) {
+        type[s]  = sock[s].card->currentData().toInt();
+        again[s] = (type[s] == pcmcia_card_type[s]) && (type[s] > 0) && cardSettingsChanged(s);
+    }
+
     pcmcia_enabled = hasIsaBus(machineId) && enable->isChecked();
     for (int s = 0; s < PCMCIA_SOCKETS; s++) {
-        pcmcia_card_type[s] = sock[s].card->currentData().toInt();
+        if (soft && (type[s] != pcmcia_card_type[s]))
+            pcmcia_request_card(s, type[s]);
+        pcmcia_card_type[s] = type[s];
         pcmcia_net_type[s]  = sock[s].netType->currentData().toInt();
         if ((pcmcia_net_type[s] == NET_TYPE_PCAP) && (hostIndex(s) >= 0))
             snprintf(pcmcia_net_host[s], sizeof(pcmcia_net_host[s]), "%s", network_devs[hostIndex(s)].device);
+        /* After the link settings, which the card reads when it goes back in. */
+        if (soft && again[s])
+            pcmcia_request_reinsert(s);
     }
 }

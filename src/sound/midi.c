@@ -440,42 +440,36 @@ midi_in_handler(int set,
         temp->remain = remain;
         temp->priv   = priv;
 
+        /* 86Box-Next: linked both ways -- a second handler was left out of
+           the list (no next), and removing one only worked for the first. */
         if (mih_last == NULL)
             mih_first = mih_last = temp;
         else {
-            temp->prev = mih_last;
-            mih_last   = temp;
+            temp->prev     = mih_last;
+            mih_last->next = temp;
+            mih_last       = temp;
         }
-    } else if ((mih_first != NULL) && (mih_last != NULL)) {
-        temp = mih_first;
-
-        while (1) {
-            if (temp == NULL)
-                break;
+    } else {
+        /* Remove a MIDI IN handler: closed without a hard reset (the
+           standalone MPU-401, from Settings). */
+        for (temp = mih_first; temp != NULL; temp = next) {
+            next = temp->next;
 
             if ((temp->msg == msg) && (temp->sysex == sysex) && (temp->priv == priv)) {
                 if (temp->prev != NULL)
                     temp->prev->next = temp->next;
+                else
+                    mih_first = temp->next;
 
                 if (temp->next != NULL)
                     temp->next->prev = temp->prev;
+                else
+                    mih_last = temp->prev;
 
-                next = temp->next;
-
-                if (temp == mih_first) {
-                    mih_first = NULL;
-                    if (next == NULL)
-                        mih_last = NULL;
-                }
-
-                if (temp == mih_last)
-                    mih_last = NULL;
+                if (mih_cur == temp)
+                    mih_cur = NULL;
 
                 free(temp);
-                temp = next;
-
-                if (next == NULL)
-                    break;
             }
         }
     }

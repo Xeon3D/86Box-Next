@@ -70,6 +70,8 @@ tndlpt_close(void *priv)
     if (tndlpt->log)
         log_close(tndlpt->log);
 
+    /* 86Box-Next: closed without a hard reset too (hot-pluggable). */
+    sound_remove_handler(sn76489_get_buffer, tndlpt->sn76489);
     free(tndlpt->sn76489);
     timer_disable(&tndlpt->ready_timer);
     free(tndlpt);
@@ -155,7 +157,7 @@ tndlpt_init(UNUSED(const device_t *info))
 const device_t lpt_tnd_device = {
     .name          = "Tandy-on-LPT (TNDLPT)",
     .internal_name = "lpt_tndlpt",
-    .flags         = DEVICE_LPT | DEVICE_HOTPLUG_IN,
+    .flags         = DEVICE_LPT | DEVICE_HOTPLUG,
     .local         = 0,
     .init          = tndlpt_init,
     .close         = tndlpt_close,

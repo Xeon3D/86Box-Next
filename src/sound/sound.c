@@ -677,6 +677,34 @@ sound_has_handler(void (*get_buffer)(int32_t *buffer, uint16_t len, void *priv),
     return 0;
 }
 
+/* 86Box-Next: take a handler out, for a device closed without a hard reset (a
+   hot-unplugged parallel port sound device): the table would otherwise call it
+   with its freed state.  Not there (the table was cleared by a reset): nothing. */
+static void
+handler_remove(sound_handler_t *table, uint8_t *num,
+               void (*get_buffer)(int32_t *buffer, uint16_t len, void *priv), void *priv)
+{
+    for (int c = 0; c < *num; c++) {
+        if ((table[c].get_buffer == get_buffer) && (table[c].priv == priv)) {
+            memmove(&table[c], &table[c + 1], (*num - c - 1) * sizeof(sound_handler_t));
+            (*num)--;
+            return;
+        }
+    }
+}
+
+void
+sound_remove_handler(void (*get_buffer)(int32_t *buffer, uint16_t len, void *priv), void *priv)
+{
+    handler_remove(sound_handlers, &sound_handlers_num, get_buffer, priv);
+}
+
+void
+music_remove_handler(void (*get_buffer)(int32_t *buffer, uint16_t len, void *priv), void *priv)
+{
+    handler_remove(music_handlers, &music_handlers_num, get_buffer, priv);
+}
+
 void
 music_add_handler(void (*get_buffer)(int32_t *buffer, uint16_t len, void *priv), void *priv)
 {

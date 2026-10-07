@@ -50,6 +50,7 @@ private:
     void updateSocket(int s);
     void updateState();
     int  hostIndex(int s) const;
+    bool cardSettingsChanged(int s) const;
 
     int        machineId { 0 };
     QCheckBox *enable;

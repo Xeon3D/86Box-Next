@@ -47,4 +47,16 @@ if(BUILD_TESTING)
         ${PROJECT_BINARY_DIR}/src/include
     )
     add_test(NAME Pcmcia.mfc COMMAND pcmcia_mfc_tests)
+
+    # The slots' hot plugging: cards put in, taken out, swapped, and put in
+    # again with new settings (the PCMCIA settings' soft changes).
+    add_executable(pcmcia_slots_tests
+        slots_test.c
+        ../../src/pcmcia/pcmcia.c
+    )
+    target_include_directories(pcmcia_slots_tests PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/include
+        ${PROJECT_BINARY_DIR}/src/include
+    )
+    add_test(NAME Pcmcia.slots COMMAND pcmcia_slots_tests)
 endif()

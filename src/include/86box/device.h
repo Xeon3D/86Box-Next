@@ -233,6 +233,8 @@ extern void  device_close_inst_params(const device_t *device, int inst, void *pa
 extern void  device_close(const device_t *device);
 extern void  device_close_all(void);
 extern void  device_close_by_flags(uint32_t match_flags);
+extern int   device_has_priv(const void *priv);
+extern void  device_close_priv(void *priv);
 extern void  device_reset_all(uint32_t match_flags);
 extern void *device_find_first_priv(uint32_t match_flags);
 extern void *device_get_priv(const device_t *dev);
