@@ -93,16 +93,13 @@ fake_close(void *priv)
 #define FAKE(n, t) \
     const device_t n = { .name = #n, .internal_name = #n, .local = t, .init = fake_init, .close = fake_close }
 
-/* In pcmcia.c's list order: 1 3C589D, 2 TE100, 3 3C562D, 4 APA-1460, 5 SRAM, 6 flash,
-   7 Accura 56K. */
+/* In pcmcia.c's list order: 1 3C589D, 2 TE100, 3 3C562D, 4 APA-1460, 5 Accura 56K. */
 const device_t device_none = { .name = "None", .internal_name = "none" };
 FAKE(threec589d_device, 1);
 FAKE(te100pc16_device, 2);
 FAKE(pccard_3c562d_device, 3);
 FAKE(apa1460_device, 4);
-FAKE(pccard_sram_device, 5);
-FAKE(pccard_flash_device, 6);
-FAKE(pccard_accura56k_device, 7);
+FAKE(pccard_accura56k_device, 5);
 
 static void
 poll(int n)
@@ -116,13 +113,13 @@ poll(int n)
 int
 main(void)
 {
-    /* A hard reset: an SRAM card in A, B empty. */
+    /* A hard reset: a 3C589D in A, B empty. */
     pcmcia_enabled      = 1;
-    pcmcia_card_type[0] = 5;
+    pcmcia_card_type[0] = 1;
     pcmcia_card_type[1] = 0;
     pcmcia_reset();
     CHECK(pcmcia_slots_active(), "the slots run after the reset");
-    CHECK((live[0] == 5) && (opened[0] == 1), "the SRAM card is in A (live %d, opened %d)", live[0], opened[0]);
+    CHECK((live[0] == 1) && (opened[0] == 1), "the 3C589D is in A (live %d, opened %d)", live[0], opened[0]);
     CHECK((live[1] == 0) && (opened[1] == 0), "B is empty");
 
     /* New settings for the card that came in at the reset (never requested
@@ -133,8 +130,8 @@ main(void)
     poll(SWAP_POLLS - 2);
     CHECK(live[0] == 0, "reinsert: the socket is seen empty for a while");
     poll(1);
-    CHECK((live[0] == 5) && (opened[0] == 2), "reinsert: the same card back (live %d, opened %d)", live[0], opened[0]);
-    CHECK(pcmcia_card_type[0] == 5, "reinsert keeps the setting");
+    CHECK((live[0] == 1) && (opened[0] == 2), "reinsert: the same card back (live %d, opened %d)", live[0], opened[0]);
+    CHECK(pcmcia_card_type[0] == 1, "reinsert keeps the setting");
     poll(SWAP_POLLS * 2);
     CHECK((opened[0] == 2) && (closed[0] == 1), "reinsert: once only");
 

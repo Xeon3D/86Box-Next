@@ -1,9 +1,9 @@
 # Handoff: multi-function PC Cards (PC Card 95 MFC)
 
-Started 2026-10-05 on branch `pcmcia-mfc` (not merged, not pushed). Read `CLAUDE.md` first;
-`flashhandoff.md` has the guest-test setup (pcictest copy, `flash-investigation\tools\run_guest.ps1`,
-`infgrep.py`, `fat32.py`/`fatput.py`, `creg.py`) and the VxD tooling (`le3.py`, `dumpobj.py`,
-`dis.py`, `stackmatch.py`).
+Started 2026-10-05 on branch `pcmcia-mfc` (merged into master). Read `CLAUDE.md` first. The
+guest-test kit it mentions (`flash-investigation\tools`: `run_guest.ps1`, `infgrep.py`,
+`fat32.py`/`fatput.py`, `creg.py`, `le3.py`, `dumpobj.py`, `stackmatch.py`) no longer exists,
+nor does `flashhandoff.md` (the memory cards were removed from the fork, 2026-10-07).
 
 ## Status (2026-10-05, builds 67-73)
 
@@ -127,8 +127,7 @@ functions proven end to end.**
 
 ## Guest test kit (flash-investigation\tools)
 
-- `pcictest\86box.cfg`: `socket_b = 3c562d`, `socket_b_net_type = slirp` (the flash card config
-  is in `86box.cfg.flash-bak`). `pcictest\b67.exe` = build 67 (normal), `trace.exe` = build 71
+- `pcictest\86box.cfg`: `socket_b = 3c562d`, `socket_b_net_type = slirp`. `pcictest\b67.exe` = build 67 (normal), `trace.exe` = build 71
   (PCIC log + the temporary modem register log), `b73.exe` = build 73, `nos3_2e8.exe` = build 72.
 - `MFCTEST.BAT` (not in the guest's StartUp now; `fatput.py` puts it back): waits 30 s, `WINIPCFG /BATCH`,
   `PING -n 3 10.0.2.2`, `C:\WINDOWS\ATPROBE.EXE`, all into `C:\MFCLOG.TXT`, then shuts down.

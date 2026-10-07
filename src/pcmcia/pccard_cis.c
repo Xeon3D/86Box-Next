@@ -394,67 +394,6 @@ pccard_cis_3c589d(uint8_t *buf)
     return c.len;
 }
 
-/* A DEVICE tuple's size byte: units (1 to 32) times a power of four of 512
-   bytes, the fewest units that make size. */
-static uint8_t
-device_size(uint32_t size)
-{
-    for (int scale = 6; scale >= 0; scale--) {
-        const uint32_t unit = 512u << (scale * 2);
-        if (!(size % unit) && (size / unit >= 1) && (size / unit <= 32))
-            return (uint8_t) (((size / unit - 1) << 3) | scale);
-    }
-    return 0x00;
-}
-
-/* An SRAM memory card of size bytes (64 KB to 4 MB): common memory
-   described by the DEVICE tuple -- type SRAM, 150 ns, its size as units
-   times a power of four of 512 bytes -- and a memory function; no
-   configuration registers, which a memory card does not have. */
-int
-pccard_cis_sram(uint8_t *buf, uint32_t size)
-{
-    static const char *vers[] = { "86Box-Next", "SRAM Card", "" };
-    pccard_cis_t       c;
-    const uint8_t      dev[3]       = { 0x63, device_size(size), 0xff };   /* SRAM, 150 ns */
-    const uint8_t      fn_memory[2] = { CISTPL_FUNCID_MEMORY, 0x00 };
-
-    pccard_cis_init(&c, buf, 256);
-    pccard_cis_tuple(&c, CISTPL_DEVICE, dev, 3);
-    pccard_cis_vers1(&c, vers, 3);
-    pccard_cis_tuple(&c, CISTPL_FUNCID, fn_memory, 2);
-    pccard_cis_tuple(&c, CISTPL_NO_LINK, NULL, 0);
-    pccard_cis_end(&c);
-    return c.len;
-}
-
-/* An Intel Series 2 flash card of size bytes (2 to 20 MB): 28F008SA chips,
-   two side by side on the 16-bit bus.  DEVICE: flash, 150 ns, the size;
-   JEDEC_C: Intel (89h), 28F008SA (A2h) -- what Windows 9x names the card by,
-   PCMCIA\MTD-A289, and what picks its memory technology driver; DEVICE_GEO:
-   a 16-bit bus, erase blocks of 128 KB (64 KB in each chip of a pair),
-   reads and writes a word at a time. */
-int
-pccard_cis_flash(uint8_t *buf, uint32_t size)
-{
-    static const char *vers[] = { "86Box-Next", "Flash Card", "" };
-    pccard_cis_t       c;
-    const uint8_t      dev[3]       = { 0x53, device_size(size), 0xff };   /* flash, 150 ns */
-    const uint8_t      jedec[2]     = { 0x89, 0xa2 };
-    const uint8_t      geo[6]       = { 2, 17, 1, 1, 1, 1 };   /* each a power of two plus one */
-    const uint8_t      fn_memory[2] = { CISTPL_FUNCID_MEMORY, 0x00 };
-
-    pccard_cis_init(&c, buf, 256);
-    pccard_cis_tuple(&c, CISTPL_DEVICE, dev, 3);
-    pccard_cis_tuple(&c, CISTPL_JEDEC_C, jedec, 2);
-    pccard_cis_tuple(&c, CISTPL_DEVICE_GEO, geo, 6);
-    pccard_cis_vers1(&c, vers, 3);
-    pccard_cis_tuple(&c, CISTPL_FUNCID, fn_memory, 2);
-    pccard_cis_tuple(&c, CISTPL_NO_LINK, NULL, 0);
-    pccard_cis_end(&c);
-    return c.len;
-}
-
 /* 3Com 3C562D/3C563D EtherLink III LAN+33.6 Modem PC Card
    (pccard_3c562.c): a multi-function card.  The primary chain names the
    card and links to two function chains:

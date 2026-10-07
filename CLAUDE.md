@@ -29,12 +29,7 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   socket+1) inside its "PC Card slots" device, not the device list, applying UI requests in
   the controller's 10 ms poll -- so a card must close everything it made (TE100: its DP8390).
   Cards (`pcmcia.c`'s list): 3Com 3C589D (`net_3c509b.c`'s PC Card mode), TRENDnet TE100-PC16
-  (`net_te100pc16.c`), SRAM memory card (`sram_card.c`, contents in nvr/), Intel Series 2
-  flash card (`flash_card.c`: 28F008SA pairs, JEDEC 89A2 so Windows 9x makes it
-  `PCMCIA\MTD-A289` for TrueFFS; program/erase need 12 V on the socket's Vpp; verified in
-  Win98 + TrueFFS-9x: TFORMAT, copy, TCHECK, reboot. TrueFFS quirks that are not bugs: a blank
-  SRAM card can't be formatted (TFORMAT is flash-only), a FAT image on flash mounts read-only,
-  writes fail for ~10 s after TFORMAT exits (its lazy Vpp-off); see `flashhandoff.md`), 3Com 3C562D LAN+33.6 Modem (`pccard_3c562.c`), the first
+  (`net_te100pc16.c`), 3Com 3C562D LAN+33.6 Modem (`pccard_3c562.c`), the first
   multi-function card: `pccard_mfc.c` is a PC Card 95 MFC framework (per-function COR/CCSR/
   I/O base/limit registers, I/O routed by each function's decode, IREQ = OR of the functions),
   CIS with LONGLINK_MFC chains (Windows 9x's ID walk follows function 0's chain); its LAN is
@@ -55,9 +50,8 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   read FFh; Windows 98's SCSI.INF ID `...-BE89` (SPARROW.MPD). Its SCSI bus is its socket's
   (`pcmcia_scsi_bus()`), kept from the hard reset (or first insertion) to the next, after every
   other device's -- `scsi_plan()` lists it, so Settings > Hard disks names it. Verified in Win98: a
-  disk on its bus as E:, read and written. A memory card's write-protect switch shows on the socket's WP
-  bit. CIS in
-  `pccard_cis.c`: built there, with NO_LINK, and a 2-byte CONFIG filler subtuple solved at
+  disk on its bus as E:, read and written. No memory cards (the SRAM and Intel flash cards
+  were removed, 2026-10-07). CIS in `pccard_cis.c`: built there, with NO_LINK, and a 2-byte CONFIG filler subtuple solved at
   build time so Windows 9x's ID matches the INF's (its checksum: ARC by nibble tables with one
   wrong entry, from PCCARD.VXD/CONFIGMG.VXD). Config in `[PCMCIA]`; a card's own settings are
   device instance #1/#2 (socket A/B); a PC network card links through

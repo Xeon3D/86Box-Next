@@ -63,8 +63,6 @@
 
 extern const device_t te100pc16_device;
 extern const device_t threec589d_device;
-extern const device_t pccard_sram_device;
-extern const device_t pccard_flash_device;
 extern const device_t pccard_3c562d_device;
 extern const device_t pccard_accura56k_device;
 extern const device_t apa1460_device;
@@ -85,8 +83,6 @@ static const struct {
     { &te100pc16_device,        1, 0 },
     { &pccard_3c562d_device,    1, 0 },
     { &apa1460_device,          0, 1 },
-    { &pccard_sram_device,      0, 0 },
-    { &pccard_flash_device,     0, 0 },
     { &pccard_accura56k_device, 0, 0 },
     { NULL,                     0, 0 }
     // clang-format on

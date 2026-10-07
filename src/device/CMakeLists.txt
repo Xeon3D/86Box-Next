@@ -68,8 +68,6 @@ add_library(dev OBJECT
     ../pcmcia/pccard_mfc.c
     ../pcmcia/pccard_3c562.c
     ../pcmcia/pccard_accura56k.c
-    ../pcmcia/sram_card.c
-    ../pcmcia/flash_card.c
     ../pcmcia/scsi_apa1460.c
     mouse.c
     mouse_bus.c

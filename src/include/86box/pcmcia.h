@@ -25,9 +25,7 @@ extern "C" {
 /* A 16-bit PC Card as the socket sees it.  Addresses are card addresses:
    attribute and common memory from 0, I/O as the host port (a card decodes
    only its own low address lines).  reset is the RESET pin, and power-off
-   resets a card too.  write_protect is the WP pin -- a memory card's
-   write-protect switch -- which the socket reports in its status (NULL: never
-   protected).  A card without common memory leaves common_read and
+   resets a card too.  A card without common memory leaves common_read and
    common_write NULL; one without I/O, the io_ ones. */
 typedef struct pccard_t {
     const char *name;   /* for the PC Card menu */
@@ -40,7 +38,6 @@ typedef struct pccard_t {
     void (*io_write)(uint16_t port, uint8_t val, void *priv);
     void (*io_writew)(uint16_t port, uint16_t val, void *priv);
     void (*reset)(void *priv);
-    int (*write_protect)(void *priv);
     void *priv;
 } pccard_t;
 
@@ -70,12 +67,6 @@ extern const char *pcmcia_socket_card_name(int socket);   /* NULL: an empty sock
 /* The card's IREQ line: 1 = interrupt requested.  The controller steers it
    to the ISA IRQ the driver chose, once the card is in I/O mode. */
 extern void pcmcia_card_irq(int socket, int level);
-
-/* The programming voltage on a socket's Vpp1 (pin 0) or Vpp2 (pin 1), in
-   tenths of a volt: 0, 50 (Vcc) or 120.  A flash card programs and erases
-   only at 12 V; on a 16-bit card Vpp1 feeds the even-byte chips and Vpp2 the
-   odd-byte ones. */
-extern int pcmcia_socket_vpp(int socket, int pin);
 
 /* The PCMCIA settings (86box.cfg, [PCMCIA]). */
 extern int  pcmcia_enabled;                      /* the controller is fitted   */
@@ -176,10 +167,8 @@ extern void pccard_mfc_irq(pccard_mfc_t *m, int func, int level);
 #define CISTPL_NO_LINK       0x14
 #define CISTPL_VERS_1        0x15
 #define CISTPL_DEVICE_A      0x17
-#define CISTPL_JEDEC_C       0x18
 #define CISTPL_CONFIG        0x1a
 #define CISTPL_CFTABLE_ENTRY 0x1b
-#define CISTPL_DEVICE_GEO    0x1e
 #define CISTPL_MANFID        0x20
 #define CISTPL_FUNCID        0x21
 #define CISTPL_FUNCE         0x22
@@ -215,8 +204,6 @@ extern int      pccard_cis_match_id(pccard_cis_t *c, uint16_t crc);
    into buf (at least 256 bytes), returning its length. */
 extern int pccard_cis_te100pc16(uint8_t *buf, const uint8_t mac[6]);
 extern int pccard_cis_3c589d(uint8_t *buf);
-extern int pccard_cis_sram(uint8_t *buf, uint32_t size);
-extern int pccard_cis_flash(uint8_t *buf, uint32_t size);
 extern int pccard_cis_apa1460(uint8_t *buf);
 /* The Hayes Accura 56K PC Card's, with where its configuration registers are. */
 extern int pccard_cis_accura56k(uint8_t *buf, uint32_t *cfg_base);

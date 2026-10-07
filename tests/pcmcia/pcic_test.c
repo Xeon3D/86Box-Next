@@ -413,35 +413,6 @@ test_card_events(void)
     reg(1, 0x04);
 }
 
-/* A memory card's write-protect switch shows in the status register (bit 4,
-   WP), and a flash card sees the Vpp the driver puts on the socket. */
-static int     wp_switch;
-static int     wp_read(UNUSED(void *p)) { return wp_switch; }
-static const pccard_t card_wp = { .name = "WP card", .attr_read = b_attr_read, .reset = b_reset, .write_protect = wp_read };
-
-static void
-test_write_protect_vpp(void)
-{
-    pcmcia_insert(1, &card_wp);
-    CHECK(!(reg(1, 0x01) & 0x10), "switch off: no WP (%02X)", reg(1, 0x01));
-    wp_switch = 1;
-    CHECK(reg(1, 0x01) & 0x10, "switch on: WP (%02X)", reg(1, 0x01));
-    wp_switch = 0;
-    CHECK(!(reg(0, 0x01) & 0x10), "a card without the pin: never WP");
-
-    setreg(1, 0x02, 0x00);
-    CHECK(pcmcia_socket_vpp(1, 0) == 0 && pcmcia_socket_vpp(1, 1) == 0, "unpowered: no Vpp");
-    setreg(1, 0x02, 0x90 | 0x02 | 0x04);   /* Vpp1 12 V, Vpp2 Vcc */
-    CHECK(pcmcia_socket_vpp(1, 0) == 120 && pcmcia_socket_vpp(1, 1) == 50, "Vpp1 12 V, Vpp2 5 V (%d, %d)",
-          pcmcia_socket_vpp(1, 0), pcmcia_socket_vpp(1, 1));
-    setreg(1, 0x02, 0x90 | 0x01 | 0x08);   /* Vpp1 Vcc, Vpp2 12 V */
-    CHECK(pcmcia_socket_vpp(1, 0) == 50 && pcmcia_socket_vpp(1, 1) == 120, "Vpp1 5 V, Vpp2 12 V");
-    CHECK(pcmcia_socket_vpp(0, 0) == 0 && pcmcia_socket_vpp(0, 1) == 0, "socket A's Vpp is its own");
-    setreg(1, 0x02, 0x00);
-    pcmcia_insert(1, NULL);
-    reg(1, 0x04);
-}
-
 static void
 test_unplug(void)
 {
@@ -470,7 +441,6 @@ main(void)
     test_common_memory();
     test_power_off();
     test_card_events();
-    test_write_protect_vpp();
     test_unplug();
 
     printf("%d checks, %d failures\n", checks, failures);
