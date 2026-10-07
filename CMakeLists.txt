@@ -283,5 +283,9 @@ set(CMAKE_TOP_LEVEL_PROCESSED TRUE)
 add_subdirectory(src)
 
 # 86Box-Next: isp-server, the virtual ISP and telephone exchange the modems
-# dial -- a program of its own, which 86Box does not link.
+# dial -- a program of its own, which 86Box does not link, in its own
+# repository (Xeon3D/ISP-Server), here as a git submodule.
+if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/isp-server/CMakeLists.txt)
+    message(FATAL_ERROR "isp-server/ is a git submodule: run `git submodule update --init` first")
+endif()
 add_subdirectory(isp-server)

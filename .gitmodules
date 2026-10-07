@@ -1,0 +1,3 @@
+[submodule "isp-server"]
+	path = isp-server
+	url = https://github.com/Xeon3D/ISP-Server.git
