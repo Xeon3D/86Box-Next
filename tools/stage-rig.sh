@@ -36,11 +36,28 @@ if tasklist //FI "IMAGENAME eq 86Box-Next.exe" 2>/dev/null | grep -qi "86Box-Nex
     echo "86Box-Next is running; close it and stage again" >&2
     exit 2
 fi
-# Every rig: a subfolder of Latest with a machine or an exe in it.
+# Every rig: a subfolder of Latest with a machine or an exe in it.  A rig
+# holding a .stage-branch file belongs to that git branch: it gets builds of
+# that branch only, and a build of that branch goes to such rigs only.
+BRANCH=$(git branch --show-current)
+OWNED=0
+for d in "$OUT"/*/; do
+    [ "$(cat "${d}.stage-branch" 2>/dev/null | tr -d '
+')" = "$BRANCH" ] && OWNED=1
+done
 RIGS=""
 for d in "$OUT"/*/; do
     d=${d%/}
     if [ -f "$d/86box.cfg" ] || [ -f "$d/86Box-Next.exe" ]; then
+        OWNER=$(cat "$d/.stage-branch" 2>/dev/null | tr -d '
+')
+        if [ -n "$OWNER" ] && [ "$OWNER" != "$BRANCH" ]; then
+            echo "Skipping $d (branch $OWNER's rig)"
+            continue
+        fi
+        if [ -z "$OWNER" ] && [ "$OWNED" = 1 ]; then
+            continue
+        fi
         RIGS="$RIGS
 $d"
     fi
