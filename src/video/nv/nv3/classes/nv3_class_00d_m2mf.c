@@ -62,8 +62,9 @@ void nv3_class_00d_method(uint32_t param, uint32_t method_id, nv3_ramin_context_
             break;
         case NV3_M2MF_NOTIFY:
             /* BUFFER_NOTIFY starts the transfer, then writes the notifier (the Win9x driver waits on slot 0) */
-            nv3_perform_dma_m2mf(grobj);
-            nv3_write_notifier(grobj, 0, NV3_NOTIFICATION_STATUS_DONE_OK, 0, 0);
+            /* A DMA fault leaves the notifier to the driver's PDMA interrupt handler */
+            if (nv3_perform_dma_m2mf(grobj))
+                nv3_write_notifier(grobj, 0, NV3_NOTIFICATION_STATUS_DONE_OK, 0, 0);
             break;                            
         default:
             nv_warning("%s: Invalid or unimplemented method 0x%04x\n", nv3_class_names[context.class_id & 0x1F], method_id);

@@ -48,7 +48,7 @@ nv3_sifm_clamp(int32_t v)
 static nv3_color_expanded_t
 nv3_sifm_fetch(nv3_grobj_t grobj, uint32_t u, uint32_t v)
 {
-    uint32_t inst   = grobj.grobj_1 & 0xFFFF;
+    uint32_t inst   = nv3->pgraph.dma_settings & 0xFFFF;
     uint32_t format = grobj.grobj_0 & 0x07;
     uint32_t row    = nv3_sifm.offset + v * nv3_sifm.pitch;
     uint32_t raw;

@@ -31,29 +31,44 @@
 
 void nv3_pstraps_init(void)
 {
-    nv_log("Initialising straps....\n");
+    nv_log("Initialising straps....%c", 10);
 
-    // Set the chip straps (Make these configurable in the future...)
-    // Current settings: AGP 2X disabled, TV Mode NTSC, Crystal 13.5Mhz, 128-bit bus width (cheaper models used 64bit buses), 
-    // BIOS present, 66Mhz bus speed (PCI)
+    /* The power-on configuration the card latches from its FBA[9:0] resistors (datasheet section 10):
+       0     bus speed: the 66MHZ bit in PCI status (AGP needs it high)
+       1     subsystem IDs from the adapter's VBIOS (0x54-0x57) rather than the system BIOS
+       3:2   RAM type: 01 = 8Mbit SGRAM/SDRAM, 128K x 2 banks x 32
+       4     128-bit framebuffer
+       5     AGP host interface
+       6     crystal: 0 = 13.5 MHz, 1 = 14.31818 MHz
+       8:7   TV mode: 01 = NTSC
+       9     PCI 2.1 compliant (delayed transactions) */
+    nv3->straps = (NV3_PSTRAPS_BIOS_PRESENT << NV3_PSTRAPS_BIOS)
+                | (NV3_PSTRAPS_RAM_TYPE_8MBIT << NV3_PSTRAPS_RAM_TYPE)
+                | (NV3_PSTRAPS_BUS_WIDTH_128BIT << NV3_PSTRAPS_BUS_WIDTH)
+                | (NV3_PSTRAPS_CRYSTAL_13500K << NV3_PSTRAPS_CRYSTAL)
+                | (NV3_PSTRAPS_TVMODE_NTSC << NV3_PSTRAPS_TVMODE)
+                | (1 << NV3_PSTRAPS_PCI21);
 
-    nv3->straps = (NV3_PSTRAPS_AGP2X_DISABLED << NV3_PSTRAPS_AGP2X) |
-    (NV3_PSTRAPS_TVMODE_NTSC << NV3_PSTRAPS_TVMODE) |
-    (NV3_PSTRAPS_CRYSTAL_13500K << NV3_PSTRAPS_CRYSTAL);
-
-    // figure out the bus
     if (nv3->nvbase.bus_generation == nv_bus_pci)
-        nv3->straps |= (NV3_PSTRAPS_BUS_TYPE_PCI << NV3_PSTRAPS_BUS_TYPE);
+        nv3->straps |= (NV3_PSTRAPS_BUS_TYPE_PCI << NV3_PSTRAPS_BUS_TYPE) | (NV3_PSTRAPS_BUS_SPEED_33MHZ << NV3_PSTRAPS_BUS_SPEED);
     else
-        nv3->straps |= (NV3_PSTRAPS_BUS_TYPE_AGP << NV3_PSTRAPS_BUS_TYPE);
+        nv3->straps |= (NV3_PSTRAPS_BUS_TYPE_AGP << NV3_PSTRAPS_BUS_TYPE) | (NV3_PSTRAPS_BUS_SPEED_66MHZ << NV3_PSTRAPS_BUS_SPEED);
 
-    // now the lower bits 
-    nv3->straps |= (NV3_PSTRAPS_BUS_WIDTH_128BIT << NV3_PSTRAPS_BUS_WIDTH) |
-    (NV3_PSTRAPS_BIOS_PRESENT << NV3_PSTRAPS_BIOS) |
-    (NV3_PSTRAPS_BUS_SPEED_66MHZ << NV3_PSTRAPS_BUS_SPEED);
+    /* With the sub-vendor strap the subsystem vendor/device IDs are read from the VBIOS at
+       0x54-0x57 during reset (datasheet appendix A, 0x2C-0x2F) */
+    if (((nv3->straps >> NV3_PSTRAPS_BIOS) & 1) && nv3->nvbase.vbios.rom && (nv3->nvbase.vbios.sz > 0x57)) {
+        for (int i = 0; i < 4; i++)
+            nv3->nvbase.pci_config.pci_regs[NV3_PCI_CFG_SUBSYSTEM_ID + i] = nv3->nvbase.vbios.rom[0x54 + i];
+    }
 
-    nv_log("Straps = 0x%04x\n", nv3->straps);
-    nv_log("Initialising PSTRAPS: Done\n");
+    nv_log("Straps = 0x%04x%c", nv3->straps, 10);
+    nv_log("Initialising PSTRAPS: Done%c", 10);
+}
+
+/* The synthesizers' reference clock, as strapped */
+double nv3_pstraps_crystal_hz(void)
+{
+    return ((nv3->straps >> NV3_PSTRAPS_CRYSTAL) & 1) ? 14318180.0 : 13500000.0;
 }
 
 //

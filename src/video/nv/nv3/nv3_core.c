@@ -108,7 +108,7 @@ uint16_t nv3_mmio_read16(uint32_t addr, void* priv)
     }
 
     ret = nv3_mmio_read32(addr, priv);
-    return (uint8_t)(ret >> ((addr & 3) << 3) & 0xFFFF);
+    return (uint16_t) (ret >> ((addr & 3) << 3));
 }
 
 // Read 32-bit MMIO
@@ -161,8 +161,8 @@ void nv3_mmio_write8(uint32_t addr, uint8_t val, void* priv)
     // overwrite first 8bits of a 32 bit value
     uint32_t new_val = nv3_mmio_read32(addr, NULL);
 
-    new_val &= (~0xFF << (addr & 3) << 3);
-    new_val |= (val << ((addr & 3) << 3));
+    new_val &= ~(0xFFu << ((addr & 3) << 3));
+    new_val |= ((uint32_t) val << ((addr & 3) << 3));
 
     nv3_mmio_write32(addr, new_val, priv);
 }
@@ -189,8 +189,8 @@ void nv3_mmio_write16(uint32_t addr, uint16_t val, void* priv)
     // overwrite first 16bits of a 32 bit value
     uint32_t new_val = nv3_mmio_read32(addr, NULL);
 
-    new_val &= (~0xFFFF << (addr & 3) << 3);
-    new_val |= (val << ((addr & 3) << 3));
+    new_val &= ~(0xFFFFu << ((addr & 3) << 3));
+    new_val |= ((uint32_t) val << ((addr & 3) << 3));
 
     nv3_mmio_write32(addr, new_val, priv);
 }
@@ -313,17 +313,18 @@ uint8_t nv3_pci_read(int32_t func, int32_t addr, UNUSED(int32_t len), void* priv
             break;
 
         // pci status register
+        /* Status (datasheet appendix A): 66MHZ follows the bus speed strap, CAP_LIST is set when
+           strapped for AGP, DEVSEL timing is medium; the abort bits are clear (no aborts here) */
         case PCI_REG_STATUS_L:
-            if (nv3->straps 
-            & NV3_PSTRAPS_BUS_SPEED_66MHZ)
-                ret = (nv3->nvbase.pci_config.pci_regs[PCI_REG_STATUS_L] | NV3_PCI_STATUS_L_66MHZ_CAPABLE);
-            else
-                ret = nv3->nvbase.pci_config.pci_regs[PCI_REG_STATUS_L];
-
+            ret = 0x00;
+            if ((nv3->straps >> NV3_PSTRAPS_BUS_SPEED) & 1)
+                ret |= NV3_PCI_STATUS_L_66MHZ_CAPABLE;
+            if (nv3->nvbase.bus_generation >= nv_bus_agp_1x)
+                ret |= 0x10;
             break;
 
         case PCI_REG_STATUS_H:
-            ret = (nv3->nvbase.pci_config.pci_regs[PCI_REG_STATUS_H]) & (NV3_PCI_STATUS_H_FAST_DEVSEL_TIMING << NV3_PCI_STATUS_H_DEVSEL_TIMING);
+            ret = 0x01 << 1; /* DEVSEL medium */
             break;
         
         case NV3_PCI_CFG_REVISION:
@@ -453,8 +454,12 @@ void nv3_pci_write(int32_t func, int32_t addr, UNUSED(int32_t len), uint8_t val,
 
     // some addresses are not writable so can't have any effect and can't be allowed to be modified using this code
     // as an example, only the most significant byte of the PCI BARs can be modified
-    if (addr >= NV3_PCI_CFG_BAR0_L && addr <= NV3_PCI_CFG_BAR0_BYTE2
-    && addr >= NV3_PCI_CFG_BAR1_L && addr <= NV3_PCI_CFG_BAR1_BYTE2)
+    if ((addr >= NV3_PCI_CFG_BAR0_L && addr <= NV3_PCI_CFG_BAR0_BYTE2)
+    || (addr >= NV3_PCI_CFG_BAR1_L && addr <= NV3_PCI_CFG_BAR1_BYTE2))
+        return;
+
+    /* The subsystem IDs at 0x2C-0x2F are read-only; they are written through 0x40-0x43 */
+    if (addr >= NV3_PCI_CFG_SUBSYSTEM_ID && addr <= NV3_PCI_CFG_SUBSYSTEM_ID + 3)
         return;
 
     nv_log("nv3_pci_write func=0x%04x addr=0x%04x val=0x%04x\n", func, addr, val);
@@ -475,11 +480,9 @@ void nv3_pci_write(int32_t func, int32_t addr, UNUSED(int32_t len), uint8_t val,
             nv3_update_mappings();          
             break;
         // pci status register
+        /* Status is read-only here (the abort bits never get set) */
         case PCI_REG_STATUS_L:
-            nv3->nvbase.pci_config.pci_regs[PCI_REG_STATUS_L] = val | (NV3_PCI_STATUS_L_66MHZ_CAPABLE);
-            break;
         case PCI_REG_STATUS_H:
-            nv3->nvbase.pci_config.pci_regs[PCI_REG_STATUS_H] = val | (NV3_PCI_STATUS_H_FAST_DEVSEL_TIMING << NV3_PCI_STATUS_H_DEVSEL_TIMING);
             break;
         case NV3_PCI_CFG_BAR0_BASE_ADDRESS:
             nv3->nvbase.bar0_mmio_base = val << 24;
@@ -1171,6 +1174,17 @@ static void nv3_debug_hook(const char *args)
                svga->crtc[0], svga->crtc[1], svga->crtc[2], svga->crtc[3], svga->crtc[4], svga->crtc[5], svga->crtc[6], svga->crtc[7],
                svga->crtc[0x25], svga->crtc[0x2d], svga->crtc[0x30], svga->crtc[0x31],
                svga->seqregs[1], svga->gdcreg[6], svga->attrregs[0x10], svga->miscout);
+    {
+        /* Refresh as the CRTC and VPLL give it (htotal in characters of 8 dots) */
+        double pclk = nv3->nvbase.pixel_clock_frequency;
+        double line = (double) svga->htotal * 8.0;
+
+        always_log("nv3: vpll m %d n %d p %d = %.3f MHz | htotal %d vtotal %d char %d dpc %d | %.2f kHz %.2f Hz | svga clock %.4f\n",
+                   nv3->pramdac.pixel_clock_m, nv3->pramdac.pixel_clock_n, nv3->pramdac.pixel_clock_p, pclk / 1000000.0,
+                   svga->htotal, svga->vtotal, svga->char_width, svga->dots_per_clock,
+                   (line > 0) ? pclk / line / 1000.0 : 0.0, (line > 0 && svga->vtotal) ? pclk / line / svga->vtotal : 0.0,
+                   svga->clock);
+    }
     for (int b = 0; b < NV3_PGRAPH_MAX_BUFFERS; b++)
         always_log("nv3: buffer %d offset %06x pitch %d bpixel %08x\n", b, nv3->pgraph.boffset[b], nv3->pgraph.bpitch[b], nv3->pgraph.bpixel[b]);
     always_log("nv3: dst canvas %08x-%08x uclip %d,%d-%d,%d cliprect ctrl %x | rop %02x beta %08x chroma %08x pattern shape %d rgb %08x/%08x a %02x/%02x bits %08x%08x | ctx %08x debug0 %08x\n",
@@ -1210,6 +1224,26 @@ static void nv3_debug_hook(const char *args)
             always_log("nv3: vram %06x: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n", off + r,
                        v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15]);
         }
+    }
+    /* "dev nv3 mmio <count>": log the next <count> register accesses */
+    const char *mmio_arg = args ? strstr(args, "mmio ") : NULL;
+    if (mmio_arg) {
+        extern uint32_t nv3_mmio_trace_left;
+        nv3_mmio_trace_left = strtoul(mmio_arg + 5, NULL, 0);
+    }
+    /* "dev nv3 inst <instance>": the first 16 words of an object in RAMIN */
+    const char *inst_arg = args ? strstr(args, "inst ") : NULL;
+    if (inst_arg) {
+        uint32_t base = strtoul(inst_arg + 5, NULL, 16) << 4;
+        for (int r = 0; r < 64; r += 16)
+            always_log("nv3: inst %05x: %08x %08x %08x %08x\n", base + r, nv3_ramin_read32(base + r, nv3),
+                       nv3_ramin_read32(base + r + 4, nv3), nv3_ramin_read32(base + r + 8, nv3), nv3_ramin_read32(base + r + 12, nv3));
+    }
+    /* "dev nv3 m2mf <count>": log the next <count> M2MF transfers */
+    const char *m2mf_arg = args ? strstr(args, "m2mf ") : NULL;
+    if (m2mf_arg) {
+        extern uint32_t nv3_m2mf_trace_left;
+        nv3_m2mf_trace_left = strtoul(m2mf_arg + 5, NULL, 0);
     }
     if (args && strstr(args, "methods")) {
         extern void nv3_pgraph_dump_methods(void);

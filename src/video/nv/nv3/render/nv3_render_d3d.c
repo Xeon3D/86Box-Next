@@ -143,7 +143,7 @@ static uint16_t
 nv3_d3d_read_tex16(nv3_grobj_t grobj, uint32_t byte)
 {
     if (!nv3_d3d.tex_mapped) {
-        nv3_d3d.tex_target = nv3_dma_map_pages(grobj.grobj_1 & 0xFFFF, nv3_d3d.tex_offset, nv3_d3d.tex_pages, 64, &nv3_d3d.tex_lin);
+        nv3_d3d.tex_target = nv3_dma_map_pages(nv3->pgraph.dma_settings & 0xFFFF, nv3_d3d.tex_offset, nv3_d3d.tex_pages, 64, &nv3_d3d.tex_lin);
         nv3_d3d.tex_mapped = true;
     }
 

@@ -11,6 +11,7 @@
  *                 shot path.bmp    the emulated screen as a 32-bit BMP
  *                 log text         a line in the 86Box log
  *                 dev args         passed to the device that registered a hook
+ *                 cpu              CS:EIP, registers and the code bytes there
  *
  *               Each command is logged ("debug_cmd: ..."), so a test can wait
  *               for the file to vanish and then read the log.
@@ -24,6 +25,8 @@
 #include <86box/keyboard.h>
 #include <86box/video.h>
 #include <86box/debug_cmd.h>
+#include <86box/mem.h>
+#include "cpu.h"
 
 #define DEBUG_CMD_QUEUE 512
 
@@ -113,6 +116,27 @@ debug_cmd_shot(const char *path)
     always_log("debug_cmd: shot %s (%dx%d, mode %dx%d)\n", path, w, h, mon->mon_xsize, mon->mon_ysize);
 }
 
+/* Where the guest is: registers, and the code at CS:EIP (paging-translated
+   without faulting; "--" for an unmapped byte). */
+static void
+debug_cmd_cpu(void)
+{
+    char     code[3 * 32 + 1];
+    uint32_t lin = cs + cpu_state.pc;
+
+    for (int i = 0; i < 32; i++) {
+        uint64_t phys = (cr0 >> 31) ? mmutranslate_noabrt(lin + i, 0) : (uint64_t) (lin + i);
+
+        if (phys == 0xffffffffffffffffULL)
+            snprintf(code + 3 * i, 4, " --");
+        else
+            snprintf(code + 3 * i, 4, " %02x", mem_readb_phys((uint32_t) phys));
+    }
+    always_log("debug_cmd: cpu %04x:%08x (lin %08x) flags %04x eax %08x ebx %08x ecx %08x edx %08x esi %08x edi %08x ebp %08x esp %08x ds %04x es %04x\n",
+               CS, cpu_state.pc, lin, cpu_state.flags, EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP, DS, ES);
+    always_log("debug_cmd: code%s\n", code);
+}
+
 static void
 debug_cmd_run(char *line)
 {
@@ -145,7 +169,9 @@ debug_cmd_run(char *line)
             debug_cmd_device_hook(arg);
         else
             always_log("debug_cmd: dev: no device hook\n");
-    } else if (!strcmp(line, "log"))
+    } else if (!strcmp(line, "cpu"))
+        debug_cmd_cpu();
+    else if (!strcmp(line, "log"))
         always_log("debug_cmd: %s\n", arg);
     else if (line[0])
         always_log("debug_cmd: unknown command \"%s\"\n", line);

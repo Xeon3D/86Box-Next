@@ -114,7 +114,7 @@ void nv3_ptimer_write(uint32_t address, uint32_t value)
 
         case NV3_PTIMER_INTR:
             nv3->ptimer.intr &= ~value;
-            nv3_pmc_clear_interrupts();
+            nv3_pmc_handle_interrupts(true);
             break;
         // Interrupt enablement state
         case NV3_PTIMER_INTR_EN:

@@ -72,11 +72,15 @@ uint32_t nv3_pgraph_read(uint32_t address)
         //interrupt status and enable regs
         case NV3_PGRAPH_INTR_0:
             ret = nv3->pgraph.intr_0;
-            nv3_pmc_clear_interrupts();
             break;
         case NV3_PGRAPH_INTR_1:
             ret = nv3->pgraph.intr_1;
-            nv3_pmc_clear_interrupts();
+            break;
+        case NV3_PGRAPH_DMA_INTR_0:
+            ret = nv3->pgraph.intr_dma;
+            break;
+        case NV3_PGRAPH_DMA_INTR_EN_0:
+            ret = nv3->pgraph.intr_en_dma;
             break;
         case NV3_PGRAPH_INTR_EN_0:
             ret = nv3->pgraph.intr_en_0;
@@ -213,6 +217,9 @@ uint32_t nv3_pgraph_read(uint32_t address)
         case NV3_PGRAPH_INSTANCE:
             ret = nv3->pgraph.instance;
             break;
+        case NV3_PGRAPH_CTX_SWITCH_C:
+            ret = nv3->pgraph.ctx_switch_c;
+            break;
         case NV3_PGRAPH_TRAPPED_INSTANCE:
             ret = nv3->pgraph.trapped_instance;
             break;
@@ -257,12 +264,12 @@ void nv3_pgraph_write(uint32_t address, uint32_t value)
         case NV3_PGRAPH_INTR_0:
             nv3->pgraph.intr_0 &= ~value;
             //we changed interrupt state
-            nv3_pmc_clear_interrupts();
+            nv3_pmc_handle_interrupts(true);
             break;
         case NV3_PGRAPH_INTR_1:
             nv3->pgraph.intr_1 &= ~value;
             //we changed interrupt state
-            nv3_pmc_clear_interrupts();
+            nv3_pmc_handle_interrupts(true);
             break;
         // Only bits divisible by 4 matter
         // and only bit0-16 is defined in intr_1 
@@ -276,11 +283,10 @@ void nv3_pgraph_write(uint32_t address, uint32_t value)
             break;
         case NV3_PGRAPH_DMA_INTR_0:
             nv3->pgraph.intr_dma &= ~value;
-            nv3_pmc_clear_interrupts();
+            nv3_pmc_handle_interrupts(true);
             break;
         case NV3_PGRAPH_DMA_INTR_EN_0:
-            nv3->pgraph.intr_en_dma = value & 0x000111111;
-            nv_log("Handling PGRAPH_DMA interrupts not implemented");
+            nv3->pgraph.intr_en_dma = value & 0x00011111;
             nv3_pmc_handle_interrupts(true);
             break;
         // A lot of this is currently a temporary implementation so that we can just debug what the current state looks like
@@ -375,10 +381,12 @@ void nv3_pgraph_write(uint32_t address, uint32_t value)
             break;
         // DMA
         case NV3_PGRAPH_DMA:
-            nv3->pgraph.dma_settings = value;
+            nv3->pgraph.dma_settings = value & 0xFFFF;
             break;
         case NV3_PGRAPH_NOTIFY:
-            nv3->pgraph.notifier = value;
+            /* instance (15:0), armed (16), select (23:20) */
+            nv3->pgraph.notifier       = value & 0x00F1FFFF;
+            nv3->pgraph.notify_pending = (value >> NV3_PGRAPH_NOTIFY_REQUEST_PENDING) & 1;
             break;
         // Clip rectangles
         case NV3_PGRAPH_CLIP0_MIN:
@@ -411,7 +419,10 @@ void nv3_pgraph_write(uint32_t address, uint32_t value)
             nv3->pgraph.trapped_data = value;
             break;
         case NV3_PGRAPH_INSTANCE:
-            nv3->pgraph.instance = value;
+            nv3->pgraph.instance = value & 0xFFFF;
+            break;
+        case NV3_PGRAPH_CTX_SWITCH_C:
+            nv3->pgraph.ctx_switch_c = value & 0x1FFFF;
             break;
         case NV3_PGRAPH_TRAPPED_INSTANCE:
             nv3->pgraph.trapped_instance = value;
@@ -482,6 +493,14 @@ void nv3_pgraph_interrupt_invalid(uint32_t num)
                 always_log("nv3:   %08x %08x\n", nv3_method_trace[i].addr, nv3_method_trace[i].data);
         }
     }
+    /* Debug: while M2MF tracing is on, a trapped M2MF method also logs what the driver's handler does */
+    {
+        extern uint32_t nv3_m2mf_trace_left, nv3_mmio_trace_left;
+        if (nv3_m2mf_trace_left && ((nv3->pgraph.trapped_address >> 16) & 0x1F) == 0x0D) {
+            always_log("nv3: m2mf trap %08x %08x\n", nv3->pgraph.trapped_address, nv3->pgraph.trapped_data);
+            nv3_mmio_trace_left = 60;
+        }
+    }
 
     nv3->pgraph.intr_1 |= (1 << num);
     nv3->pgraph.intr_0 |= 1;
@@ -537,7 +556,22 @@ void nv3_pgraph_submit(uint32_t param, uint16_t method, uint8_t channel, uint8_t
 
     /* The object's options are the current context (what CTX_SWITCH reads back) */
     nv3->pgraph.context_switch = grobj.grobj_0;
-    nv3->pgraph.instance       = context.ramin_offset;
+
+    /* The DMA pointers (CTX_SWITCH_B/C, NOTIFY's instance) are PGRAPH registers. With DEBUG_1
+       bit 16 set they are reloaded from the grobj (words 1 and 2) when a DMA-using object
+       (M2MF, scaled image from memory, image to memory, D3D) or a NOTIFY method arrives for
+       another instance than CTX_SWITCH_I; otherwise they keep what the driver wrote
+       (envytools hwtest nv03_pgraph_mthd). */
+    if (((nv3->pgraph.debug_1 >> NV3_PGRAPH_DEBUG_1_INSTANCE) & 1)
+        && ((context.ramin_offset & 0xFFFF) != nv3->pgraph.instance)
+        && ((class_id == nv3_pgraph_class0d_m2mf) || (class_id == nv3_pgraph_class0e_scaled_image_from_memory)
+            || (class_id == nv3_pgraph_class14_transfer2memory) || (class_id == nv3_pgraph_class17_d3d5tri_zeta_buffer)
+            || (method == NV3_SET_NOTIFY))) {
+        nv3->pgraph.instance     = context.ramin_offset & 0xFFFF;
+        nv3->pgraph.dma_settings = grobj.grobj_1 & 0xFFFF;
+        nv3->pgraph.notifier     = (nv3->pgraph.notifier & 0xF10000) | (grobj.grobj_1 >> 16);
+        nv3->pgraph.ctx_switch_c = grobj.grobj_2 & 0x1FFFF;
+    }
 
     nv_log_verbose_only("**** About to execute method **** method=0x%04x param=0x%08x, channel=%d.%d, class=%s, grobj=0x%08x 0x%08x 0x%08x 0x%08x\n",
         method, param, channel, subchannel, nv3_class_names[class_id], grobj.grobj_0, grobj.grobj_1, grobj.grobj_2, grobj.grobj_3);

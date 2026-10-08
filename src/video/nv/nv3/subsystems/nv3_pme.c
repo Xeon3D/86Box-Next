@@ -55,7 +55,7 @@ void nv3_pme_write(uint32_t address, uint32_t value)
     {
         case NV3_PME_INTR:
             nv3->pme.intr &= ~value;
-            nv3_pmc_clear_interrupts();
+            nv3_pmc_handle_interrupts(true);
             break;
         case NV3_PME_INTR_EN:
             nv3->pme.intr_en = value & 0x00001111;

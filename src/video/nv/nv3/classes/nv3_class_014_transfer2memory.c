@@ -52,7 +52,7 @@ void nv3_class_014_method(uint32_t param, uint32_t method_id, nv3_ramin_context_
         {
             uint32_t src_buffer = (grobj.grobj_0 >> NV3_PGRAPH_CTX_SWITCH_SRC_BUFFER) & 0x03;
             uint32_t cpp        = nv3_render_cpp(nv3->pgraph.bpixel[src_buffer]);
-            uint32_t inst       = grobj.grobj_1 & 0xFFFF;
+            uint32_t inst       = nv3->pgraph.dma_settings & 0xFFFF;
 
             itm->image_start = param;
             for (uint32_t y = 0; y < itm->size.y; y++) {

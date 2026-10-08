@@ -80,8 +80,8 @@ uint32_t nv3_pmc_handle_interrupts(bool send_now)
     if (nv3->pgraph.intr_0 & nv3->pgraph.intr_en_0 & ~(1 << 8)) // otherwise PGRAPH-0 interrupt
         new_intr_value |= (NV3_PMC_INTERRUPT_PGRAPH0_PENDING << NV3_PMC_INTERRUPT_PGRAPH0);
 
-    // Check second pgraph interrupt register
-    if (nv3->pgraph.intr_1 & nv3->pgraph.intr_en_1)
+    /* PDMA (PGRAPH's DMA engine) is PMC bit 13; PGRAPH's INVALID register reaches PMC through INTR_0 bit 0 */
+    if (nv3->pgraph.intr_dma & nv3->pgraph.intr_en_dma)
         new_intr_value |= (NV3_PMC_INTERRUPT_PGRAPH1_PENDING << NV3_PMC_INTERRUPT_PGRAPH1);
 
     // check video overlay interrupts
@@ -162,9 +162,7 @@ uint32_t nv3_pmc_read(uint32_t address)
             ret = nv3->pmc.boot;
             break;
         case NV3_PMC_INTR:
-            nv_log_verbose_only("\n"); // clear_interrupts logs
-            nv3_pmc_clear_interrupts();
-
+            /* Reading has no side effects: the line follows the pending, enabled sources */
             ret = nv3_pmc_handle_interrupts(false);
             break;
         case NV3_PMC_INTR_EN:

@@ -105,7 +105,7 @@ void nv3_pramdac_set_pixel_clock_register(uint32_t value)
 void nv3_pramdac_set_core_clock(void)
 {
     // from driver and vbios source
-    float frequency = 13500000.0f;
+    float frequency = (float) nv3_pstraps_crystal_hz(); /* the strapped reference clock */
 
     // prevent division by 0
     if (nv3->pramdac.memory_clock_m == 0)
@@ -145,7 +145,7 @@ void nv3_pramdac_set_pixel_clock(void)
     //      freq = 14318000.0f
     // but we really don't need to
 
-    float frequency = 13500000.0f;
+    float frequency = (float) nv3_pstraps_crystal_hz(); /* the strapped reference clock */
 
     // prevent division by 0
     if (nv3->pramdac.pixel_clock_m == 0)

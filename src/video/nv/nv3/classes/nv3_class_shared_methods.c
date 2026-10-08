@@ -60,7 +60,7 @@ void nv3_generic_method(uint32_t param, uint32_t method_id, nv3_ramin_context_t 
             // set a notify as pending.
             /* NOTIFY register: armed (16), select (23:20), the notifier instance (15:0) */
             nv3->pgraph.notifier = (1 << NV3_PGRAPH_NOTIFY_REQUEST_PENDING) | ((param & 0xF) << NV3_PGRAPH_NOTIFY_REQUEST_TYPE)
-                | (grobj.grobj_1 >> 16);
+                | (nv3->pgraph.notifier & 0xFFFF);
             nv3->pgraph.notify_index = 0;
             nv3->pgraph.notify_pending = true; 
             break;

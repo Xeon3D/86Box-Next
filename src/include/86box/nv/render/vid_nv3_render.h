@@ -56,4 +56,4 @@ void nv3_render_gdi_transparent_bitmap(bool clip, uint32_t color, uint32_t bitma
 void nv3_render_gdi_1bpp_bitmap(uint32_t color0, uint32_t color1, uint32_t bitmap_data, nv3_grobj_t grobj); /* GDI Type-E: Clipped 1bpp colour-expanded bitmap */
 
 /* DMA */
-void nv3_perform_dma_m2mf(nv3_grobj_t grobj);
+bool nv3_perform_dma_m2mf(nv3_grobj_t grobj);

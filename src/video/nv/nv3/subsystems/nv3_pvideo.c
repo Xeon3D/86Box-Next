@@ -71,7 +71,7 @@ void nv3_pvideo_write(uint32_t address, uint32_t value)
 
         case NV3_PVIDEO_INTR:
             nv3->pvideo.intr &= ~value;
-            nv3_pmc_clear_interrupts();
+            nv3_pmc_handle_interrupts(true);
             break;
         case NV3_PVIDEO_INTR_EN:
             nv3->pvideo.intr_en = value & 0x00000001;

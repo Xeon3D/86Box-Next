@@ -65,7 +65,7 @@ void nv3_pbus_write(uint32_t address, uint32_t val)
         // Bit 0 - PCI Bus Error
         case NV3_PBUS_INTR:
             nv3->pbus.intr &= ~val;
-            nv3_pmc_clear_interrupts();
+            nv3_pmc_handle_interrupts(true);
             break;
         case NV3_PBUS_INTR_EN:
             nv3->pbus.intr_en = val & 0x00000001;

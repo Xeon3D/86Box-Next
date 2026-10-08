@@ -330,7 +330,7 @@ void nv3_pfifo_write(uint32_t address, uint32_t val)
         // Bit 16 - DMA Page Table Entry (pagefault?)
         case NV3_PFIFO_INTR:
             nv3->pfifo.intr &= ~val;
-            nv3_pmc_clear_interrupts();
+            nv3_pmc_handle_interrupts(true);
             break;
         case NV3_PFIFO_INTR_EN:
             nv3->pfifo.intr_en = val & 0x00011111;

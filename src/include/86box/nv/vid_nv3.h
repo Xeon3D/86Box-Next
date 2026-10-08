@@ -490,13 +490,13 @@ extern const device_config_t nv3t_config[];                             // Confi
 #define NV3_PSTRAPS_BIOS_PRESENT                        1
 #define NV3_PSTRAPS_RAM_TYPE                            2           // Type of RAM module
 #define NV3_PSTRAPS_RAM_TYPE_16MBIT                     0x0
-#define NV3_PSTRAPS_RAM_TYPE_8MBIT                      0x1
+#define NV3_PSTRAPS_RAM_TYPE_8MBIT                      0x1         // datasheet FBA[3:2] = 01: 8Mbit SGRAM, 128K x 2 banks x 32
 #define NV3_PSTRAPS_NEC_MODE                            3           // PC98?
 #define NV3_PSTRAPS_NEC_MODE_DISABLED                   0x0
 #define NV3_PSTRAPS_NEC_MODE_ENABLED                    0x1
 #define NV3_PSTRAPS_BUS_WIDTH                           4           // Bus width
 #define NV3_PSTRAPS_BUS_WIDTH_64BIT                     0x0
-#define NV3_PSTRAPS_BUS_WIDTH_128BIT                    0x0
+#define NV3_PSTRAPS_BUS_WIDTH_128BIT                    0x1
 #define NV3_PSTRAPS_BUS_TYPE                            5           // Determines if this is a PCI or AGP card
 #define NV3_PSTRAPS_BUS_TYPE_PCI                        0x0
 #define NV3_PSTRAPS_BUS_TYPE_AGP                        0x1
@@ -508,6 +508,7 @@ extern const device_config_t nv3t_config[];                             // Confi
 #define NV3_PSTRAPS_TVMODE_NTSC                         0x1
 #define NV3_PSTRAPS_TVMODE_PAL                          0x2
 #define NV3_PSTRAPS_TVMODE_NONE                         0x3
+#define NV3_PSTRAPS_PCI21                               9           // PCI 2.1 (delayed transactions) on NV3, AGP 2X on NV3T
 #define NV3_PSTRAPS_AGP2X                               9
 #define NV3_PSTRAPS_AGP2X_ENABLED                       0x0
 #define NV3_PSTRAPS_AGP2X_DISABLED                      0x1
@@ -700,7 +701,8 @@ extern const device_config_t nv3t_config[];                             // Confi
 #define NV3_PGRAPH_D3D_CONFIG                           0x400644
 #define NV3_PGRAPH_BETA                                 0x400640    // Beta factor (30:23 fractional, 22:0 before fraction)
 #define NV3_PGRAPH_DMA                                  0x400680
-#define NV3_PGRAPH_INSTANCE                             0x400688    // Current instance (?)
+#define NV3_PGRAPH_INSTANCE                             0x400688    // CTX_SWITCH_I: instance whose DMA pointers are loaded
+#define NV3_PGRAPH_CTX_SWITCH_C                         0x40068C    // M2MF output DMA instance
 
 // Current notification object for pgraph
 #define NV3_PGRAPH_NOTIFY                               0x400684    // Notifier for PGRAPH    
@@ -1238,7 +1240,8 @@ typedef struct nv3_pgraph_s
     uint32_t chroma_key;                                    // A1R10G10B10, alpha = bit 30
     uint32_t beta_factor;                                   // 30:23
     uint32_t d3d_config;                                    // D3D_CONFIG (0x400644)
-    uint32_t dma_settings;
+    uint32_t dma_settings;                                  // CTX_SWITCH_B (0x400680): DMA object instance (15:0), M2MF input
+    uint32_t ctx_switch_c;                                  // CTX_SWITCH_C (0x40068C): M2MF output DMA instance (15:0), bit 16
     uint8_t rop;                                            // Current GDI Ternary Render Operation
     // SURFACE STUFF - PGRAPH CAN OPERATE ON 4 SURFACES/BUFFERS AT A TIME
     uint32_t boffset[NV3_PGRAPH_MAX_BUFFERS];               // 22-bit linear VRAM offset for the start of a buffer.
@@ -1567,6 +1570,7 @@ void        nv3_pfb_init(void);
 
 // NV3 pstraps/PSTRAPS
 void        nv3_pstraps_init(void);
+double      nv3_pstraps_crystal_hz(void);
 
 // NV3 PBUS/RMA
 uint8_t     nv3_pbus_rma_read(uint16_t addr);
