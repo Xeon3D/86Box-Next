@@ -29,6 +29,7 @@
 #include <86box/video.h>
 #include <86box/nv/vid_nv.h>
 #include <86box/nv/vid_nv3.h>
+#include "cpu.h"
 
 
 uint32_t nv3_pfifo_read(uint32_t address) 
@@ -419,7 +420,7 @@ void nv3_pfifo_write(uint32_t address, uint32_t val)
             break;
         case NV3_PFIFO_CONFIG_RAMRO:
             nv3->pfifo.ramro_config = val;
-            nv3->pfifo.ramro_location = ((nv3->pfifo.ramro_config >> NV3_PFIFO_CONFIG_RAMRO_BASE_ADDRESS) & 0x7F);
+            nv3->pfifo.ramro_location = ((nv3->pfifo.ramro_config >> NV3_PFIFO_CONFIG_RAMRO_BASE_ADDRESS) & 0x7F) << 9; /* bits 15:9 of the RAMIN address */
 
             uint32_t new_size_ramro = ((val >> NV3_PFIFO_CONFIG_RAMRO_SIZE) & 0x01);
 
@@ -523,7 +524,7 @@ void nv3_pfifo_write(uint32_t address, uint32_t val)
             break;
     }
 
-    if (address >= NV3_PFIFO_CACHE0_METHOD_START && address <= NV3_PFIFO_CACHE0_METHOD_END)
+    if (address >= NV3_PFIFO_CACHE0_METHOD_START && address < NV3_PFIFO_CACHE0_METHOD_END)
     {
         nv_log_verbose_only("PFIFO Cache0 Write\n");
 
@@ -542,7 +543,7 @@ void nv3_pfifo_write(uint32_t address, uint32_t val)
         }
 
     }
-    else if (address >= NV3_PFIFO_CACHE1_METHOD_START && address <= NV3_PFIFO_CACHE1_METHOD_END)
+    else if (address >= NV3_PFIFO_CACHE1_METHOD_START && address < NV3_PFIFO_CACHE1_METHOD_END)
     {       
         // Not sure if REV C changes this. It should...
         uint32_t slot = 0;
@@ -570,10 +571,16 @@ void nv3_pfifo_write(uint32_t address, uint32_t val)
         }
     }
     /* Handle some special memory areas */
-    else if (address >= NV3_PFIFO_CACHE1_CTX_START && address <= NV3_PFIFO_CACHE1_CTX_END)
+    else if (address >= NV3_PFIFO_CACHE1_CTX_START && address < NV3_PFIFO_CACHE1_CTX_END)
     {
         uint32_t ctx_entry_id = ((address - NV3_PFIFO_CACHE1_CTX_START) / 16) % 8;
         nv3->pfifo.cache1_settings.context[ctx_entry_id] = val;
+        {
+            extern uint32_t nv3_swm_trace_left;
+            if (nv3_swm_trace_left) {
+                always_log("nv3: cache1 ctx[%d] = %08x (cs:eip %04x:%08x)%c", ctx_entry_id, val, CS, cpu_state.pc, 10);
+            }
+        }
 
         nv_log_verbose_only("PFIFO Cache1 CTX Write Entry=%d value=0x%04x\n", ctx_entry_id, val);
     }
@@ -708,6 +715,9 @@ void nv3_pfifo_cache0_pull(void)
 
 }
 
+/* Debug: log the next N software methods and the register accesses after each ("dev nv3 swm N") */
+uint32_t nv3_swm_trace_left;
+
 void nv3_pfifo_context_switch(uint32_t new_channel)
 {
     /* The pusher hands CACHE1 to another channel: the puller's eight subchannel contexts are saved
@@ -717,6 +727,14 @@ void nv3_pfifo_context_switch(uint32_t new_channel)
     uint32_t old   = nv3->pfifo.cache1_settings.channel & 0x7F;
 
     new_channel &= 0x7F;
+    {
+        extern uint32_t nv3_swm_trace_left;
+        if (nv3_swm_trace_left) {
+            always_log("nv3: pfifo channel %d -> %d (ramfc %04x cfg %08x) ctx7 %08x -> %08x%c", old, new_channel, ramfc,
+                       nv3->pfifo.ramfc_config, nv3->pfifo.cache1_settings.context[7],
+                       nv3_ramin_read32(ramfc + (new_channel << 5) + 28, nv3), 10);
+        }
+    }
     for (int sc = 0; sc < 8; sc++)
         nv3_ramin_write32(ramfc + (old << 5) + (sc << 2), nv3->pfifo.cache1_settings.context[sc], nv3);
     for (int sc = 0; sc < 8; sc++)
@@ -805,6 +823,9 @@ void nv3_pfifo_cache1_push(uint32_t addr, uint32_t param)
             }
         }
          
+        /* the entry: the access's offset in USER (method 12:2, subchannel 15:13, channel 22:16),
+           a write (bit 23 clear), all bytes enabled (27:24, inverted: 0) and the reason (31:28) */
+        new_address |= addr & 0x7FFFFC;
         nv3_ramin_write32(nv3->pfifo.ramro_location + nv3->pfifo.runout_put, new_address, nv3);
         nv3_ramin_write32(nv3->pfifo.ramro_location + nv3->pfifo.runout_put + 4, param, nv3);
 
@@ -902,6 +923,15 @@ void nv3_pfifo_cache1_pull(void)
     if (!(current_context & 0x800000))
     {
         nv_log_verbose_only("The object in CACHE1 is a software object\n");
+        {
+            extern uint32_t nv3_mmio_trace_left;
+            if (nv3_swm_trace_left) {
+                nv3_swm_trace_left--;
+                always_log("nv3: software method chan %d subch %d mthd %04x data %08x ctx %08x%c", current_channel,
+                           current_subchannel, current_method, current_param, current_context, 10);
+                nv3_mmio_trace_left = 40;
+            }
+        }
 
         nv3->pfifo.cache1_settings.pull0 |= (1 << NV3_PFIFO_CACHE0_PULL0_SOFTWARE_METHOD);
         nv3->pfifo.cache1_settings.pull0 &= ~(1 << NV3_PFIFO_CACHE0_PULL0_ENABLED);

@@ -444,6 +444,11 @@ void nv3_pgraph_write(uint32_t address, uint32_t value)
 
         nv_log_verbose_only("PGRAPH Context Cache Write (Entry=%04x Value=0x%08x)\n", entry, value);
         nv3->pgraph.context_cache[entry] = value & 0x3FF3F71F;
+        {
+            extern uint32_t nv3_swm_trace_left;
+            if (nv3_swm_trace_left)
+                always_log("nv3: ctx_cache[%d] = %08x\n", entry, value);
+        }
     }
 }
 
@@ -573,8 +578,12 @@ void nv3_pgraph_submit(uint32_t param, uint16_t method, uint8_t channel, uint8_t
        grobj's word 0 into the subchannel's CTX_CACHE entry, and a change of subchannel (or a bind)
        loads CTX_SWITCH from it when DEBUG_1 bit 20 allows (envytools hwtest nv03_pgraph_mthd).
        Drawing uses CTX_SWITCH, which the driver's software methods and context switches edit. */
-    if (!method)
+    if (!method) {
+        extern uint32_t nv3_swm_trace_left;
         nv3->pgraph.context_cache[subchannel & 7] = grobj.grobj_0 & 0x3FF3F71F;
+        if (nv3_swm_trace_left)
+            always_log("nv3: bind subch %d handle %08x ctx %08x grobj0 %08x\n", subchannel, param, context.context, grobj.grobj_0);
+    }
     if ((old_subchannel != (subchannel & 7)) || !method) {
         if ((nv3->pgraph.debug_1 >> NV3_PGRAPH_DEBUG_1_CONTEXT) & 1)
             nv3->pgraph.context_switch = nv3->pgraph.context_cache[subchannel & 7];

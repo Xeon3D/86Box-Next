@@ -44,6 +44,7 @@
 #endif
 
 #include "386_common.h"
+#include <86box/debug_cmd.h>
 
 #if defined(__APPLE__) && defined(__aarch64__)
 #    include <pthread.h>
@@ -392,6 +393,8 @@ exec386_dynarec_int(void)
         }
 #    endif
 
+        if (debug_cmd_bp_count)
+            debug_cmd_bp_check(cs + cpu_state.pc);
         fetchdat = fastreadl_fetch(cs + cpu_state.pc);
 #    ifdef ENABLE_386_DYNAREC_LOG
         if (in_smm)

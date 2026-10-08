@@ -391,7 +391,7 @@ extern const device_config_t nv3t_config[];                             // Confi
 
 // Current channel context - cache1
 #define NV3_PFIFO_CACHE1_CTX_START                      0x3280      
-#define NV3_PFIFO_CACHE1_CTX_END                        0x32F0
+#define NV3_PFIFO_CACHE1_CTX_END                        0x3300      // exclusive: 8 entries, 0x10 apart
 
 #define NV3_PFIFO_CACHE1_METHOD_START                   0x3300
 #define NV3_PFIFO_CACHE1_METHOD_END                     0x3400
@@ -1461,6 +1461,7 @@ uint32_t    nv3_ramin_read32(uint32_t addr, void* priv);                        
 void        nv3_ramin_write8(uint32_t addr, uint8_t val, void* priv);           // Write 8-bit RAMIN
 void        nv3_ramin_write16(uint32_t addr, uint16_t val, void* priv);         // Write 16-bit RAMIN
 void        nv3_ramin_write32(uint32_t addr, uint32_t val, void* priv);         // Write 32-bit RAMIN
+void        nv3_watch(uint32_t addr, uint32_t val, int size);                   // Debug: VRAM write watch
 // RAMIN functions
 uint32_t    nv3_ramht_hash(uint32_t name, uint32_t channel);
 bool        nv3_ramin_find_object(uint32_t name, uint32_t cache_num, uint8_t channel_id, uint8_t subchannel_id);

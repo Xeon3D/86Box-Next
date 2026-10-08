@@ -873,10 +873,11 @@ uint32_t nv3_dfb_read32(uint32_t addr, void* priv)
     (nv3->nvbase.svga.vram[addr + 1] << 8) | nv3->nvbase.svga.vram[addr];
 }
 
-/* Debug: "dev nv3 watch <start> <end> <count>" logs CPU framebuffer writes into [start, end) */
+/* Debug: "dev nv3 watch <start> <end> <count>" logs framebuffer and RAMIN writes into VRAM [start, end)
+   (RAMIN writes log as w1xx) */
 uint32_t nv3_watch_lo, nv3_watch_hi, nv3_watch_left;
 
-static void nv3_watch(uint32_t addr, uint32_t val, int size)
+void nv3_watch(uint32_t addr, uint32_t val, int size)
 {
     if (nv3_watch_left && (addr >= nv3_watch_lo) && (addr < nv3_watch_hi)) {
         nv3_watch_left--;
@@ -1279,6 +1280,12 @@ static void nv3_debug_hook(const char *args)
     if (d3d_arg) {
         extern uint32_t nv3_d3d_trace_left;
         nv3_d3d_trace_left = strtoul(d3d_arg + 4, NULL, 0);
+    }
+    /* "dev nv3 swm <count>": log the next <count> software methods */
+    const char *swm_arg = args ? strstr(args, "swm ") : NULL;
+    if (swm_arg) {
+        extern uint32_t nv3_swm_trace_left;
+        nv3_swm_trace_left = strtoul(swm_arg + 4, NULL, 0);
     }
     /* "dev nv3 m2mf <count>": log the next <count> M2MF transfers */
     const char *m2mf_arg = args ? strstr(args, "m2mf ") : NULL;

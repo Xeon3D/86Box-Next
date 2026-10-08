@@ -7,11 +7,16 @@
  *               exists, its lines are run and the file is deleted:
  *
  *                 key 1c,9c        scancodes (hex; 9c = release), one every 20 ms
- *                 type text        letters, digits and spaces (pressed and released)
+ *                 type text        printable US-keyboard characters (pressed and released)
  *                 shot path.bmp    the emulated screen as a 32-bit BMP
  *                 log text         a line in the 86Box log
  *                 dev args         passed to the device that registered a hook
  *                 cpu              CS:EIP, registers and the code bytes there
+ *                 peek addr        the physical address and 16 bytes at a linear address
+ *                 bp addr [n]      log registers and stack the next n (default 8) times the
+ *                                  CPU executes linear addr; "bp clear" drops them all
+ *                 wp addr          log each instruction that changes the dword at linear addr
+ *                                  (its physical page as mapped now); "wp clear" drops it
  *
  *               Each command is logged ("debug_cmd: ..."), so a test can wait
  *               for the file to vanish and then read the log.
@@ -60,16 +65,18 @@ debug_cmd_queue_key(uint16_t code)
 static uint16_t
 debug_cmd_scancode(char c)
 {
-    static const char    *rows[]  = { "1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm" };
-    static const uint16_t first[] = { 0x02, 0x10, 0x1e, 0x2c };
+    /* US layout: set 1 make codes for 0x02-0x35 and 0x39, unshifted and shifted;
+       0x100 in the result = hold shift */
+    static const char plain[]   = "\0\0" "1234567890-=\0\0" "qwertyuiop[]\0\0" "asdfghjkl;'`\0\\" "zxcvbnm,./";
+    static const char shifted[] = "\0\0" "!@#$%^&*()_+\0\0" "QWERTYUIOP{}\0\0" "ASDFGHJKL:\"~\0|" "ZXCVBNM<>?";
 
-    c = (char) tolower((unsigned char) c);
     if (c == ' ')
         return 0x39;
-    for (int r = 0; r < 4; r++) {
-        const char *p = strchr(rows[r], c);
-        if (p != NULL)
-            return first[r] + (uint16_t) (p - rows[r]);
+    for (uint16_t code = 2; code < sizeof(plain) - 1; code++) {
+        if (plain[code] && (plain[code] == c))
+            return code;
+        if (shifted[code] && (shifted[code] == c))
+            return code | 0x100;
     }
     return 0;
 }
@@ -137,6 +144,121 @@ debug_cmd_cpu(void)
     always_log("debug_cmd: code%s\n", code);
 }
 
+#define DEBUG_CMD_BPS 16
+int             debug_cmd_bp_count;
+static uint32_t debug_cmd_bp_addr[DEBUG_CMD_BPS];
+static uint32_t debug_cmd_bp_left[DEBUG_CMD_BPS];
+extern int      cpu_force_interpreter;
+
+static uint32_t
+debug_cmd_lin_read32(uint32_t lin)
+{
+    uint64_t phys = (cr0 >> 31) ? mmutranslate_noabrt(lin, 0) : (uint64_t) lin;
+
+    return (phys == 0xffffffffffffffffULL) ? 0xdeadbeef : mem_readl_phys((uint32_t) phys);
+}
+
+static uint32_t debug_cmd_wp_phys;
+static uint32_t debug_cmd_wp_val;
+static uint32_t debug_cmd_wp_left;
+static uint32_t debug_cmd_wp_lastpc;
+
+/* Called by the interpreter before each instruction while breakpoints are set. */
+void
+debug_cmd_bp_check(uint32_t lin)
+{
+    if (debug_cmd_wp_left) {
+        uint32_t v = mem_readl_phys(debug_cmd_wp_phys);
+        if (v != debug_cmd_wp_val) {
+            debug_cmd_wp_left--;
+            always_log("debug_cmd: wp %08x: %08x -> %08x by the instruction at %08x (now at %08x, esp %08x, [esp] %08x %08x %08x)\n",
+                       debug_cmd_wp_phys, debug_cmd_wp_val, v, debug_cmd_wp_lastpc, lin, ESP,
+                       debug_cmd_lin_read32(ss + ESP), debug_cmd_lin_read32(ss + ESP + 4), debug_cmd_lin_read32(ss + ESP + 8));
+            debug_cmd_wp_val = v;
+        }
+        debug_cmd_wp_lastpc = lin;
+    }
+    for (int i = 0; i < debug_cmd_bp_count; i++) {
+        if ((debug_cmd_bp_addr[i] != lin) || !debug_cmd_bp_left[i])
+            continue;
+        debug_cmd_bp_left[i]--;
+        uint32_t sp = ss + ESP;
+        always_log("debug_cmd: bp %08x eax %08x ebx %08x ecx %08x edx %08x esi %08x edi %08x ebp %08x esp %08x | "
+                   "ds %08x es %08x | stack %08x %08x %08x %08x %08x %08x %08x %08x\n",
+                   lin, EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP, ds, es, debug_cmd_lin_read32(sp), debug_cmd_lin_read32(sp + 4),
+                   debug_cmd_lin_read32(sp + 8), debug_cmd_lin_read32(sp + 12), debug_cmd_lin_read32(sp + 16),
+                   debug_cmd_lin_read32(sp + 20), debug_cmd_lin_read32(sp + 24), debug_cmd_lin_read32(sp + 28));
+    }
+}
+
+static void
+debug_cmd_wp(char *arg)
+{
+    if (!strncmp(arg, "clear", 5)) {
+        debug_cmd_wp_left = 0;
+        if (debug_cmd_bp_count == 1)
+            debug_cmd_bp_count = 0;
+        return;
+    }
+    uint32_t lin  = strtoul(arg, NULL, 16);
+    uint64_t phys = (cr0 >> 31) ? mmutranslate_noabrt(lin, 0) : (uint64_t) lin;
+
+    if (phys == 0xffffffffffffffffULL) {
+        always_log("debug_cmd: wp %08x: not mapped\n", lin);
+        return;
+    }
+    debug_cmd_wp_phys = (uint32_t) phys;
+    debug_cmd_wp_val  = mem_readl_phys(debug_cmd_wp_phys);
+    debug_cmd_wp_left = 64;
+    /* the check runs from the breakpoint hook: keep it called */
+    if (debug_cmd_bp_count == 0) {
+        debug_cmd_bp_addr[0] = 0xffffffff;
+        debug_cmd_bp_left[0] = 0;
+        debug_cmd_bp_count   = 1;
+    }
+    cpu_force_interpreter = 1;
+    always_log("debug_cmd: wp %08x (phys %08x) = %08x\n", lin, debug_cmd_wp_phys, debug_cmd_wp_val);
+}
+
+static void
+debug_cmd_bp(char *arg)
+{
+    if (!strncmp(arg, "clear", 5)) {
+        debug_cmd_bp_count    = 0;
+        cpu_force_interpreter = 0;
+        always_log("debug_cmd: bp cleared\n");
+        return;
+    }
+    if (debug_cmd_bp_count >= DEBUG_CMD_BPS)
+        return;
+    char    *end;
+    uint32_t addr = strtoul(arg, &end, 16);
+    uint32_t n    = strtoul(end, NULL, 0);
+
+    debug_cmd_bp_addr[debug_cmd_bp_count] = addr;
+    debug_cmd_bp_left[debug_cmd_bp_count] = n ? n : 8;
+    debug_cmd_bp_count++;
+    cpu_force_interpreter = 1;
+    always_log("debug_cmd: bp %08x x%u\n", addr, n ? n : 8);
+}
+
+/* A linear address (paging-translated without faulting) and the 16 bytes there. */
+static void
+debug_cmd_peek(const char *arg)
+{
+    char     bytes[3 * 16 + 1];
+    uint32_t lin  = strtoul(arg, NULL, 16);
+    uint64_t phys = (cr0 >> 31) ? mmutranslate_noabrt(lin, 0) : (uint64_t) lin;
+
+    if (phys == 0xffffffffffffffffULL) {
+        always_log("debug_cmd: peek %08x: not mapped\n", lin);
+        return;
+    }
+    for (int i = 0; i < 16; i++)
+        snprintf(bytes + 3 * i, 4, " %02x", mem_readb_phys((uint32_t) phys + i));
+    always_log("debug_cmd: peek %08x (phys %08x):%s\n", lin, (uint32_t) phys, bytes);
+}
+
 static void
 debug_cmd_run(char *line)
 {
@@ -156,10 +278,14 @@ debug_cmd_run(char *line)
     } else if (!strcmp(line, "type")) {
         for (const char *p = arg; *p; p++) {
             uint16_t code = debug_cmd_scancode(*p);
-            if (code) {
-                debug_cmd_queue_key(code);
-                debug_cmd_queue_key(code | 0x80);
+            if (code & 0x100)
+                debug_cmd_queue_key(0x2a);
+            if (code & 0xff) {
+                debug_cmd_queue_key(code & 0xff);
+                debug_cmd_queue_key((code & 0xff) | 0x80);
             }
+            if (code & 0x100)
+                debug_cmd_queue_key(0xaa);
         }
         always_log("debug_cmd: type %s\n", arg);
     } else if (!strcmp(line, "shot"))
@@ -171,6 +297,12 @@ debug_cmd_run(char *line)
             always_log("debug_cmd: dev: no device hook\n");
     } else if (!strcmp(line, "cpu"))
         debug_cmd_cpu();
+    else if (!strcmp(line, "wp"))
+        debug_cmd_wp(arg);
+    else if (!strcmp(line, "bp"))
+        debug_cmd_bp(arg);
+    else if (!strcmp(line, "peek"))
+        debug_cmd_peek(arg);
     else if (!strcmp(line, "log"))
         always_log("debug_cmd: %s\n", arg);
     else if (line[0])
