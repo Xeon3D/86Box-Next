@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
 #include <86box/86box.h>
 #include <86box/device.h>
 #include <86box/mem.h>
@@ -1194,9 +1195,29 @@ static void nv3_debug_hook(const char *args)
                nv3->pgraph.m2mf.scanline_length, nv3->pgraph.m2mf.num_scanlines, nv3->pgraph.m2mf.format,
                nv3->pgraph.notifier, nv3->pgraph.notify_pending, nv3->pgraph.notify_index,
                nv3->pgraph.trapped_address, nv3->pgraph.trapped_data, nv3->pgraph.trapped_instance);
+    for (int sc = 0; sc < 8; sc++) {
+        uint32_t ctx  = nv3->pfifo.cache1_settings.context[sc];
+        uint32_t inst = (ctx & 0xFFFF) << 4;
+        always_log("nv3: subch %d ctx %08x grobj %08x %08x %08x %08x\n", sc, ctx, nv3_ramin_read32(inst, nv3),
+                   nv3_ramin_read32(inst + 4, nv3), nv3_ramin_read32(inst + 8, nv3), nv3_ramin_read32(inst + 12, nv3));
+    }
+    /* "dev nv3 vram <offset>": 64 bytes of VRAM */
+    const char *vram_arg = args ? strstr(args, "vram ") : NULL;
+    if (vram_arg) {
+        uint32_t off = strtoul(vram_arg + 5, NULL, 16) & svga->vram_mask;
+        for (int r = 0; r < 64; r += 16) {
+            const uint8_t *v = &svga->vram[(off + r) & svga->vram_mask];
+            always_log("nv3: vram %06x: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n", off + r,
+                       v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15]);
+        }
+    }
+    if (args && strstr(args, "methods")) {
+        extern void nv3_pgraph_dump_methods(void);
+        nv3_pgraph_dump_methods();
+    }
     /* "dev nv3 <physical address>": 64 bytes of guest memory */
     const char *addr_arg = args ? strchr(args, ' ') : NULL;
-    if (addr_arg) {
+    if (addr_arg && addr_arg[1] >= '0' && addr_arg[1] <= '9') {
         uint32_t phys = strtoul(addr_arg + 1, NULL, 16);
         uint8_t  buf[64];
         dma_bm_read(phys, buf, 64, 4);

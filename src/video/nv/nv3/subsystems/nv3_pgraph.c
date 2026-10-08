@@ -443,7 +443,7 @@ void nv3_pgraph_interrupt_valid(uint32_t num)
 // handler (which runs software methods such as the patchcord ones) turns
 // FIFO access back on. An armed notify also raises NOTIFY.
 /* The last methods submitted, logged with the first few traps */
-#define NV3_METHOD_TRACE 32
+#define NV3_METHOD_TRACE 256
 static struct {
     uint32_t addr, data;
 } nv3_method_trace[NV3_METHOD_TRACE];
@@ -459,13 +459,24 @@ nv3_pgraph_trace_method(uint32_t addr, uint32_t data)
     nv3_method_trace[i].data = data;
 }
 
+/* All of the trace, oldest first, for the debug dump */
+void
+nv3_pgraph_dump_methods(void)
+{
+    for (uint32_t n = 0; n < NV3_METHOD_TRACE; n++) {
+        uint32_t i = (nv3_method_trace_pos + n) % NV3_METHOD_TRACE;
+        if (nv3_method_trace[i].addr || nv3_method_trace[i].data)
+            always_log("nv3:   m %08x %08x" "%c", nv3_method_trace[i].addr, nv3_method_trace[i].data, 10);
+    }
+}
+
 void nv3_pgraph_interrupt_invalid(uint32_t num)
 {
     if (nv3_method_trace_dumps < 12) {
         nv3_method_trace_dumps++;
         always_log("nv3: trap %d at %08x %08x; methods before it (chid<<24|class<<16|subch<<13|mthd, data):\n", num,
                    nv3->pgraph.trapped_address, nv3->pgraph.trapped_data);
-        for (uint32_t n = 0; n < NV3_METHOD_TRACE; n++) {
+        for (uint32_t n = NV3_METHOD_TRACE - 24; n < NV3_METHOD_TRACE; n++) {
             uint32_t i = (nv3_method_trace_pos + n) % NV3_METHOD_TRACE;
             if (nv3_method_trace[i].addr || nv3_method_trace[i].data)
                 always_log("nv3:   %08x %08x\n", nv3_method_trace[i].addr, nv3_method_trace[i].data);

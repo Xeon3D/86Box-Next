@@ -36,7 +36,7 @@ static struct {
 } nv3_image_trace[NV3_IMAGE_TRACE];
 static uint32_t nv3_image_trace_pos;
 
-static void
+void
 nv3_render_trace_image(uint32_t cls, uint32_t ctx, uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e)
 {
     uint32_t i = nv3_image_trace_pos++ % NV3_IMAGE_TRACE;

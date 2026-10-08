@@ -25,6 +25,18 @@
 #include <86box/nv/vid_nv.h>
 #include <86box/nv/vid_nv3.h>
 
+/* The GDI class has one clip rectangle: CLIP_B/C/D/E all set it */
+static void
+nv3_gdi_share_clip(const nv3_clip_16_t *clip)
+{
+    nv3_clip_16_t c = *clip;
+
+    nv3->pgraph.win95_gdi_text.clip_b = c;
+    nv3->pgraph.win95_gdi_text.clip_c = c;
+    nv3->pgraph.win95_gdi_text.clip_d = c;
+    nv3->pgraph.win95_gdi_text.clip_e = c;
+}
+
 void nv3_class_00c_method(uint32_t param, uint32_t method_id, nv3_ramin_context_t context, nv3_grobj_t grobj)
 {
     switch (method_id)
@@ -45,11 +57,13 @@ void nv3_class_00c_method(uint32_t param, uint32_t method_id, nv3_ramin_context_
             nv3->pgraph.win95_gdi_text.clip_b.left = (param & 0xFFFF);
             nv3->pgraph.win95_gdi_text.clip_b.top = ((param >> 16) & 0xFFFF);
             nv_log("Method Execution: GDI-B Clip Left,Top %04x,%04x\n", nv3->pgraph.win95_gdi_text.clip_b.left, nv3->pgraph.win95_gdi_text.clip_b.top);
+            nv3_gdi_share_clip(&nv3->pgraph.win95_gdi_text.clip_b);
             break;
         case NV3_W95TXT_B_CLIP_BOTTOMRIGHT:
             nv3->pgraph.win95_gdi_text.clip_b.right = (param & 0xFFFF);
             nv3->pgraph.win95_gdi_text.clip_b.bottom = ((param >> 16) & 0xFFFF);
             nv_log("Method Execution: GDI-B Clip Bottom,Right %04x,%04x\n", nv3->pgraph.win95_gdi_text.clip_b.right, nv3->pgraph.win95_gdi_text.clip_b.bottom);
+            nv3_gdi_share_clip(&nv3->pgraph.win95_gdi_text.clip_b);
             break;
         /* Type C: Unclipped Bitmap */
         case NV3_W95TXT_C_CLIP_COLOR:
@@ -76,18 +90,21 @@ void nv3_class_00c_method(uint32_t param, uint32_t method_id, nv3_ramin_context_
             nv3->pgraph.win95_gdi_text.clip_c.left = (param & 0xFFFF);
             nv3->pgraph.win95_gdi_text.clip_c.top = ((param >> 16) & 0xFFFF);
             nv_log("Method Execution: GDI-C Clip Left,Top %04x,%04x\n", nv3->pgraph.win95_gdi_text.clip_c.left, nv3->pgraph.win95_gdi_text.clip_c.top);
+            nv3_gdi_share_clip(&nv3->pgraph.win95_gdi_text.clip_c);
             break; 
         case NV3_W95TXT_C_CLIP_BOTTOMRIGHT:
             nv3->pgraph.win95_gdi_text.clip_c.right = (param & 0xFFFF);
             nv3->pgraph.win95_gdi_text.clip_c.bottom = ((param >> 16) & 0xFFFF);
             /* is it "only if we are out of the top left or the bottom right or is it "all of them"*/
             nv_log("Method Execution: GDI-C Clip Right,Bottom %04x,%04x\n", nv3->pgraph.win95_gdi_text.clip_c.left, nv3->pgraph.win95_gdi_text.clip_c.top);
+            nv3_gdi_share_clip(&nv3->pgraph.win95_gdi_text.clip_c);
             break;
         /* Type B and C not implemented YET, as they are not used by NT GDI driver */
         case NV3_W95TXT_D_CLIP_TOPLEFT: 
             nv3->pgraph.win95_gdi_text.clip_d.left = (param & 0xFFFF);
             nv3->pgraph.win95_gdi_text.clip_d.top = ((param >> 16) & 0xFFFF);
             nv_log("Method Execution: GDI-D Clip Left,Top %04x,%04x\n", nv3->pgraph.win95_gdi_text.clip_d.left, nv3->pgraph.win95_gdi_text.clip_d.top);
+            nv3_gdi_share_clip(&nv3->pgraph.win95_gdi_text.clip_d);
             break; 
         case NV3_W95TXT_D_CLIP_BOTTOMRIGHT:
             nv3->pgraph.win95_gdi_text.clip_d.right = (param & 0xFFFF);
@@ -95,6 +112,7 @@ void nv3_class_00c_method(uint32_t param, uint32_t method_id, nv3_ramin_context_
             /* is it "only if we are out of the top left or the bottom right or is it "all of them"*/
             
             nv_log("Method Execution: GDI-D Clip Right,Bottom %04x,%04x\n", nv3->pgraph.win95_gdi_text.clip_d.left, nv3->pgraph.win95_gdi_text.clip_d.top);
+            nv3_gdi_share_clip(&nv3->pgraph.win95_gdi_text.clip_d);
             break;
         case NV3_W95TXT_D_CLIP_COLOR:
             nv3->pgraph.win95_gdi_text.color1_d = param;
@@ -118,18 +136,24 @@ void nv3_class_00c_method(uint32_t param, uint32_t method_id, nv3_ramin_context_
             nv3->pgraph.win95_gdi_text_current_position.x = nv3->pgraph.win95_gdi_text.point_d.x;
             nv3->pgraph.win95_gdi_text_current_position.y = nv3->pgraph.win95_gdi_text.point_d.y;
             nv3->pgraph.win95_gdi_text_bit_count = 0;
+            nv3_render_trace_image(0xcd, grobj.grobj_0, param, *(uint32_t *) &nv3->pgraph.win95_gdi_text.size_in_d,
+                                   *(uint32_t *) &nv3->pgraph.win95_gdi_text.size_out_d,
+                                   nv3->pgraph.win95_gdi_text.clip_d.left | ((uint32_t) nv3->pgraph.win95_gdi_text.clip_d.top << 16),
+                                   nv3->pgraph.win95_gdi_text.clip_d.right | ((uint32_t) nv3->pgraph.win95_gdi_text.clip_d.bottom << 16));
             break;
         /* Type E: Two-colour 1bpp */
         case NV3_W95TXT_E_CLIP_TOPLEFT: 
             nv3->pgraph.win95_gdi_text.clip_e.left = (param & 0xFFFF);
             nv3->pgraph.win95_gdi_text.clip_e.top = ((param >> 16) & 0xFFFF);
             nv_log("Method Execution: GDI-E Clip Left,Top 0x%08x\n", nv3->pgraph.win95_gdi_text.clip_e.left, nv3->pgraph.win95_gdi_text.clip_e.top);
+            nv3_gdi_share_clip(&nv3->pgraph.win95_gdi_text.clip_e);
             break; 
         case NV3_W95TXT_E_CLIP_BOTTOMRIGHT:
             nv3->pgraph.win95_gdi_text.clip_e.right = (param & 0xFFFF);
             nv3->pgraph.win95_gdi_text.clip_e.bottom = ((param >> 16) & 0xFFFF);
             nv_log("Method Execution: GDI-E Clip Bottom,Right 0x%08x\n", nv3->pgraph.win95_gdi_text.clip_e.right, nv3->pgraph.win95_gdi_text.clip_e.bottom);
             /* is it "only if we are out of the top left or the bottom right or is it "all of them"*/
+            nv3_gdi_share_clip(&nv3->pgraph.win95_gdi_text.clip_e);
             break;
         case NV3_W95TXT_E_CLIP_COLOR_0:
             nv3->pgraph.win95_gdi_text.color0_e = param;
@@ -156,6 +180,10 @@ void nv3_class_00c_method(uint32_t param, uint32_t method_id, nv3_ramin_context_
             nv3->pgraph.win95_gdi_text_current_position.x = nv3->pgraph.win95_gdi_text.point_e.x;
             nv3->pgraph.win95_gdi_text_current_position.y = nv3->pgraph.win95_gdi_text.point_e.y;
             nv3->pgraph.win95_gdi_text_bit_count = 0;
+            nv3_render_trace_image(0xce, grobj.grobj_0, param, *(uint32_t *) &nv3->pgraph.win95_gdi_text.size_in_e,
+                                   *(uint32_t *) &nv3->pgraph.win95_gdi_text.size_out_e,
+                                   nv3->pgraph.win95_gdi_text.clip_e.left | ((uint32_t) nv3->pgraph.win95_gdi_text.clip_e.top << 16),
+                                   nv3->pgraph.win95_gdi_text.clip_e.right | ((uint32_t) nv3->pgraph.win95_gdi_text.clip_e.bottom << 16));
 
             nv_log("Method Execution: GDI-E Point %04x,%04x\n", nv3->pgraph.win95_gdi_text.point_e.x,  nv3->pgraph.win95_gdi_text.point_e.y);
             break;
