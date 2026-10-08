@@ -155,16 +155,13 @@ uint32_t nv3_pfifo_read(uint32_t address)
             ret = nv3->pfifo.cache1_settings.dma_state;
             break; 
         case NV3_PFIFO_CACHE1_DMA_CONFIG_1:
-            ret = nv3->pfifo.cache1_settings.dma_length & (NV3_VRAM_SIZE_8MB) - 4; //MAX vram size
+            ret = nv3->pfifo.cache1_settings.dma_length;
             break;
         case NV3_PFIFO_CACHE1_DMA_CONFIG_2:
             ret = nv3->pfifo.cache1_settings.dma_address;
             break;
         case NV3_PFIFO_CACHE1_DMA_CONFIG_3:
-            if (nv3->nvbase.bus_generation == nv_bus_pci)
-                return NV3_PFIFO_CACHE1_DMA_CONFIG_3_TARGET_NODE_PCI;
-            else 
-                return NV3_PFIFO_CACHE1_DMA_CONFIG_3_TARGET_NODE_AGP;
+            ret = nv3->pfifo.cache1_settings.dma_target_node;
             break;
         case NV3_PFIFO_CACHE1_DMA_STATUS:
             ret = nv3->pfifo.cache1_settings.dma_status;
@@ -269,44 +266,95 @@ uint32_t nv3_pfifo_read(uint32_t address)
     return ret; 
 }
 
+/* The DMA pusher: while DMA_CTRL allows it and DMA_COUNT bytes are left, fetch dwords at
+   DMA_GET through the page table at DMA_PT_INST (one-entry TLB in DMA_TLB_TAG/PTE). A header
+   (method 12:2, subchannel 15:13, count 28:18) starts a run of count data words for successive
+   methods; each goes into CACHE1 as a write to the current channel's USER area would. The
+   pusher waits while CACHE1 is full and resumes when the puller has made room. */
+static bool nv3_pfifo_dma_pusher_active;
+
+/* The pusher runs a moment after it is started (or unblocked), as the hardware's fetches are
+   asynchronous: the Win9x D3D driver arms its notifier only after kicking the push buffer */
+void nv3_pfifo_dma_pusher_timer(void *priv)
+{
+    (void) priv;
+    nv3_pfifo_trigger_dma_if_required();
+}
+
+void nv3_pfifo_dma_pusher_kick(void)
+{
+    nv3_pfifo_cache_t *c1 = &nv3->pfifo.cache1_settings;
+
+    if ((c1->dma_state & 1) && (c1->dma_length >= 4) && !timer_is_enabled(&nv3->dma_pusher_timer))
+        timer_on_auto(&nv3->dma_pusher_timer, 10.0);
+}
+
+/* Run the puller until CACHE1 is empty or PGRAPH stops taking methods (a trap) */
+void nv3_pfifo_cache1_drain(void)
+{
+    for (int i = 0; i < 64; i++) {
+        uint32_t get = nv3->pfifo.cache1_settings.get_address;
+
+        if ((get == nv3->pfifo.cache1_settings.put_address) || !nv3->pgraph.fifo_access
+            || !(nv3->pfifo.cache1_settings.pull0 & (1 << NV3_PFIFO_CACHE1_PULL0_ENABLED)))
+            break;
+        nv3_pfifo_cache1_pull();
+        if (nv3->pfifo.cache1_settings.get_address == get)
+            break;
+    }
+}
+
 void nv3_pfifo_trigger_dma_if_required(void)
 {
-    // Not a thing for cache0
-    
-    bool cache1_dma = false;
+    nv3_pfifo_cache_t *c1 = &nv3->pfifo.cache1_settings;
 
-    /* Check that DMA is enabled */
-    if ((nv3->pfifo.cache1_settings.dma_state & NV3_PFIFO_CACHE1_DMA_STATUS_STATE_RUNNING)
-    && nv3->pfifo.cache1_settings.dma_enabled)
-    {
-        uint32_t bytes_to_send = nv3->pfifo.cache1_settings.dma_length;
-        uint32_t where_to_send = nv3->pfifo.cache1_settings.dma_address;
-        uint32_t target_node = nv3->pfifo.cache1_settings.dma_target_node;          // 0=vram, 1=cartridge (nv2 leftover), 2=pci, 3=agp. 
+    if (nv3_pfifo_dma_pusher_active)
+        return;
+    nv3_pfifo_dma_pusher_active = true;
 
-        /* Pagetable information */
-        uint32_t tlb_pt_base = nv3->pfifo.cache1_settings.dma_tlb_pt_base;                      
-        uint32_t tlb_pt_entry = nv3->pfifo.cache1_settings.dma_tlb_pte;             // notify_obj_page
-        uint32_t tlb_pt_tag = nv3->pfifo.cache1_settings.dma_tlb_tag;               // 0xFFFFFFFF usually?
-    
-        // format seems to be the same as notifications
-        if (!(tlb_pt_entry & NV3_PFIFO_CACHE1_DMA_TLB_PTE_IS_PRESENT))
-        {
-            nv_warning("NV3: Tried to DMA to a non-existent page! Big Problem!");
-            return; 
+    while ((c1->dma_state & 1) && (c1->dma_length >= 4) && c1->push0) {
+        /* DMA_PT_INST points at the page table (word 2) of the push buffer's DMA object; the
+           object's adjust (word 0, bits 11:0) is added like for any DMA object access */
+        uint32_t linear = c1->dma_address + (nv3_ramin_read32(c1->dma_tlb_pt_base - 8, nv3) & 0xFFF);
+        uint32_t page   = linear & 0xFFFFF000;
+        uint32_t word;
+
+        /* a command word needs a free CACHE1 slot; a header doesn't */
+        if (((c1->dma_status >> 18) & 0x7FF) && !nv3_pfifo_cache1_num_free_spaces())
+            break;
+
+        if (c1->dma_tlb_tag != page) {
+            c1->dma_tlb_pte = nv3_ramin_read32(c1->dma_tlb_pt_base + ((linear >> 12) << 2), nv3);
+            c1->dma_tlb_tag = page;
+        }
+        if (!(c1->dma_tlb_pte & 1)) {
+            /* page not present: DMA_PTE interrupt, the driver fixes the TLB and restarts */
+            c1->dma_tlb_tag = 0xFFFFFFFF;
+            nv3->pfifo.intr |= (1 << 16);
+            nv3_pmc_handle_interrupts(true);
+            break;
+        }
+        dma_bm_read((c1->dma_tlb_pte & 0xFFFFF000) | (linear & 0xFFF), (uint8_t *) &word, 4, 4);
+
+        c1->dma_address += 4;
+        c1->dma_length -= 4;
+
+        uint32_t count = (c1->dma_status >> 18) & 0x7FF;
+        if (!count) {
+            /* a header: method and subchannel in bits 15:2, count in 28:18 */
+            c1->dma_status = word & 0x1FFCFFFC;
+            continue;
         }
 
-        uint32_t final_page_base = tlb_pt_entry & 0xFFFFF000; /* pull out 31:12 */
+        uint32_t method = c1->dma_status & 0x1FFC;
+        uint32_t subch  = (c1->dma_status >> 13) & 7;
+        nv3_pfifo_cache1_push(NV3_USER_START | ((c1->channel & 0x7F) << 16) | (subch << 13) | method, word);
+        nv3_pfifo_cache1_pull();
 
-        // page size is 0x1000
-        uint32_t final_address = final_page_base + (tlb_pt_entry << 10) + where_to_send; //x86 page size is 0x1000 (maybe rsh where_to_send by 2)
-
-        nv_log_verbose_only("DMA Engine: DMA to %08x length=%08x", final_address, bytes_to_send);
-
-        //TODO: dma_bm_write()
+        c1->dma_status = (c1->dma_status & ~(0x7FF << 18) & ~0x1FFC) | ((count - 1) << 18) | ((method + 4) & 0x1FFC);
     }
 
-    //we're done
-    nv3->pfifo.cache1_settings.dma_state &= ~NV3_PFIFO_CACHE1_DMA_STATUS_STATE_RUNNING;
+    nv3_pfifo_dma_pusher_active = false;
 }
 
 void nv3_pfifo_write(uint32_t address, uint32_t val)
@@ -435,6 +483,9 @@ void nv3_pfifo_write(uint32_t address, uint32_t val)
         case NV3_PFIFO_CACHE1_DMA_CONFIG_2:
             nv3->pfifo.cache1_settings.dma_address = val;
             break;
+        case NV3_PFIFO_CACHE1_DMA_CONFIG_3:
+            nv3->pfifo.cache1_settings.dma_target_node = val & 3;
+            break;
         case NV3_PFIFO_CACHE1_DMA_STATUS:
             nv3->pfifo.cache1_settings.dma_status = val;
             break;
@@ -527,8 +578,9 @@ void nv3_pfifo_write(uint32_t address, uint32_t val)
         nv_log_verbose_only("PFIFO Cache1 CTX Write Entry=%d value=0x%04x\n", ctx_entry_id, val);
     }
 
-    /* Trigger DMA for notifications if we need to */
-    nv3_pfifo_trigger_dma_if_required();
+    /* the puller or pusher may have been (re)enabled */
+    nv3_pfifo_cache1_drain();
+    nv3_pfifo_dma_pusher_kick();
 }
 
 
@@ -633,6 +685,16 @@ void nv3_pfifo_cache0_pull(void)
         return;
     }
 
+    /* PGRAPH must hold this channel's context (see the CACHE1 puller) */
+    if (!((nv3->pgraph.context_control >> NV3_PGRAPH_CONTEXT_CONTROL_CHID_VALID) & 1)
+        || (((nv3->pgraph.context_user >> NV3_PGRAPH_CONTEXT_USER_CHANNEL) & 0x7F) != current_channel)) {
+        nv3->pgraph.trapped_address = (current_method & 0x1FFC) | ((uint32_t) (current_subchannel & 7) << 13)
+            | ((uint32_t) (class_id & 0x1F) << 16) | ((uint32_t) (current_channel & 0x7F) << 24);
+        nv3->pgraph.trapped_data = current_param;
+        nv3_pgraph_interrupt_context_switch();
+        return;
+    }
+
     // Is this needed?
     nv3->pfifo.cache0_settings.get_address ^= 0x04;
 
@@ -648,11 +710,18 @@ void nv3_pfifo_cache0_pull(void)
 
 void nv3_pfifo_context_switch(uint32_t new_channel)
 {
-    /* Send our contexts to RAMFC. Load the new ones from RAMFC. */
-    if (new_channel >= NV3_DMA_CHANNELS)
-        fatal("nv3_pfifo_context_switch: Tried to switch to invalid dma channel");
+    /* The pusher hands CACHE1 to another channel: the puller's eight subchannel contexts are saved
+       to the old channel's RAMFC slot and loaded from the new one's (RAMFC: 0x20 bytes per channel,
+       0x1000 bytes for 128 channels, base in bits 9-15 of the RAMFC register) (envytools nv1-pfifo) */
+    uint32_t ramfc = ((nv3->pfifo.ramfc_config >> NV3_PFIFO_CONFIG_RAMFC_BASE_ADDRESS) & 0x7F) << 9;
+    uint32_t old   = nv3->pfifo.cache1_settings.channel & 0x7F;
 
-    //uint16_t ramfc_base = nv3->pfifo.ramfc_config >> NV3_PFIFO_CONFIG_RAMFC_BASE_ADDRESS & 0xF;
+    new_channel &= 0x7F;
+    for (int sc = 0; sc < 8; sc++)
+        nv3_ramin_write32(ramfc + (old << 5) + (sc << 2), nv3->pfifo.cache1_settings.context[sc], nv3);
+    for (int sc = 0; sc < 8; sc++)
+        nv3->pfifo.cache1_settings.context[sc] = nv3_ramin_read32(ramfc + (new_channel << 5) + (sc << 2), nv3);
+    nv3->pfifo.cache1_settings.channel = new_channel;
 }
 
 // NV_USER writes go here!
@@ -715,15 +784,26 @@ void nv3_pfifo_cache1_push(uint32_t addr, uint32_t param)
             oh_shit_reason = nv3_runout_reason_no_cache_available;
             new_address |= (nv3_runout_reason_no_cache_available << NV3_PFIFO_RUNOUT_RAMIN_ERR);
         }
-
-        nv3_pfifo_context_switch(channel);
+        else if (nv3->pfifo.cache1_settings.push0)
+            /* CACHE1 follows the channel even when this write itself runs out (a reserved
+               offset): the Win9x D3D driver writes one to move CACHE1 to its channel before
+               having the DMA pusher fill it */
+            nv3_pfifo_context_switch(channel);
     }
 
     // Did we fuck up?
     if (oh_shit)
     {
-        nv_log("OH CRAP: Runout Error=%d Channel=%d Subchannel=%d Method=0x%04x", 
-            oh_shit_reason, channel, subchannel, method_offset);
+        {
+            static int runout_logs;
+            if (runout_logs < 30) {
+                runout_logs++;
+                always_log("nv3: runout reason %d chan %d subch %d mthd %04x data %08x (push0 %d free %d get %x put %x)%c", oh_shit_reason,
+                           channel, subchannel, method_offset, param, nv3->pfifo.cache1_settings.push0,
+                           nv3_pfifo_cache1_num_free_spaces(), nv3->pfifo.cache1_settings.get_address,
+                           nv3->pfifo.cache1_settings.put_address, 10);
+            }
+        }
          
         nv3_ramin_write32(nv3->pfifo.ramro_location + nv3->pfifo.runout_put, new_address, nv3);
         nv3_ramin_write32(nv3->pfifo.ramro_location + nv3->pfifo.runout_put + 4, param, nv3);
@@ -826,6 +906,19 @@ void nv3_pfifo_cache1_pull(void)
         nv3->pfifo.cache1_settings.pull0 |= (1 << NV3_PFIFO_CACHE0_PULL0_SOFTWARE_METHOD);
         nv3->pfifo.cache1_settings.pull0 &= ~(1 << NV3_PFIFO_CACHE0_PULL0_ENABLED);
         nv3_pfifo_interrupt(NV3_PFIFO_INTR_CACHE_ERROR, true);
+        return;
+    }
+
+    /* PGRAPH holds one channel's state: a method for another channel (or with no channel loaded)
+       raises its CONTEXT_SWITCH interrupt and waits in the cache while the driver's handler
+       saves that state and loads this channel's (NV3RM.VXD writes CTX_USER, CTX_CACHE,
+       CTX_SWITCH, the DMA pointers, then CTX_CONTROL with CHID_VALID) */
+    if (!((nv3->pgraph.context_control >> NV3_PGRAPH_CONTEXT_CONTROL_CHID_VALID) & 1)
+        || (((nv3->pgraph.context_user >> NV3_PGRAPH_CONTEXT_USER_CHANNEL) & 0x7F) != current_channel)) {
+        nv3->pgraph.trapped_address = (current_method & 0x1FFC) | ((uint32_t) (current_subchannel & 7) << 13)
+            | ((uint32_t) (class_id & 0x1F) << 16) | ((uint32_t) (current_channel & 0x7F) << 24);
+        nv3->pgraph.trapped_data = current_param;
+        nv3_pgraph_interrupt_context_switch();
         return;
     }
 

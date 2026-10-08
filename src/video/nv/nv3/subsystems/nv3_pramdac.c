@@ -270,7 +270,7 @@ void nv3_pramdac_write(uint32_t address, uint32_t value)
             nv3->pramdac.general_control = value;
             /* BPC_8BITS: the CLUT takes 8-bit entries (the driver sets it for its modes) */
             svga_set_ramdac_type(&nv3->nvbase.svga, ((value >> NV3_PRAMDAC_GENERAL_CONTROL_BPC_8BITS) & 1) ? RAMDAC_8BIT : RAMDAC_6BIT);
-            nv3_recalc_timings(&nv3->nvbase.svga);
+            svga_recalctimings(&nv3->nvbase.svga);
             break;
         case NV3_PRAMDAC_VSERR_WIDTH:
             //vslines?

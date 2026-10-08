@@ -227,10 +227,11 @@ uint32_t nv3_pgraph_read(uint32_t address)
 
     /* Special exception for memory areas */
     if (address >= NV3_PGRAPH_CONTEXT_CACHE(0)
-    && address <= NV3_PGRAPH_CONTEXT_CACHE(NV3_PGRAPH_CONTEXT_CACHE_SIZE))
+    && address < NV3_PGRAPH_CONTEXT_CACHE(NV3_PGRAPH_CONTEXT_CACHE_SIZE))
     {
         // Addresses should be aligned to 4 bytes.
-        uint32_t entry = (address - NV3_PGRAPH_CONTEXT_CACHE(0));
+        uint32_t entry = (address - NV3_PGRAPH_CONTEXT_CACHE(0)) >> 2;
+        ret = nv3->pgraph.context_cache[entry];
         nv_log_verbose_only("PGRAPH Context Cache Read (Entry=%04x Value=%04x)\n", entry, nv3->pgraph.context_cache[entry]);
     }
 
@@ -405,7 +406,12 @@ void nv3_pgraph_write(uint32_t address, uint32_t value)
             nv3->pgraph.cliprect_ctrl = value & 0x113;
             break;
         case NV3_PGRAPH_FIFO_ACCESS:
-            nv3->pgraph.fifo_access = value;
+            nv3->pgraph.fifo_access = value & 1;
+            /* methods queued while PGRAPH was stopped go through now, and a waiting pusher resumes */
+            if (nv3->pgraph.fifo_access) {
+                nv3_pfifo_cache1_drain();
+                nv3_pfifo_dma_pusher_kick();
+            }
             break;
         // Overall Status
         case NV3_PGRAPH_STATUS:
@@ -431,13 +437,13 @@ void nv3_pgraph_write(uint32_t address, uint32_t value)
 
     /* Special exception for memory areas */
     if (address >= NV3_PGRAPH_CONTEXT_CACHE(0)
-    && address <= NV3_PGRAPH_CONTEXT_CACHE(NV3_PGRAPH_CONTEXT_CACHE_SIZE))
+    && address < NV3_PGRAPH_CONTEXT_CACHE(NV3_PGRAPH_CONTEXT_CACHE_SIZE))
     {
         // Addresses should be aligned to 4 bytes.
         uint32_t entry = (address - NV3_PGRAPH_CONTEXT_CACHE(0)) >> 2;
 
         nv_log_verbose_only("PGRAPH Context Cache Write (Entry=%04x Value=0x%08x)\n", entry, value);
-        nv3->pgraph.context_cache[entry] = value;
+        nv3->pgraph.context_cache[entry] = value & 0x3FF3F71F;
     }
 }
 
@@ -479,6 +485,14 @@ nv3_pgraph_dump_methods(void)
         if (nv3_method_trace[i].addr || nv3_method_trace[i].data)
             always_log("nv3:   m %08x %08x" "%c", nv3_method_trace[i].addr, nv3_method_trace[i].data, 10);
     }
+}
+
+/* A method for a channel PGRAPH has not loaded: CONTEXT_SWITCH (INTR_0 bit 4), FIFO access off */
+void nv3_pgraph_interrupt_context_switch(void)
+{
+    nv3->pgraph.intr_0 |= (1 << NV3_PGRAPH_INTR_0_CONTEXT_SWITCH);
+    nv3->pgraph.fifo_access = false;
+    nv3_pmc_handle_interrupts(true);
 }
 
 void nv3_pgraph_interrupt_invalid(uint32_t num)
@@ -536,9 +550,10 @@ void nv3_pgraph_submit(uint32_t param, uint16_t method, uint8_t channel, uint8_t
     //}
 
     // set ctx_user for the drivers
-    nv3->pgraph.context_user = (context.context & 0x1F0000) 
-    | ((uint32_t)subchannel << NV3_PGRAPH_CONTEXT_USER_SUBCHANNEL) 
-    | ((uint32_t)channel << NV3_PGRAPH_CONTEXT_USER_CHANNEL);
+    /* the channel is CTX_USER's already (the puller switches contexts first) */
+    uint32_t old_subchannel = (nv3->pgraph.context_user >> NV3_PGRAPH_CONTEXT_USER_SUBCHANNEL) & 7;
+    nv3->pgraph.context_user = (nv3->pgraph.context_user & 0xFF000000) | (context.context & 0x1F0000)
+    | ((uint32_t)subchannel << NV3_PGRAPH_CONTEXT_USER_SUBCHANNEL);
 
     // class id can be derived from the context but we debug log it before we get here
     // Obtain the grobj information from the context in ramin
@@ -554,8 +569,17 @@ void nv3_pgraph_submit(uint32_t param, uint16_t method, uint8_t channel, uint8_t
     grobj.grobj_2 = nv3_ramin_read32(real_ramin_base + 8, nv3);
     grobj.grobj_3 = nv3_ramin_read32(real_ramin_base + 12, nv3);
 
-    /* The object's options are the current context (what CTX_SWITCH reads back) */
-    nv3->pgraph.context_switch = grobj.grobj_0;
+    /* The object's options (colour format, operation, buffers...) live in PGRAPH: a bind loads the
+       grobj's word 0 into the subchannel's CTX_CACHE entry, and a change of subchannel (or a bind)
+       loads CTX_SWITCH from it when DEBUG_1 bit 20 allows (envytools hwtest nv03_pgraph_mthd).
+       Drawing uses CTX_SWITCH, which the driver's software methods and context switches edit. */
+    if (!method)
+        nv3->pgraph.context_cache[subchannel & 7] = grobj.grobj_0 & 0x3FF3F71F;
+    if ((old_subchannel != (subchannel & 7)) || !method) {
+        if ((nv3->pgraph.debug_1 >> NV3_PGRAPH_DEBUG_1_CONTEXT) & 1)
+            nv3->pgraph.context_switch = nv3->pgraph.context_cache[subchannel & 7];
+    }
+    grobj.grobj_0 = nv3->pgraph.context_switch;
 
     /* The DMA pointers (CTX_SWITCH_B/C, NOTIFY's instance) are PGRAPH registers. With DEBUG_1
        bit 16 set they are reloaded from the grobj (words 1 and 2) when a DMA-using object

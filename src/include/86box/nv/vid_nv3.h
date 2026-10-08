@@ -668,6 +668,7 @@ extern const device_config_t nv3t_config[];                             // Confi
 #define NV3_PGRAPH_CTX_SWITCH_VOLATILE                  31          // HUH
 
 #define NV3_PGRAPH_CONTEXT_CONTROL                      0x400190    // DMA context control
+#define NV3_PGRAPH_CONTEXT_CONTROL_CHID_VALID           16          // CTX_USER holds a loaded channel
 #define NV3_PGRAPH_CONTEXT_USER                         0x400194    // Current DMA context state, may rename
 
 #define NV3_PGRAPH_CONTEXT_USER_SUBCHANNEL              13
@@ -1062,17 +1063,19 @@ typedef struct nv3_pfifo_cache_s
     /* cache1 only 
         do we even need to emulate this?
     */
-    uint32_t dma_status;                // 0x3218
-    bool dma_enabled;                   // 0x3220 bit0
+    /* The DMA pusher (rnndb nv1_pfifo CACHE1): it fetches a push buffer through a page table
+       and feeds the commands into CACHE1 like PIO writes to USER would */
+    uint32_t dma_status;                // 0x3218 DMA_STATE: method (12:2), subchannel (15:13), methods left (28:18), error (30)
+    bool dma_enabled;                   // 0x3220 bit0 (unused: dma_state holds DMA_CTRL)
     bool dma_is_busy;                   // 0x3220 bit4
 
-    uint32_t dma_state;                 // Corresponds to PFIFO_CACHE1_DMA0    
-    uint32_t dma_length;                // Corresponds to PFIFO_CACHE1_DMA1
-    uint32_t dma_address;               // Corresponds to PFIFO_CACHE1_DMA2
-    uint8_t dma_target_node;            // Corresponds to PFIFO_CACHE1_DMA3 depends on card bus
-    uint8_t dma_tlb_tag;
-    uint8_t dma_tlb_pte;                // DMA Engine - Translation Lookaside Buffer
-    uint8_t dma_tlb_pt_base;            // DMA Engine - TLB Pagetable Base Addres
+    uint32_t dma_state;                 // 0x3220 DMA_CTRL: bit 0 = the pusher may fetch
+    uint32_t dma_length;                // 0x3224 DMA_COUNT: bytes left to fetch
+    uint32_t dma_address;               // 0x3228 DMA_GET: linear offset of the next fetch
+    uint32_t dma_target_node;           // 0x322C DMA_TARGET: 2 PCI, 3 AGP
+    uint32_t dma_tlb_tag;               // 0x3230 page (linear 31:12) whose PTE is in dma_tlb_pte, ~0 = none
+    uint32_t dma_tlb_pte;               // 0x3234
+    uint32_t dma_tlb_pt_base;           // 0x3238 DMA_PT_INST: RAMIN byte address of the push buffer's page table
     uint16_t method_address;            // address of the method (i.e. what method it is)
     uint16_t method_subchannel;         // subchannel
     bool context_is_dirty;
@@ -1405,6 +1408,7 @@ typedef struct nv3_s
     nv3_ramin_ramfc_t ramfc;        // context for unused channels
     nv3_pvideo_t pvideo;            // Video overlay
     nv3_pme_t pme;                  // Mediaport - external MPEG decoder and video interface
+    pc_timer_t dma_pusher_timer;    // the DMA pusher fetches asynchronously, a moment after it is started
     //more here
 
 } nv3_t;
@@ -1515,6 +1519,7 @@ void        nv3_pgraph_init(void);
 uint32_t    nv3_pgraph_read(uint32_t address);
 void        nv3_pgraph_write(uint32_t address, uint32_t value);
 void        nv3_pgraph_vblank_start(svga_t* svga);
+void        nv3_pgraph_interrupt_context_switch(void);
 void        nv3_pgraph_interrupt_valid(uint32_t num);
 void        nv3_pgraph_interrupt_invalid(uint32_t num);
 void        nv3_pgraph_submit(uint32_t param, uint16_t method, uint8_t channel, uint8_t subchannel, uint8_t class_id, nv3_ramin_context_t context);
@@ -1561,6 +1566,10 @@ void        nv3_pfifo_interrupt(uint32_t id, bool fire_now);
 void        nv3_pfifo_cache0_pull(void);
 void        nv3_pfifo_cache1_push(uint32_t addr, uint32_t val);
 void        nv3_pfifo_cache1_pull(void);
+void        nv3_pfifo_cache1_drain(void);
+void        nv3_pfifo_trigger_dma_if_required(void);
+void        nv3_pfifo_dma_pusher_kick(void);
+void        nv3_pfifo_dma_pusher_timer(void *priv);
 uint32_t    nv3_pfifo_cache1_normal2gray(uint32_t val);
 uint32_t    nv3_pfifo_cache1_gray2normal(uint32_t val);
 uint32_t    nv3_pfifo_cache1_num_free_spaces(void);

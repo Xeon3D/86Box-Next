@@ -38,6 +38,9 @@
    holds its DMA instance (15:0) and notifier instance (31:16); M2MF's output
    object is in word 2 (15:0). */
 
+/* Debug: log the next N notifier writes ("dev nv3 notify N") */
+uint32_t nv3_notify_trace_left;
+
 /* Debug: log the next N M2MF transfers ("dev nv3 m2mf N") */
 uint32_t nv3_m2mf_trace_left;
 
@@ -255,6 +258,13 @@ void nv3_write_notifier(nv3_grobj_t grobj, uint32_t index, uint16_t status, uint
 
     if (!inst)
         return;
+    if (nv3_notify_trace_left) {
+        uint32_t t;
+        uint32_t a = nv3_dma_translate(inst, off + 12, &t);
+        nv3_notify_trace_left--;
+        always_log("nv3: notifier inst %04x index %u status %04x -> %08x (target %u) chan %d%c", inst, index, status, a, t,
+                   nv3->pfifo.cache1_settings.channel, 10);
+    }
     nv3_dma_write32(inst, off + 0, (uint32_t) time);
     nv3_dma_write32(inst, off + 4, (uint32_t) (time >> 32));
     nv3_dma_write32(inst, off + 8, info32);

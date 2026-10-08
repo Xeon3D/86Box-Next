@@ -161,12 +161,24 @@ nv3_d3d_read_tex16(nv3_grobj_t grobj, uint32_t byte)
     return val;
 }
 
+/* Textures are stored swizzled (Morton order): bit i of s goes to bit 2i of the texel index and
+   bit i of t to bit 2i+1 -- the order the Win9x driver (NV3DD32.DLL) writes them in */
+static uint32_t
+nv3_d3d_swizzle(uint32_t s, uint32_t t)
+{
+    uint32_t idx = 0;
+
+    for (int i = 0; i < 11; i++)
+        idx |= (((s >> i) & 1) << (2 * i)) | (((t >> i) & 1) << (2 * i + 1));
+    return idx;
+}
+
 /* A texel as A8R8G8B8 (alpha 0 for a colour-keyed texel) */
 static uint32_t
 nv3_d3d_texel(nv3_grobj_t grobj, uint32_t level_offset, uint32_t size, int32_t s, int32_t t)
 {
     uint32_t fmt = (nv3_d3d.tex_format >> 20) & 0xF;
-    uint16_t p   = nv3_d3d_read_tex16(grobj, level_offset + ((uint32_t) t * size + (uint32_t) s) * 2);
+    uint16_t p   = nv3_d3d_read_tex16(grobj, level_offset + nv3_d3d_swizzle((uint32_t) s, (uint32_t) t) * 2);
     uint32_t a, r, g, b;
 
     if (((nv3_d3d.tex_format >> 16) & 0xF) && p == (nv3_d3d.tex_format & 0xFFFF))
@@ -329,14 +341,21 @@ nv3_d3d_blend(uint32_t config, uint32_t src, uint16_t dst, int32_t x, int32_t y)
         | nv3_d3d_dither_8to5(o[2], x, y, dither);
 }
 
+/* Debug: "dev nv3 d3d N" logs the next N triangles and what they wrote */
+uint32_t        nv3_d3d_trace_left;
+static uint32_t nv3_d3d_frag_in, nv3_d3d_frag_clip, nv3_d3d_frag_written;
+
 /* One fragment: alpha and Z tests, write enables, blend, write */
 static void
 nv3_d3d_fragment(nv3_grobj_t grobj, uint32_t config, uint32_t alpha_ctl, int32_t x, int32_t y, uint32_t color, uint32_t zeta)
 {
     uint32_t ctx = grobj.grobj_0;
 
-    if (x < 0 || y < 0 || !nv3_render_clip_pass(x, y, grobj, false))
+    nv3_d3d_frag_in++;
+    if (x < 0 || y < 0 || !nv3_render_clip_pass(x, y, grobj, false)) {
+        nv3_d3d_frag_clip++;
         return;
+    }
 
     bool     zeta_en  = (ctx >> NV3_PGRAPH_CTX_SWITCH_Z_WRITE) & 1;
     uint32_t zaddr    = (nv3->pgraph.boffset[3] + (uint32_t) y * nv3->pgraph.bpitch[3] + (uint32_t) x * 2) & nv3->nvbase.svga.vram_mask & ~1;
@@ -351,6 +370,7 @@ nv3_d3d_fragment(nv3_grobj_t grobj, uint32_t config, uint32_t alpha_ctl, int32_t
             uint32_t addr = (nv3->pgraph.boffset[j] + (uint32_t) y * nv3->pgraph.bpitch[j] + (uint32_t) x * 2) & nv3->nvbase.svga.vram_mask & ~1;
             uint16_t *p   = (uint16_t *) &nv3->nvbase.svga.vram[addr];
             *p            = (*p & 0x8000) | nv3_d3d_blend(config, color, *p, x, y);
+            nv3_d3d_frag_written++;
             nv3->nvbase.svga.changedvram[addr >> 12] = changeframecount;
         }
     }
@@ -574,8 +594,26 @@ nv3_class_017_method(uint32_t param, uint32_t method_id, nv3_ramin_context_t con
                     uint32_t i0 = (nv3_d3d.fog_tri >> (t * 12)) & 0xF;
                     uint32_t i1 = (nv3_d3d.fog_tri >> (t * 12 + 4)) & 0xF;
                     uint32_t i2 = (nv3_d3d.fog_tri >> (t * 12 + 8)) & 0xF;
-                    if (i0 != i1 && i1 != i2 && i0 != i2)
+                    if (i0 != i1 && i1 != i2 && i0 != i2) {
+                        nv3_d3d_frag_in = nv3_d3d_frag_clip = nv3_d3d_frag_written = 0;
                         nv3_d3d_triangle(grobj, &nv3_d3d.vtx[i0], &nv3_d3d.vtx[i1], &nv3_d3d.vtx[i2]);
+                        if (nv3_d3d_trace_left) {
+                            const nv3_d3d_vertex_t *a = &nv3_d3d.vtx[i0], *b = &nv3_d3d.vtx[i1], *c = &nv3_d3d.vtx[i2];
+                            nv3_d3d_trace_left--;
+                            always_log("nv3: d3d tri (%.1f,%.1f z%.3f w%.3f c%08x) (%.1f,%.1f) (%.1f,%.1f) cfg %08x alpha %03x tex %08x/%08x ctx %08x "
+                                       "surf %06x/%d %06x/%d %06x/%d z %06x/%d | frags %u clipped %u written %u%c",
+                                       a->x, a->y, a->z, a->rhw, a->color, b->x, b->y, c->x, c->y, nv3_d3d.config, nv3_d3d.alpha,
+                                       nv3_d3d.tex_offset, nv3_d3d.tex_format, grobj.grobj_0,
+                                       nv3->pgraph.boffset[0], nv3->pgraph.bpitch[0], nv3->pgraph.boffset[1], nv3->pgraph.bpitch[1],
+                                       nv3->pgraph.boffset[2], nv3->pgraph.bpitch[2], nv3->pgraph.boffset[3], nv3->pgraph.bpitch[3],
+                                       nv3_d3d_frag_in, nv3_d3d_frag_clip, nv3_d3d_frag_written, 10);
+                            always_log("nv3: d3d tex dma %04x flags %08x limit %08x target %d page0 %08x lin %08x texels %04x %04x %04x%c",
+                                       nv3->pgraph.dma_settings & 0xFFFF, nv3_ramin_read32((nv3->pgraph.dma_settings & 0xFFFF) << 4, nv3),
+                                       nv3_ramin_read32(((nv3->pgraph.dma_settings & 0xFFFF) << 4) + 4, nv3), nv3_d3d.tex_target,
+                                       nv3_d3d.tex_pages[0], nv3_d3d.tex_lin, nv3_d3d_read_tex16(grobj, 0), nv3_d3d_read_tex16(grobj, 0x100 * 2 + 0x80),
+                                       nv3_d3d_read_tex16(grobj, 0x8000), 10);
+                        }
+                    }
                 }
                 break;
             }

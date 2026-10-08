@@ -30,6 +30,7 @@
 #include <86box/video.h>
 #include <86box/nv/vid_nv.h>
 #include <86box/nv/vid_nv3.h>
+#include "cpu.h"
 
 /* Main device object pointer */
 nv3_t* nv3;
@@ -657,7 +658,7 @@ void nv3_speed_changed(void* priv)
     if (!nv3)
         return; 
         
-    nv3_recalc_timings(&nv3->nvbase.svga);
+    svga_recalctimings(&nv3->nvbase.svga);
 }
 
 // Force Redraw
@@ -837,8 +838,10 @@ void nv3_svga_write(uint16_t addr, uint8_t val, void* priv)
                 if (nv3->nvbase.svga.crtcreg < 0xE
                 || nv3->nvbase.svga.crtcreg > 0x10)
                 {
+                    /* the whole recalculation: nv3_recalc_timings() adds the extended bits to the
+                       core's start address and row offset, so it must not run on its own */
                     nv3->nvbase.svga.fullchange = changeframecount;
-                    nv3_recalc_timings(&nv3->nvbase.svga);
+                    svga_recalctimings(&nv3->nvbase.svga);
                 }
             }
 
@@ -870,9 +873,21 @@ uint32_t nv3_dfb_read32(uint32_t addr, void* priv)
     (nv3->nvbase.svga.vram[addr + 1] << 8) | nv3->nvbase.svga.vram[addr];
 }
 
+/* Debug: "dev nv3 watch <start> <end> <count>" logs CPU framebuffer writes into [start, end) */
+uint32_t nv3_watch_lo, nv3_watch_hi, nv3_watch_left;
+
+static void nv3_watch(uint32_t addr, uint32_t val, int size)
+{
+    if (nv3_watch_left && (addr >= nv3_watch_lo) && (addr < nv3_watch_hi)) {
+        nv3_watch_left--;
+        always_log("nv3: lfb w%d %06x %08x (cs:eip %04x:%08x)%c", size, addr, val, CS, cpu_state.pc, 10);
+    }
+}
+
 void nv3_dfb_write8(uint32_t addr, uint8_t val, void* priv)
 {
     addr &= (nv3->nvbase.svga.vram_mask);
+    nv3_watch(addr, val, 8);
     nv3->nvbase.svga.vram[addr] = val;
     nv3->nvbase.svga.changedvram[addr >> 12] = changeframecount;
 }
@@ -880,6 +895,7 @@ void nv3_dfb_write8(uint32_t addr, uint8_t val, void* priv)
 void nv3_dfb_write16(uint32_t addr, uint16_t val, void* priv)
 {
     addr &= (nv3->nvbase.svga.vram_mask);
+    nv3_watch(addr, val, 16);
     nv3->nvbase.svga.vram[addr + 1] = (val >> 8) & 0xFF;
     nv3->nvbase.svga.vram[addr] = (val) & 0xFF;
     nv3->nvbase.svga.changedvram[addr >> 12] = changeframecount;
@@ -888,6 +904,7 @@ void nv3_dfb_write16(uint32_t addr, uint16_t val, void* priv)
 void nv3_dfb_write32(uint32_t addr, uint32_t val, void* priv)
 {
     addr &= (nv3->nvbase.svga.vram_mask);
+    nv3_watch(addr, val, 32);
     nv3->nvbase.svga.vram[addr + 3] = (val >> 24) & 0xFF;
     nv3->nvbase.svga.vram[addr + 2] = (val >> 16) & 0xFF;
     nv3->nvbase.svga.vram[addr + 1] = (val >> 8) & 0xFF;
@@ -1209,6 +1226,10 @@ static void nv3_debug_hook(const char *args)
                nv3->pgraph.m2mf.scanline_length, nv3->pgraph.m2mf.num_scanlines, nv3->pgraph.m2mf.format,
                nv3->pgraph.notifier, nv3->pgraph.notify_pending, nv3->pgraph.notify_index,
                nv3->pgraph.trapped_address, nv3->pgraph.trapped_data, nv3->pgraph.trapped_instance);
+    always_log("nv3: ctx_user %08x ctx_control %08x ctx_switch %08x cache %08x %08x %08x %08x %08x %08x %08x %08x%c",
+               nv3->pgraph.context_user, nv3->pgraph.context_control, nv3->pgraph.context_switch,
+               nv3->pgraph.context_cache[0], nv3->pgraph.context_cache[1], nv3->pgraph.context_cache[2], nv3->pgraph.context_cache[3],
+               nv3->pgraph.context_cache[4], nv3->pgraph.context_cache[5], nv3->pgraph.context_cache[6], nv3->pgraph.context_cache[7], 10);
     for (int sc = 0; sc < 8; sc++) {
         uint32_t ctx  = nv3->pfifo.cache1_settings.context[sc];
         uint32_t inst = (ctx & 0xFFFF) << 4;
@@ -1239,6 +1260,26 @@ static void nv3_debug_hook(const char *args)
             always_log("nv3: inst %05x: %08x %08x %08x %08x\n", base + r, nv3_ramin_read32(base + r, nv3),
                        nv3_ramin_read32(base + r + 4, nv3), nv3_ramin_read32(base + r + 8, nv3), nv3_ramin_read32(base + r + 12, nv3));
     }
+    /* "dev nv3 watch <start> <end> <count>" */
+    const char *watch_arg = args ? strstr(args, "watch ") : NULL;
+    if (watch_arg) {
+        char *end;
+        nv3_watch_lo   = strtoul(watch_arg + 6, &end, 16);
+        nv3_watch_hi   = strtoul(end, &end, 16);
+        nv3_watch_left = strtoul(end, NULL, 0);
+    }
+    /* "dev nv3 notify <count>": log the next <count> notifier writes */
+    const char *notify_arg = args ? strstr(args, "notify ") : NULL;
+    if (notify_arg) {
+        extern uint32_t nv3_notify_trace_left;
+        nv3_notify_trace_left = strtoul(notify_arg + 7, NULL, 0);
+    }
+    /* "dev nv3 d3d <count>": log the next <count> D3D triangles */
+    const char *d3d_arg = args ? strstr(args, "d3d ") : NULL;
+    if (d3d_arg) {
+        extern uint32_t nv3_d3d_trace_left;
+        nv3_d3d_trace_left = strtoul(d3d_arg + 4, NULL, 0);
+    }
     /* "dev nv3 m2mf <count>": log the next <count> M2MF transfers */
     const char *m2mf_arg = args ? strstr(args, "m2mf ") : NULL;
     if (m2mf_arg) {
@@ -1268,6 +1309,10 @@ static void nv3_debug_hook(const char *args)
                nv3->pfifo.cache1_settings.get_address, nv3->pfifo.cache1_settings.channel, nv3->pfifo.cache0_settings.pull0,
                nv3->pfifo.cache0_settings.put_address, nv3->pfifo.cache0_settings.get_address,
                nv3->pfifo.runout_put, nv3->pfifo.runout_get, nv3->pramdac.general_control);
+    always_log("nv3: dma pusher ctrl %08x state %08x get %08x count %08x target %x tlb tag %08x pte %08x pt %08x%c",
+               nv3->pfifo.cache1_settings.dma_state, nv3->pfifo.cache1_settings.dma_status, nv3->pfifo.cache1_settings.dma_address,
+               nv3->pfifo.cache1_settings.dma_length, nv3->pfifo.cache1_settings.dma_target_node, nv3->pfifo.cache1_settings.dma_tlb_tag,
+               nv3->pfifo.cache1_settings.dma_tlb_pte, nv3->pfifo.cache1_settings.dma_tlb_pt_base, 10);
     char line[512];
     int  len = 0;
     for (int c = 0; c < 32; c++) {
@@ -1384,6 +1429,7 @@ void* nv3_init(const device_t *info)
     nv3_pfb_init();                 // Initialise Framebuffer Interface
     nv3_pramdac_init();             // Initialise RAMDAC (CLUT, final pixel presentation etc)
     nv3_pgraph_init();              // Initialise accelerated graphics engine
+    timer_add(&nv3->dma_pusher_timer, nv3_pfifo_dma_pusher_timer, NULL, 0);
 
     nv_log("Initialising I2C...");
     nv3->nvbase.i2c = i2c_gpio_init("nv3_i2c");
