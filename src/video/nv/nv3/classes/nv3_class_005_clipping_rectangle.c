@@ -31,15 +31,16 @@ void nv3_class_005_method(uint32_t param, uint32_t method_id, nv3_ramin_context_
 {
     switch (method_id)
     {
+        /* The user clip: position (signed) then size; x in 15:0, y in 31:16 */
         case NV3_CLIP_POSITION:
-            nv3->pgraph.clip_start.x = (param >> 16) & 0xFFFF;
-            nv3->pgraph.clip_start.y = (param) & 0xFFFF;
-            nv_log("Method Execution: Clip Position: %d,%d\n", nv3->pgraph.clip_start.x, nv3->pgraph.clip_start.y);
-            break; 
+            nv3->pgraph.uclip_min[0] = nv3->pgraph.uclip_max[0] = (int16_t) (param & 0xFFFF);
+            nv3->pgraph.uclip_min[1] = nv3->pgraph.uclip_max[1] = (int16_t) (param >> 16);
+            nv_log("Method Execution: Clip Position: %d,%d\n", nv3->pgraph.uclip_min[0], nv3->pgraph.uclip_min[1]);
+            break;
         case NV3_CLIP_SIZE:
-            nv3->pgraph.clip_size.x = (param >> 16) & 0xFFFF;
-            nv3->pgraph.clip_size.y = (param) & 0xFFFF;
-            nv_log("Method Execution: Clip Size: %d,%d\n", nv3->pgraph.clip_start.x, nv3->pgraph.clip_start.y);
+            nv3->pgraph.uclip_max[0] = nv3->pgraph.uclip_min[0] + (int32_t) (param & 0xFFFF);
+            nv3->pgraph.uclip_max[1] = nv3->pgraph.uclip_min[1] + (int32_t) (param >> 16);
+            nv_log("Method Execution: Clip Size: %d,%d\n", param & 0xFFFF, param >> 16);
             break;
         default:
             nv_warning("%s: Invalid or unimplemented method 0x%04x\n", nv3_class_names[context.class_id & 0x1F], method_id);

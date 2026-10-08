@@ -29,12 +29,45 @@
 #include <86box/nv/vid_nv.h>
 #include <86box/nv/vid_nv3.h>
 
+/* POINT (0x308, xy16) and SIZE (0x30c, wh16) of a rectangle of the source
+   surface, the PITCH (0x310) of the copy in memory, and its OFFSET (0x314)
+   in the object's DMA object, which starts the transfer */
 void nv3_class_014_method(uint32_t param, uint32_t method_id, nv3_ramin_context_t context, nv3_grobj_t grobj)
 {
-    switch (method_id)
-    {
+    nv3_image_to_memory_t *itm = &nv3->pgraph.transfer2memory;
+
+    switch (method_id) {
+        case 0x0308:
+            itm->point.x = param & 0xFFFF;
+            itm->point.y = param >> 16;
+            break;
+        case 0x030C:
+            itm->size.x = param & 0xFFFF;
+            itm->size.y = param >> 16;
+            break;
+        case 0x0310:
+            itm->image_pitch = param;
+            break;
+        case 0x0314:
+        {
+            uint32_t src_buffer = (grobj.grobj_0 >> NV3_PGRAPH_CTX_SWITCH_SRC_BUFFER) & 0x03;
+            uint32_t cpp        = nv3_render_cpp(nv3->pgraph.bpixel[src_buffer]);
+            uint32_t inst       = grobj.grobj_1 & 0xFFFF;
+
+            itm->image_start = param;
+            for (uint32_t y = 0; y < itm->size.y; y++) {
+                for (uint32_t x = 0; x < itm->size.x; x++) {
+                    uint32_t pixel = nv3_render_read_surface(src_buffer, (int16_t) itm->point.x + (int32_t) x, (int16_t) itm->point.y + (int32_t) y, cpp);
+                    uint32_t out   = param + y * itm->image_pitch + x * cpp;
+
+                    for (uint32_t b = 0; b < cpp; b++)
+                        nv3_dma_write8(inst, out + b, pixel >> (b * 8));
+                }
+            }
+            break;
+        }
         default:
-            nv_log("%s: Invalid or unimplemented method 0x%04x\n", nv3_class_names[context.class_id & 0x1F], method_id);
+            nv_warning("%s: Invalid or unimplemented method 0x%04x\n", nv3_class_names[context.class_id & 0x1F], method_id);
             nv3_pgraph_interrupt_invalid(NV3_PGRAPH_INTR_1_SOFTWARE_METHOD_PENDING);
             return;
     }

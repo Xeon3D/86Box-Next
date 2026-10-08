@@ -677,8 +677,8 @@ extern const device_config_t nv3t_config[];                             // Confi
 #define NV3_PGRAPH_CONTEXT_CACHE_SIZE                   8
 // TODO: CLIP0/CLIP1 (8 clips min/max in 32bits)
 #define NV3_PGRAPH_ABS_UCLIP_XMIN                       0x40053C    // Clip X minimum
-#define NV3_PGRAPH_ABS_UCLIP_XMAX                       0x400540    // Clip X maximum
-#define NV3_PGRAPH_ABS_UCLIP_YMIN                       0x400544    // Clip Y minimum
+#define NV3_PGRAPH_ABS_UCLIP_YMIN                       0x400540    // Clip Y minimum
+#define NV3_PGRAPH_ABS_UCLIP_XMAX                       0x400544    // Clip X maximum
 #define NV3_PGRAPH_ABS_UCLIP_YMAX                       0x400548    // Clip Y maximum
 #define NV3_PGRAPH_SRC_CANVAS_MIN                       0x400550    // Minimum Source Canvas for Blit, Y=30:16, X=10:0
 #define NV3_PGRAPH_SRC_CANVAS_MAX                       0x400554    // Maximum Source Canvas for Blit, Y=30:16, X=10:0
@@ -688,12 +688,16 @@ extern const device_config_t nv3t_config[];                             // Confi
 #define NV3_PGRAPH_PATTERN_COLOR_0_ALPHA                0x400604
 #define NV3_PGRAPH_PATTERN_COLOR_1_RGB                  0x400608    
 #define NV3_PGRAPH_PATTERN_COLOR_1_ALPHA                0x40060C    // pattern color 
-#define NV3_PGRAPH_PATTERN_BITMAP_HIGH                  0x400610    // pattern bitmap [31:0]
-#define NV3_PGRAPH_PATTERN_BITMAP_LOW                   0x400614    // pattern bitmap [63:32]
+#define NV3_PGRAPH_PATTERN_BITMAP_0                     0x400610    // pattern bitmap [31:0]
+#define NV3_PGRAPH_PATTERN_BITMAP_1                     0x400614    // pattern bitmap [63:32]
 #define NV3_PGRAPH_PATTERN_SHAPE                        0x400618
 #define NV3_PGRAPH_ROP3                                 0x400624    // ROP3      
 #define NV3_PGRAPH_PLANE_MASK                           0x400628
 #define NV3_PGRAPH_CHROMA_KEY                           0x40062C
+#define NV3_PGRAPH_SURF_OFFSET(i)                       (0x400630 + ((i) << 2))
+#define NV3_PGRAPH_SURF_PITCH(i)                        (0x400650 + ((i) << 2))
+#define NV3_PGRAPH_SURF_FORMAT                          0x4006A8    // BPIXEL: a nibble per surface
+#define NV3_PGRAPH_D3D_CONFIG                           0x400644
 #define NV3_PGRAPH_BETA                                 0x400640    // Beta factor (30:23 fractional, 22:0 before fraction)
 #define NV3_PGRAPH_DMA                                  0x400680
 #define NV3_PGRAPH_INSTANCE                             0x400688    // Current instance (?)
@@ -766,6 +770,7 @@ extern const device_config_t nv3t_config[];                             // Confi
 
 #define NV3_PRAMDAC_GENERAL_CONTROL                     0x680600
 #define NV3_PRAMDAC_GENERAL_CONTROL_565_MODE            12
+#define NV3_PRAMDAC_GENERAL_CONTROL_BPC_8BITS           20
 
 // These are all 10-bit values, but aligned to 32bits
 // so treating them as 32bit should be fine
@@ -1214,44 +1219,34 @@ typedef struct nv3_pgraph_s
 
     uint32_t context_cache[NV3_PGRAPH_CONTEXT_CACHE_SIZE];  // DMA context cache (nv3_pgraph_context_user_t array?)
 
-    // UCLIP stuff
-    uint32_t abs_uclip_xmin;
-    uint32_t abs_uclip_xmax;
-    uint32_t abs_uclip_ymin;
-    uint32_t abs_uclip_ymax;
-    // Canvas stuff
-    nv3_coord_16_bigy_t src_canvas_min;
-    nv3_coord_16_bigy_t src_canvas_max;
-    nv3_coord_16_bigy_t dst_canvas_min;
-    nv3_coord_16_bigy_t dst_canvas_max;
-    // Pattern stuff
-    nv3_color_expanded_t pattern_color_0_rgb;               // ignore alpha
-    uint32_t pattern_color_0_alpha;                         // only 7:0 relevant
-    nv3_color_expanded_t pattern_color_1_rgb;               // ignore alpha
-    uint32_t pattern_color_1_alpha;                         // only 7:0 relevant
-    uint64_t pattern_bitmap;                                // pattern bitmap for blit. it's alwaus 64 bits to simplify pixel rendering code
-    uint32_t pattern_shape;                                 // may need to be an enum - 0=8x8, 1=64x1, 2=1x64
-    uint32_t plane_mask;                                    // only 7:0 relevant
-    uint32_t chroma_key;                                    // color key
-    uint32_t beta_factor;
+    // Clipping. The user clip (class 0x05) applies to objects whose context has CLIP set; the canvas always does.
+    int32_t uclip_min[2];                                   // x, y (inclusive)
+    int32_t uclip_max[2];                                   // x, y (exclusive)
+    uint32_t src_canvas_min;                                // Y=29:16, X=10:0
+    uint32_t src_canvas_max;
+    uint32_t dst_canvas_min;
+    uint32_t dst_canvas_max;
+    uint32_t cliprect_min[2];                               // WinNT-style clip rectangles, Y=31:16, X=15:0
+    uint32_t cliprect_max[2];
+    uint32_t cliprect_ctrl;                                 // 1:0 count, 4 inverted
+    // Pattern (class 0x06): two mono colours as R10G10B10 plus alpha, and a 64-bit mono bitmap
+    uint32_t pattern_mono_rgb[2];
+    uint8_t pattern_mono_a[2];
+    uint32_t pattern_mono_bitmap[2];
+    uint32_t pattern_shape;                                 // 0=8x8, 1=64x1, 2=1x64
+    uint32_t plane_mask;                                    // does nothing on NV3
+    uint32_t chroma_key;                                    // A1R10G10B10, alpha = bit 30
+    uint32_t beta_factor;                                   // 30:23
+    uint32_t d3d_config;                                    // D3D_CONFIG (0x400644)
     uint32_t dma_settings;
     uint8_t rop;                                            // Current GDI Ternary Render Operation
     // SURFACE STUFF - PGRAPH CAN OPERATE ON 4 SURFACES/BUFFERS AT A TIME
     uint32_t boffset[NV3_PGRAPH_MAX_BUFFERS];               // 22-bit linear VRAM offset for the start of a buffer.
     uint16_t bpitch[NV3_PGRAPH_MAX_BUFFERS];                // 12-bit linear VRAM offset for the pitch of a buffer
-    uint32_t bpixel[NV3_PGRAPH_MAX_BUFFERS];                // Pixel format for each possible surfaces.
-    // CLIP
-    uint32_t clip_misc_settings;
+    uint32_t bpixel[NV3_PGRAPH_MAX_BUFFERS];                // Surface format per buffer (2:0, bit 2 = valid; BPIXEL nibbles)
     uint32_t notifier;
     bool notify_pending;                                    // Determines if a notification is pending.
-    /* Are these even used */
-    nv3_coord_16_bigy_t clip0_min;
-    nv3_coord_16_bigy_t clip0_max;
-    nv3_coord_16_bigy_t clip1_min;
-    nv3_coord_16_bigy_t clip1_max;
-    /* idk */
-    nv3_coord_16_t clip_start;                              // Start of the clipping region
-    nv3_coord_16_t clip_size;                               // Size of the clipping region.
+    uint32_t notify_index;                                  // Which of the object's notifiers it writes (M2MF buffer notify = 1)
     bool fifo_access;                                       // Determines if PGRAPH can access PFIFO.
     nv3_pgraph_status_t status;                             // Current status of the 3D engine.
     uint32_t trapped_address;
@@ -1281,6 +1276,7 @@ typedef struct nv3_pgraph_s
     struct nv3_object_class_010 blit;
     struct nv3_object_class_011 image;
     nv3_coord_16_t image_current_position;               /* This is here so we can hold the current state of the image */
+    uint32_t image_pixel_count;                          /* Pixels of the current image/bitmap/SIFC transfer consumed so far */
     struct nv3_object_class_012 bitmap;
     struct nv3_object_class_014 transfer2memory;
     struct nv3_object_class_015 stretched_image_from_cpu;
@@ -1548,6 +1544,9 @@ void        nv3_class_01c_method(uint32_t param, uint32_t method_id, nv3_ramin_c
 
 // Notification Engine
 void        nv3_notify_if_needed(uint32_t name, uint32_t method_id, nv3_ramin_context_t context,nv3_grobj_t grobj);
+void        nv3_write_notifier(nv3_grobj_t grobj, uint32_t index, uint16_t status, uint32_t info32, uint16_t info16);
+uint32_t    nv3_dma_read8(uint32_t inst, uint32_t offset);                              // a byte at offset in a DMA object
+void        nv3_dma_write8(uint32_t inst, uint32_t offset, uint8_t val);
 
 // NV3 PFIFO
 uint32_t    nv3_pfifo_read(uint32_t address);

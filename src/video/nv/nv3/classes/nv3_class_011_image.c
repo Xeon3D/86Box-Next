@@ -47,6 +47,7 @@ void nv3_class_011_method(uint32_t param, uint32_t method_id, nv3_ramin_context_
             nv3->pgraph.image.size_in.x = (param & 0xFFFF);
             nv3->pgraph.image.size_in.y = (param >> 16);
             nv3->pgraph.image_current_position = nv3->pgraph.image.point;
+            nv3_render_ifc_start();
             nv_log("Method Execution: Image SizeIn=%d,%d\n", nv3->pgraph.image.size_in.x, nv3->pgraph.image.size_in.y);
             break;
         default:

@@ -6,13 +6,13 @@
 *
 *          This file is part of the 86Box distribution.
 *
-*          NV3 Core rendering code (Software version)
+*          NV3 image transfers: image from CPU (0x11), bitmap from CPU
+*          (0x12), stretched image from CPU (0x15) and screen to screen
+*          blits (0x10).
 *
-* 
-* 
-* Authors: Connor Hyde, <mario64crashed@gmail.com> I need a better email address ;^)
+* Authors: Connor Hyde, <mario64crashed@gmail.com>
 *
-*          Copyright 2024-2025 Connor Hyde
+*          Copyright 2024-2026 Connor Hyde
 */
 
 #include <stdlib.h>
@@ -24,192 +24,225 @@
 #include <86box/device.h>
 #include <86box/mem.h>
 #include <86box/pci.h>
-#include <86box/plat.h>
 #include <86box/rom.h>
 #include <86box/video.h>
 #include <86box/nv/vid_nv.h>
 #include <86box/nv/vid_nv3.h>
 
-/* Check the line bounds */
-void nv3_class_011_check_line_bounds(void)
-{                
-    uint32_t relative_x = nv3->pgraph.image_current_position.x - nv3->pgraph.image.point.x;
+/* The last few image transfers, for the debug dump */
+#define NV3_IMAGE_TRACE 16
+static struct {
+    uint32_t cls, ctx, a, b, c, d, e;
+} nv3_image_trace[NV3_IMAGE_TRACE];
+static uint32_t nv3_image_trace_pos;
 
-    /* In the case of class 0x11 there is no requirement to check for relative_y because we have exceeded the size of the image */
-    if (relative_x >= nv3->pgraph.image.size_in.x)
-    {   
-        nv3->pgraph.image_current_position.y++;
-        nv3->pgraph.image_current_position.x = nv3->pgraph.image.point.x;
+static void
+nv3_render_trace_image(uint32_t cls, uint32_t ctx, uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e)
+{
+    uint32_t i = nv3_image_trace_pos++ % NV3_IMAGE_TRACE;
+
+    nv3_image_trace[i].cls = cls;
+    nv3_image_trace[i].ctx = ctx;
+    nv3_image_trace[i].a   = a;
+    nv3_image_trace[i].b   = b;
+    nv3_image_trace[i].c   = c;
+    nv3_image_trace[i].d   = d;
+    nv3_image_trace[i].e   = e;
+}
+
+void
+nv3_render_dump_images(void)
+{
+    for (uint32_t n = 0; n < NV3_IMAGE_TRACE; n++) {
+        uint32_t i = (nv3_image_trace_pos + n) % NV3_IMAGE_TRACE;
+        if (!nv3_image_trace[i].cls)
+            continue;
+        always_log("nv3: image cls %02x ctx %08x %08x %08x %08x %08x %08x\n", nv3_image_trace[i].cls, nv3_image_trace[i].ctx,
+                   nv3_image_trace[i].a, nv3_image_trace[i].b, nv3_image_trace[i].c, nv3_image_trace[i].d, nv3_image_trace[i].e);
     }
 }
 
-/* Renders an image from cpu */
-void nv3_render_blit_image(uint32_t color, nv3_grobj_t grobj)
+/* Pixels the CPU sends per 32-bit method for a colour format, and the
+   width of each */
+static uint32_t
+nv3_render_pixels_per_word(nv3_grobj_t grobj, uint32_t *bits)
 {
-    /* todo: a lot of stuff */
-
-    uint32_t pixel0 = 0, pixel1 = 0, pixel2 = 0, pixel3 = 0;
-
-    /* Some extra data is sent as padding, we need to clip it off using size_out */
-
-    uint16_t clip_x = nv3->pgraph.image.point.x + nv3->pgraph.image.size.x;
-    /* we need to unpack them - IF THIS IS USED SOMEWHERE ELSE, DO SOMETHING ELSE WITH IT */
-    /* the reverse order is due to the endianness */
-    switch (nv3->nvbase.svga.bpp)
-    {
-        // 4 pixels packed into one color in 8bpp
-        case 8:
-        
-            //pixel3
-            pixel3 = color & 0xFF;
-            if (nv3->pgraph.image_current_position.x < clip_x) nv3_render_write_pixel(nv3->pgraph.image_current_position, pixel3, grobj);
-            nv3->pgraph.image_current_position.x++;
-            nv3_class_011_check_line_bounds();
-
-            pixel2 = (color >> 8) & 0xFF;
-            if (nv3->pgraph.image_current_position.x < clip_x) nv3_render_write_pixel(nv3->pgraph.image_current_position, pixel2, grobj);
-            nv3->pgraph.image_current_position.x++;
-            nv3_class_011_check_line_bounds();
-            
-            pixel1 = (color >> 16) & 0xFF;
-            if (nv3->pgraph.image_current_position.x < clip_x) nv3_render_write_pixel(nv3->pgraph.image_current_position, pixel1, grobj);
-            nv3->pgraph.image_current_position.x++;
-            nv3_class_011_check_line_bounds();
-
-            pixel0 = (color >> 24) & 0xFF;
-            if (nv3->pgraph.image_current_position.x < clip_x) nv3_render_write_pixel(nv3->pgraph.image_current_position, pixel0, grobj);
-            nv3->pgraph.image_current_position.x++;
-            nv3_class_011_check_line_bounds();
-
-            break;
-        // 2 pixels packed into one color in 15/16bpp
-        case 15:
-        case 16:
-            pixel1 = (color) & 0xFFFF;
-            if (nv3->pgraph.image_current_position.x < (clip_x)) nv3_render_write_pixel(nv3->pgraph.image_current_position, pixel1, grobj);
-            nv3->pgraph.image_current_position.x++;
-            nv3_class_011_check_line_bounds();
-
-            pixel0 = (color >> 16) & 0xFFFF;
-            if (nv3->pgraph.image_current_position.x < (clip_x)) nv3_render_write_pixel(nv3->pgraph.image_current_position, pixel0, grobj);
-            nv3->pgraph.image_current_position.x++;
-            nv3_class_011_check_line_bounds();
-                
-            break;
-        // just one pixel in 32bpp
-        case 32: 
-            if (nv3->pgraph.image_current_position.x < clip_x) nv3_render_write_pixel(nv3->pgraph.image_current_position, color, grobj);
-            nv3->pgraph.image_current_position.x++;
-            nv3_class_011_check_line_bounds();
-
-            break;
+    switch (grobj.grobj_0 & 0x07) {
+        case nv3_pgraph_pixel_format_y8:
+            *bits = 8;
+            return 4;
+        case nv3_pgraph_pixel_format_r5g5b5:
+        case nv3_pgraph_pixel_format_y16:
+            *bits = 16;
+            return 2;
+        default:
+            *bits = 32;
+            return 1;
     }
 }
 
-
-#define NV3_MAX_HORIZONTAL_SIZE     1920
-#define NV3_MAX_VERTICAL_SIZE       1200
-
-/* 1920 for margin. Holds a buffer of the old screen we want to hold so we don't overwrite things we already overwtote
-We only need to clear it once per blit, because the blits are always the same size, and then only for the size of our new blit 
-
-Extremely not crazy about this...Surely a better way to do it without buffering the ENTIRE SCREEN. I only update the parts that are needed, but still...
-
-This is LUDICROUSLY INEFFICIENT (2*O(n^2)) and COMPLETELY TERRIBLE code, but it's currently 2:48am so I can't think of a better approach... 
-*/
-uint32_t nv3_s2sb_line_buffer[NV3_MAX_HORIZONTAL_SIZE*NV3_MAX_VERTICAL_SIZE] = {0};
-
-void nv3_render_blit_screen2screen_for_buffer(nv3_grobj_t grobj, uint32_t dst_buffer)
+/* Image from CPU (class 0x11): SIZE_IN pixels per row are sent, the first
+   SIZE_OUT of them are drawn (the rest is padding) */
+void
+nv3_render_ifc_start(void)
 {
-
+    nv3->pgraph.image_pixel_count = 0;
+    nv3_render_trace_image(0x11, nv3->pgraph.context_switch, *(uint32_t *) &nv3->pgraph.image.point,
+                           *(uint32_t *) &nv3->pgraph.image.size, *(uint32_t *) &nv3->pgraph.image.size_in, 0, 0);
 }
 
-void nv3_render_blit_screen2screen(nv3_grobj_t grobj)
+void
+nv3_render_blit_image(uint32_t color, nv3_grobj_t grobj)
 {
+    nv3_image_t *img = &nv3->pgraph.image;
+    uint32_t     bits;
+    uint32_t     count = nv3_render_pixels_per_word(grobj, &bits);
+    uint32_t     total = (uint32_t) img->size_in.x * img->size_in.y;
 
-    uint32_t src_buffer = (grobj.grobj_0 >> NV3_PGRAPH_CTX_SWITCH_SRC_BUFFER) & 0x03;
+    if (!img->size_in.x)
+        return;
 
-    /* 
-    if (nv3->pgraph.blit.size.x < NV3_MAX_HORIZONTAL_SIZE
-    && nv3->pgraph.blit.size.y < NV3_MAX_VERTICAL_SIZE)
-        memset(&nv3_s2sb_line_buffer, 0x00, (sizeof(uint32_t) * nv3->pgraph.blit.size.y) * (sizeof(uint32_t) * nv3->pgraph.blit.size.x));
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t n = nv3->pgraph.image_pixel_count;
+        if (n >= total)
+            return;
+        nv3->pgraph.image_pixel_count++;
 
-    First calculate our source and destination buffer 
-    uint32_t src_buffer = (grobj.grobj_0 >> NV3_PGRAPH_CTX_SWITCH_SRC_BUFFER) & 0x03;
+        uint32_t rx = n % img->size_in.x;
+        uint32_t ry = n / img->size_in.x;
+        if (rx >= img->size.x || ry >= img->size.y)
+            continue;
 
-    nv3_coord_16_t in_position = nv3->pgraph.blit.point_in;
-    nv3_coord_16_t out_position = nv3->pgraph.blit.point_out;
-
-    /* Coordinates for copying an entire line at a time 
-    uint32_t buf_position = 0, vram_position = 0, size_x = nv3->pgraph.blit.size.x;
-
-    /* 
-        Read the old pixel into the line buffer
-        Assumption: All data is sent in an unpacked format. In the case of an NVIDIA GPU this means that all data is sent 32 bits at a time regardless of if
-        the actual source data is 32 bits in size or not. For pixel data, the upper bits are left as 0 in 8bpp/16bpp mode. For 86box purposes, the data is written
-        8/16 bits at a time.
-
-        TODO: CHECK FOR PACKED FORMAT!!!!!
-    
-
-    if (nv3->nvbase.svga.bpp == 15
-    || nv3->nvbase.svga.bpp == 16)
-        size_x <<= 1;
-    else if (nv3->nvbase.svga.bpp == 32)
-        size_x <<= 2;
-
-    for (int32_t y = 0; y < nv3->pgraph.blit.size.y; y++)
-    {
-        buf_position = (size_x * y);
-        vram_position = nv3_render_get_vram_address_for_buffer(in_position, src_buffer);
-
-        memcpy(&nv3_s2sb_line_buffer[buf_position], &nv3->nvbase.svga.vram[vram_position], size_x);
-        in_position.y++;
-        /* 32bit buffer 
+        uint32_t pixel = (bits == 32) ? color : ((color >> (i * bits)) & ((1u << bits) - 1));
+        nv3_render_pixel((int16_t) img->point.x + (int32_t) rx, (int16_t) img->point.y + (int32_t) ry,
+                         nv3_render_expand_color(pixel, grobj), grobj);
     }
-    
-    // we can use 1 since it is always set to 0. TODO: HACK
-    uint32_t pixel_addr_vram = (out_position.x + (nv3->pgraph.bpitch[1] * out_position.y));
+}
 
-    /* simply write it all back to vram 
-    for (int32_t y = 0; y < nv3->pgraph.blit.size.y; y++)
-    {        
-        buf_position = (size_x * y);
-        memcpy(&nv3->nvbase.svga.vram[vram_position], &nv3_s2sb_line_buffer[buf_position], size_x);
+/* Bitmap from CPU (class 0x12): 32 monochrome pixels per method, COLOR0 for
+   0 bits and COLOR1 for 1 bits (a colour with zero alpha draws nothing) */
+void
+nv3_render_bitmap(uint32_t data, nv3_grobj_t grobj)
+{
+    nv3_bitmap_t *bmp   = &nv3->pgraph.bitmap;
+    uint32_t      total = (uint32_t) bmp->size_in.x * bmp->size_in.y;
+    uint32_t      mono  = nv3_render_expand_mono(data, grobj);
 
-        out_position.y++;
+    if (!bmp->size_in.x)
+        return;
+
+    for (int i = 0; i < 32; i++) {
+        uint32_t n = nv3->pgraph.image_pixel_count;
+        if (n >= total)
+            return;
+        nv3->pgraph.image_pixel_count++;
+
+        uint32_t rx = n % bmp->size_in.x;
+        uint32_t ry = n / bmp->size_in.x;
+        if (rx >= bmp->size.x || ry >= bmp->size.y)
+            continue;
+
+        nv3_render_pixel((int16_t) bmp->point.x + (int32_t) rx, (int16_t) bmp->point.y + (int32_t) ry,
+                         ((mono >> i) & 1) ? bmp->color_1 : bmp->color_0, grobj);
     }
-    */
-    
-    
-    for (int32_t x = 0; x < nv3->pgraph.blit.size.x; x++)
-    {
-        for (int32_t y = 0; y < nv3->pgraph.blit.size.y; y++)
-        {
-            nv3_coord_16_t in = { nv3->pgraph.blit.point_in.x + x, nv3->pgraph.blit.point_in.y + y }; 
-            nv3_coord_16_t out = { nv3->pgraph.blit.point_out.x + x, nv3->pgraph.blit.point_out.y + y }; 
+}
 
-            // calculate address 
-            uint32_t pixel_addr_vram = out.x + ((out.x << 2) * out.y);
+/* Screen to screen blit (class 0x10): from the object's source surface to
+   its destination surfaces. The source rectangle is read first, so
+   overlapping copies come out as if done in the right direction. */
+void
+nv3_render_blit_screen2screen(nv3_grobj_t grobj)
+{
+    nv3_blit_t *blit       = &nv3->pgraph.blit;
+    int32_t     w          = blit->size.x;
+    int32_t     h          = blit->size.y;
+    int32_t     sx         = (int16_t) blit->point_in.x;
+    int32_t     sy         = (int16_t) blit->point_in.y;
+    int32_t     dx         = (int16_t) blit->point_out.x;
+    int32_t     dy         = (int16_t) blit->point_out.y;
+    uint32_t    src_buffer = (grobj.grobj_0 >> NV3_PGRAPH_CTX_SWITCH_SRC_BUFFER) & 0x03;
+    uint32_t    fmt        = nv3_render_surface_format(grobj);
+    uint32_t    cpp        = nv3_render_cpp(fmt);
 
-            // test code iwth a fake grobj set to buffer 0
+    if (w <= 0 || h <= 0)
+        return;
 
-            uint32_t destination_format = (nv3->pgraph.bpixel[src_buffer]) & 0x03;
-            uint32_t in_pixel;
+    uint32_t *src = malloc((size_t) w * h * sizeof(uint32_t));
+    if (!src)
+        return;
 
-            // todo: improve
-            switch (destination_format)
-            {
-                case bpixel_fmt_8bit:
-                    in_pixel = nv3_render_read_pixel_8(in, grobj);
-                case bpixel_fmt_16bit:
-                    in_pixel = nv3_render_read_pixel_16(in, grobj);
-                case bpixel_fmt_32bit:
-                    in_pixel = nv3_render_read_pixel_32(in, grobj);
-                    break;
-            }
-            nv3_render_write_pixel(out, in_pixel, grobj);
+    for (int32_t y = 0; y < h; y++) {
+        for (int32_t x = 0; x < w; x++) {
+            int32_t px = sx + x;
+            int32_t py = sy + y;
+            src[y * w + x] = (px < 0 || py < 0) ? 0 : nv3_render_read_surface(src_buffer, px, py, cpp);
         }
     }
 
+    for (int32_t y = 0; y < h; y++) {
+        for (int32_t x = 0; x < w; x++)
+            nv3_render_pixel(dx + x, dy + y, nv3_render_expand_surface(fmt, src[y * w + x]), grobj);
+    }
+
+    free(src);
+}
+
+/* Stretched image from CPU (class 0x15): SIZE_IN source pixels, each
+   covering DX/DU by DY/DV destination pixels (12.20 fixed point) from POINT
+   (12.4), clipped by the class's own clip rectangle */
+void
+nv3_render_sifc_start(void)
+{
+    nv3_stretched_image_from_cpu_t *sifc = &nv3->pgraph.stretched_image_from_cpu;
+
+    nv3->pgraph.image_pixel_count = 0;
+    nv3_render_trace_image(0x15, nv3->pgraph.context_switch, *(uint32_t *) &sifc->size_in, sifc->delta_dx_du, sifc->delta_dy_dv,
+                           *(uint32_t *) &sifc->clip_0, sifc->point12d4);
+}
+
+static int32_t
+nv3_render_sifc_first_pixel(int64_t edge)
+{
+    /* first pixel whose centre (p + 0.5) is at or past edge (20-bit fraction) */
+    return (int32_t) ((edge - (1 << 19) + (1 << 20) - 1) >> 20);
+}
+
+void
+nv3_render_sifc(uint32_t color, nv3_grobj_t grobj)
+{
+    nv3_stretched_image_from_cpu_t *sifc = &nv3->pgraph.stretched_image_from_cpu;
+    uint32_t                        bits;
+    uint32_t                        count = nv3_render_pixels_per_word(grobj, &bits);
+    uint32_t                        total = (uint32_t) sifc->size_in.x * sifc->size_in.y;
+    int64_t                         x0    = (int64_t) (int16_t) (sifc->point12d4 & 0xFFFF) << 16;
+    int64_t                         y0    = (int64_t) (int16_t) (sifc->point12d4 >> 16) << 16;
+    int32_t                         cx0   = (int16_t) sifc->clip_0.x;
+    int32_t                         cy0   = (int16_t) sifc->clip_0.y;
+    int32_t                         cx1   = cx0 + sifc->clip_1.x;
+    int32_t                         cy1   = cy0 + sifc->clip_1.y;
+
+    if (!sifc->size_in.x)
+        return;
+
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t n = nv3->pgraph.image_pixel_count;
+        if (n >= total)
+            return;
+        nv3->pgraph.image_pixel_count++;
+
+        uint32_t u     = n % sifc->size_in.x;
+        uint32_t v     = n / sifc->size_in.x;
+        uint32_t pixel = (bits == 32) ? color : ((color >> (i * bits)) & ((1u << bits) - 1));
+
+        int32_t xa = nv3_render_sifc_first_pixel(x0 + (int64_t) u * sifc->delta_dx_du);
+        int32_t xb = nv3_render_sifc_first_pixel(x0 + (int64_t) (u + 1) * sifc->delta_dx_du);
+        int32_t ya = nv3_render_sifc_first_pixel(y0 + (int64_t) v * sifc->delta_dy_dv);
+        int32_t yb = nv3_render_sifc_first_pixel(y0 + (int64_t) (v + 1) * sifc->delta_dy_dv);
+
+        nv3_color_expanded_t c = nv3_render_expand_color(pixel, grobj);
+        for (int32_t y = MAX(ya, cy0); y < MIN(yb, cy1); y++) {
+            for (int32_t x = MAX(xa, cx0); x < MIN(xb, cx1); x++)
+                nv3_render_pixel_ex(x, y, c, grobj, true);
+        }
+    }
 }

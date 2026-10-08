@@ -29,11 +29,37 @@
 #include <86box/nv/vid_nv.h>
 #include <86box/nv/vid_nv3.h>
 
+/* COLOR0 (0x308), COLOR1 (0x30c), POINT (0x310, xy16), SIZE_OUT (0x314),
+   SIZE_IN (0x318), then the monochrome data from 0x400 */
 void nv3_class_012_method(uint32_t param, uint32_t method_id, nv3_ramin_context_t context, nv3_grobj_t grobj)
 {
-    switch (method_id)
-    {
+    nv3_bitmap_t *bmp = &nv3->pgraph.bitmap;
+
+    switch (method_id) {
+        case 0x0308:
+            bmp->color_0 = nv3_render_expand_color(param, grobj);
+            break;
+        case 0x030C:
+            bmp->color_1 = nv3_render_expand_color(param, grobj);
+            break;
+        case 0x0310:
+            bmp->point.x = param & 0xFFFF;
+            bmp->point.y = param >> 16;
+            break;
+        case 0x0314:
+            bmp->size.x = param & 0xFFFF;
+            bmp->size.y = param >> 16;
+            break;
+        case 0x0318:
+            bmp->size_in.x = param & 0xFFFF;
+            bmp->size_in.y = param >> 16;
+            nv3->pgraph.image_pixel_count = 0;
+            break;
         default:
+            if (method_id >= 0x0400 && method_id < 0x0480) {
+                nv3_render_bitmap(param, grobj);
+                break;
+            }
             nv_warning("%s: Invalid or unimplemented method 0x%04x\n", nv3_class_names[context.class_id & 0x1F], method_id);
             nv3_pgraph_interrupt_invalid(NV3_PGRAPH_INTR_1_SOFTWARE_METHOD_PENDING);
             return;

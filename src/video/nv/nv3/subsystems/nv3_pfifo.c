@@ -309,7 +309,7 @@ void nv3_pfifo_trigger_dma_if_required(void)
     nv3->pfifo.cache1_settings.dma_state &= ~NV3_PFIFO_CACHE1_DMA_STATUS_STATE_RUNNING;
 }
 
-void nv3_pfifo_write(uint32_t address, uint32_t val) 
+void nv3_pfifo_write(uint32_t address, uint32_t val)
 {
     // before doing anything, check the subsystem enablement
 
@@ -592,11 +592,15 @@ void nv3_pfifo_cache0_pull(void)
 {
 
     // Do nothing if PFIFO CACHE0 is disabled
-    if (!nv3->pfifo.cache0_settings.pull0 & (1 >> NV3_PFIFO_CACHE0_PULL0_ENABLED))
+    if (!(nv3->pfifo.cache0_settings.pull0 & (1 << NV3_PFIFO_CACHE0_PULL0_ENABLED)))
         return; 
 
     // Do nothing if there is nothing in cache0 to pull
     if (nv3->pfifo.cache0_settings.put_address == nv3->pfifo.cache0_settings.get_address)
+        return;
+
+    // PGRAPH is not taking methods (a trapped method is being handled): leave it queued
+    if (!nv3->pgraph.fifo_access)
         return;
 
     // There is only one entry for cache0 
@@ -623,8 +627,8 @@ void nv3_pfifo_cache0_pull(void)
     {
         nv_log_verbose_only("The object in CACHE0 is a software object\n");
 
-        nv3->pfifo.cache0_settings.pull0 |= NV3_PFIFO_CACHE0_PULL0_SOFTWARE_METHOD;
-        nv3->pfifo.cache0_settings.pull0 &= ~NV3_PFIFO_CACHE0_PULL0_ENABLED;
+        nv3->pfifo.cache0_settings.pull0 |= (1 << NV3_PFIFO_CACHE0_PULL0_SOFTWARE_METHOD);
+        nv3->pfifo.cache0_settings.pull0 &= ~(1 << NV3_PFIFO_CACHE0_PULL0_ENABLED);
         nv3_pfifo_interrupt(NV3_PFIFO_INTR_CACHE_ERROR, true);
         return;
     }
@@ -775,11 +779,15 @@ void nv3_pfifo_cache1_push(uint32_t addr, uint32_t param)
 void nv3_pfifo_cache1_pull(void)
 {
     // Do nothing if PFIFO CACHE1 is disabled
-    if (!nv3->pfifo.cache1_settings.pull0 & (1 >> NV3_PFIFO_CACHE1_PULL0_ENABLED))
+    if (!(nv3->pfifo.cache1_settings.pull0 & (1 << NV3_PFIFO_CACHE1_PULL0_ENABLED)))
         return; 
 
     // Do nothing if there is nothing in cache1 to pull
     if (nv3->pfifo.cache1_settings.put_address == nv3->pfifo.cache1_settings.get_address)
+        return;
+
+    // PGRAPH is not taking methods (a trapped method is being handled): leave it queued
+    if (!nv3->pgraph.fifo_access)
         return;
 
     uint32_t get_index = nv3->pfifo.cache1_settings.get_address >> 2; // 32 bit aligned probably
@@ -815,8 +823,8 @@ void nv3_pfifo_cache1_pull(void)
     {
         nv_log_verbose_only("The object in CACHE1 is a software object\n");
 
-        nv3->pfifo.cache1_settings.pull0 |= NV3_PFIFO_CACHE0_PULL0_SOFTWARE_METHOD;
-        nv3->pfifo.cache1_settings.pull0 &= ~NV3_PFIFO_CACHE0_PULL0_ENABLED;
+        nv3->pfifo.cache1_settings.pull0 |= (1 << NV3_PFIFO_CACHE0_PULL0_SOFTWARE_METHOD);
+        nv3->pfifo.cache1_settings.pull0 &= ~(1 << NV3_PFIFO_CACHE0_PULL0_ENABLED);
         nv3_pfifo_interrupt(NV3_PFIFO_INTR_CACHE_ERROR, true);
         return;
     }

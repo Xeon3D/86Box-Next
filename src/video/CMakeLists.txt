@@ -198,14 +198,13 @@ add_library(vid OBJECT
     nv/nv3/classes/nv3_class_012_bitmap.c
     nv/nv3/classes/nv3_class_014_transfer2memory.c
     nv/nv3/classes/nv3_class_015_stretched_image_from_cpu.c
-    nv/nv3/classes/nv3_class_017_d3d5_tri_zeta_buffer.c
-    nv/nv3/classes/nv3_class_018_point_zeta_buffer.c
     nv/nv3/classes/nv3_class_01c_image_in_memory.c
 
     # NVidia RIVA 128 - Render
     nv/nv3/render/nv3_render_core.c
     nv/nv3/render/nv3_render_primitives.c   
-    nv/nv3/render/nv3_render_blit.c   
+    nv/nv3/render/nv3_render_blit.c
+    nv/nv3/render/nv3_render_d3d.c   
 
 
     # Generic

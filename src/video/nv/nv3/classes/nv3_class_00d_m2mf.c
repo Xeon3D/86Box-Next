@@ -59,31 +59,11 @@ void nv3_class_00d_method(uint32_t param, uint32_t method_id, nv3_ramin_context_
         case NV3_M2MF_FORMAT:
             nv3->pgraph.m2mf.format = param; 
             nv_log("Method Execution: M2MF Format = 0x%08x", param);
-
-            // Format Done - start m2mf
-            nv3_perform_dma_m2mf(grobj);
-
             break;
         case NV3_M2MF_NOTIFY:
-            /* This is technically its own thing, but I don't know if it's ever a problem with how we've designed it */
-            if (nv3->pgraph.notify_pending)
-            {
-                nv_log("WARNING: M2MF notification with notify_pending already set. param=0x%08x, method=0x%04x, grobj=0x%08x 0x%08x 0x%08x 0x%08x\n");
-                nv_log("IF THIS BUILD WAS COMPILED WITH NV_LOG_ENABLE_ULTRA, YOU SHOULD SEE A CONTEXT BELOW");
-                nv3_debug_ramin_print_context_info(param, context);
-                nv3_pgraph_interrupt_invalid(NV3_PGRAPH_INTR_1_DOUBLE_NOTIFY);
-                
-                // disable
-                nv3->pgraph.notify_pending = false;
-                nv3_pgraph_interrupt_invalid(NV3_PGRAPH_INTR_1_DOUBLE_NOTIFY);
-                /* may need to disable fifo in this state */
-                return; 
-            }
-
-            nv_log("Method Execution: TODO: ACTUALLY IMPLEMENT M2MF!!!!");
-            // set a notify as pending.
-            nv3->pgraph.notifier = param; 
-            nv3->pgraph.notify_pending = true; 
+            /* BUFFER_NOTIFY starts the transfer, then writes the notifier (the Win9x driver waits on slot 0) */
+            nv3_perform_dma_m2mf(grobj);
+            nv3_write_notifier(grobj, 0, NV3_NOTIFICATION_STATUS_DONE_OK, 0, 0);
             break;                            
         default:
             nv_warning("%s: Invalid or unimplemented method 0x%04x\n", nv3_class_names[context.class_id & 0x1F], method_id);

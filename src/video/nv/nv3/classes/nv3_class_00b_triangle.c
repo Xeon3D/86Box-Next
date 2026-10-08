@@ -28,13 +28,75 @@
 #include <86box/nv/vid_nv.h>
 #include <86box/nv/vid_nv3.h>
 
+static uint32_t nv3_tri_color;
+static uint32_t nv3_tri_ccolor;
+static int32_t  nv3_tri_x[3], nv3_tri_y[3];     /* TRIANGLE / CTRIANGLE vertices */
+static int32_t  nv3_mesh_x[2], nv3_mesh_y[2];   /* the last two mesh vertices */
+static uint32_t nv3_mesh_count;
+static int32_t  nv3_tri32[5];
+
+static void
+nv3_tri_mesh_add(int32_t x, int32_t y, uint32_t color, nv3_grobj_t grobj)
+{
+    if (nv3_mesh_count >= 2)
+        nv3_render_triangle(nv3_mesh_x[0], nv3_mesh_y[0], nv3_mesh_x[1], nv3_mesh_y[1], x, y, nv3_render_expand_color(color, grobj), grobj);
+    nv3_mesh_x[0] = nv3_mesh_x[1];
+    nv3_mesh_y[0] = nv3_mesh_y[1];
+    nv3_mesh_x[1] = x;
+    nv3_mesh_y[1] = y;
+    nv3_mesh_count++;
+}
+
+/* COLOR, TRIANGLE (0x310: three xy16), TRIANGLE32 (0x320: x0 y0 x1 y1 x2 y2),
+   TRIMESH (0x400, xy16), TRIMESH32 (0x480, x y), CTRIANGLE (0x500: colour
+   and three xy16) and CTRIMESH (0x580: colour, xy16). A mesh vertex makes a
+   triangle with the two before it; a single triangle starts a new mesh. */
 void nv3_class_00b_method(uint32_t param, uint32_t method_id, nv3_ramin_context_t context, nv3_grobj_t grobj)
 {
-    switch (method_id)
-    {
-        default:
-            nv_warning("%s: Invalid or unimplemented method 0x%04x\n", nv3_class_names[context.class_id & 0x1F], method_id);
-            nv3_pgraph_interrupt_invalid(NV3_PGRAPH_INTR_1_SOFTWARE_METHOD_PENDING);
-            return;
+    int32_t x = (int16_t) (param & 0xFFFF);
+    int32_t y = (int16_t) (param >> 16);
+
+    if (method_id == 0x0304)
+        nv3_tri_color = param;
+    else if (method_id >= 0x0310 && method_id <= 0x0318) {
+        uint32_t v = (method_id - 0x0310) >> 2;
+        nv3_tri_x[v] = x;
+        nv3_tri_y[v] = y;
+        nv3_mesh_count = 0;
+        nv3_tri_mesh_add(x, y, nv3_tri_color, grobj);
+        if (v == 2)
+            nv3_render_triangle(nv3_tri_x[0], nv3_tri_y[0], nv3_tri_x[1], nv3_tri_y[1], x, y, nv3_render_expand_color(nv3_tri_color, grobj), grobj);
+    } else if (method_id >= 0x0320 && method_id <= 0x0334) {
+        uint32_t i = (method_id - 0x0320) >> 2;
+        if (i < 5)
+            nv3_tri32[i] = (int32_t) param;
+        else
+            nv3_render_triangle(nv3_tri32[0], nv3_tri32[1], nv3_tri32[2], nv3_tri32[3], nv3_tri32[4], (int32_t) param,
+                                nv3_render_expand_color(nv3_tri_color, grobj), grobj);
+    } else if (method_id >= 0x0400 && method_id < 0x0480)
+        nv3_tri_mesh_add(x, y, nv3_tri_color, grobj);
+    else if (method_id >= 0x0480 && method_id < 0x0500) {
+        if (!(method_id & 4))
+            nv3_tri32[0] = (int32_t) param;
+        else
+            nv3_tri_mesh_add(nv3_tri32[0], (int32_t) param, nv3_tri_color, grobj);
+    } else if (method_id >= 0x0500 && method_id < 0x0580) {
+        uint32_t i = (method_id >> 2) & 3;
+        if (i == 0)
+            nv3_tri_ccolor = param;
+        else {
+            nv3_tri_x[i - 1] = x;
+            nv3_tri_y[i - 1] = y;
+            if (i == 3)
+                nv3_render_triangle(nv3_tri_x[0], nv3_tri_y[0], nv3_tri_x[1], nv3_tri_y[1], x, y, nv3_render_expand_color(nv3_tri_ccolor, grobj), grobj);
+        }
+    } else if (method_id >= 0x0580 && method_id < 0x0600) {
+        if (!(method_id & 4))
+            nv3_tri_ccolor = param;
+        else
+            nv3_tri_mesh_add(x, y, nv3_tri_ccolor, grobj);
+    } else {
+        nv_warning("%s: Invalid or unimplemented method 0x%04x\n", nv3_class_names[context.class_id & 0x1F], method_id);
+        nv3_pgraph_interrupt_invalid(NV3_PGRAPH_INTR_1_SOFTWARE_METHOD_PENDING);
     }
 }

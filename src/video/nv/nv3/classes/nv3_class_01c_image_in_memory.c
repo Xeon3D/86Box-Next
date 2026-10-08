@@ -37,30 +37,19 @@ void nv3_class_01c_method(uint32_t param, uint32_t method_id, nv3_ramin_context_
         /* Color format of the image */
         case NV3_IMAGE_IN_MEMORY_COLOR_FORMAT:
         {
-            // convert to how the bpixel registers represent surface 
-            uint32_t real_format = 1; 
+            /* Decoded as the hardware does it (envytools hwtest MthdSurfFormat):
+               0x01010000 Y8 -> 1, 0x01000000 X1R5G5B5 -> 2, 0x00000001 X8R8G8B8 -> 3, 0x01010001 Y16 -> 0 */
+            uint32_t real_format = 1;
 
-            /* TODO: THIS CODE MIGHT BE NONSENSE
-                Convert between different internal representations of the pixel format, because Nvidia says: I WANT TO MAKE YOUR LIFE PAIN.
-            */
-            switch (param)
-            {
-                case nv3_image_in_memory_pixel_format_x8g8b8r8:
-                    real_format = 3; //32bit
-                    // no change
-                    break; 
-                case nv3_image_in_memory_pixel_format_x1r5g5b5_p2:
-                    real_format = 2; 
-                    break;
-                case nv3_image_in_memory_pixel_format_le_y16_p2:
-                    real_format = 0;
-                    break;
-            }
+            if (param & 0x1)
+                real_format = 0;
+            if (!(param & 0x10000))
+                real_format = 2;
+            if (!(param & 0x1000000))
+                real_format = 3;
 
-            /* Set the format */
-            
-            nv3->pgraph.bpixel[src_buffer_id] = (real_format | NV3_BPIXEL_FORMAT_IS_VALID);
-            
+            nv3->pgraph.bpixel[src_buffer_id] = (real_format | (1 << NV3_BPIXEL_FORMAT_IS_VALID));
+
             nv_log("Method Execution: Image in Memory BUF%d COLOR_FORMAT=0x%04x\n", src_buffer_id, param);
 
             break;

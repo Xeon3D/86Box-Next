@@ -66,12 +66,12 @@ void nv3_class_006_method(uint32_t param, uint32_t method_id, nv3_ramin_context_
             nv3_render_set_pattern_color(expanded_colour1, true);
             break;
         }
+        /* 0x318 is pattern bits 31:0, 0x31c bits 63:32, in the object's mono order */
         case NV3_PATTERN_BITMAP_HIGH:
-            nv3->pgraph.pattern_bitmap = 0; //reset
-            nv3->pgraph.pattern_bitmap |= ((uint64_t)param << 32); 
+            nv3->pgraph.pattern_mono_bitmap[0] = nv3_render_expand_mono(param, grobj);
             break;
         case NV3_PATTERN_BITMAP_LOW:
-            nv3->pgraph.pattern_bitmap |= param;
+            nv3->pgraph.pattern_mono_bitmap[1] = nv3_render_expand_mono(param, grobj);
             break;
         default:
             nv_warning("%s: Invalid or unimplemented method 0x%04x\n", nv3_class_names[context.class_id & 0x1F], method_id);

@@ -10,6 +10,7 @@
  *                 type text        letters, digits and spaces (pressed and released)
  *                 shot path.bmp    the emulated screen as a 32-bit BMP
  *                 log text         a line in the 86Box log
+ *                 dev args         passed to the device that registered a hook
  *
  *               Each command is logged ("debug_cmd: ..."), so a test can wait
  *               for the file to vanish and then read the log.
@@ -33,6 +34,13 @@ static uint16_t debug_cmd_keys[DEBUG_CMD_QUEUE];
 static int      debug_cmd_key_head;
 static int      debug_cmd_key_tail;
 static int      debug_cmd_key_wait;
+static void   (*debug_cmd_device_hook)(const char *args);
+
+void
+debug_cmd_set_device_hook(void (*hook)(const char *args))
+{
+    debug_cmd_device_hook = hook;
+}
 
 static void
 debug_cmd_queue_key(uint16_t code)
@@ -132,7 +140,12 @@ debug_cmd_run(char *line)
         always_log("debug_cmd: type %s\n", arg);
     } else if (!strcmp(line, "shot"))
         debug_cmd_shot(arg);
-    else if (!strcmp(line, "log"))
+    else if (!strcmp(line, "dev")) {
+        if (debug_cmd_device_hook != NULL)
+            debug_cmd_device_hook(arg);
+        else
+            always_log("debug_cmd: dev: no device hook\n");
+    } else if (!strcmp(line, "log"))
         always_log("debug_cmd: %s\n", arg);
     else if (line[0])
         always_log("debug_cmd: unknown command \"%s\"\n", line);

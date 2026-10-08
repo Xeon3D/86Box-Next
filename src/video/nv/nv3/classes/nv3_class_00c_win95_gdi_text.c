@@ -47,8 +47,8 @@ void nv3_class_00c_method(uint32_t param, uint32_t method_id, nv3_ramin_context_
             nv_log("Method Execution: GDI-B Clip Left,Top %04x,%04x\n", nv3->pgraph.win95_gdi_text.clip_b.left, nv3->pgraph.win95_gdi_text.clip_b.top);
             break;
         case NV3_W95TXT_B_CLIP_BOTTOMRIGHT:
-            nv3->pgraph.win95_gdi_text.clip_b.bottom = (param & 0xFFFF);
-            nv3->pgraph.win95_gdi_text.clip_b.right = ((param >> 16) & 0xFFFF);
+            nv3->pgraph.win95_gdi_text.clip_b.right = (param & 0xFFFF);
+            nv3->pgraph.win95_gdi_text.clip_b.bottom = ((param >> 16) & 0xFFFF);
             nv_log("Method Execution: GDI-B Clip Bottom,Right %04x,%04x\n", nv3->pgraph.win95_gdi_text.clip_b.right, nv3->pgraph.win95_gdi_text.clip_b.bottom);
             break;
         /* Type C: Unclipped Bitmap */
@@ -70,6 +70,7 @@ void nv3_class_00c_method(uint32_t param, uint32_t method_id, nv3_ramin_context_
 
             nv3->pgraph.win95_gdi_text_current_position.x = nv3->pgraph.win95_gdi_text.point_c.x  ;
             nv3->pgraph.win95_gdi_text_current_position.y = nv3->pgraph.win95_gdi_text.point_c.y;
+            nv3->pgraph.win95_gdi_text_bit_count = 0;
             break;
         case NV3_W95TXT_C_CLIP_TOPLEFT: 
             nv3->pgraph.win95_gdi_text.clip_c.left = (param & 0xFFFF);
@@ -174,7 +175,7 @@ void nv3_class_00c_method(uint32_t param, uint32_t method_id, nv3_ramin_context_
                     nv_log("Method Execution: Rect GDI-A%d Size=%d,%d\n", index, nv3->pgraph.win95_gdi_text.rect_a_size[index].x, 
                         nv3->pgraph.win95_gdi_text.rect_a_size[index].y);
 
-                    nv3_render_rect(nv3->pgraph.win95_gdi_text.rect_a_position[index], 
+                    nv3_render_gdi_rect(nv3->pgraph.win95_gdi_text.rect_a_position[index], 
                         nv3->pgraph.win95_gdi_text.rect_a_size[index], nv3->pgraph.win95_gdi_text.color_a, grobj);
                 }
                 else // position

@@ -33,10 +33,12 @@ void nv3_generic_method(uint32_t param, uint32_t method_id, nv3_ramin_context_t 
 {
     switch (method_id)
     {
-        /* mthdCreate in software(?)*/
+        /* Binding an object to the subchannel (PFIFO looked it up): PGRAPH loads its options */
         case NV3_ROOT_HI_IM_OBJECT_MCOBJECTYFACE:
-            //nv_log("mthdCreate obj_name=0x%08x\n", param);
-            nv3_pgraph_interrupt_invalid(NV3_PGRAPH_INTR_1_SOFTWARE_METHOD_PENDING);
+            nv3->pgraph.context_switch = grobj.grobj_0;
+            break;
+        /* NOP */
+        case 0x0100:
             break;
         // set up the current notification request/object
         // and check for double notifiers.
@@ -56,7 +58,10 @@ void nv3_generic_method(uint32_t param, uint32_t method_id, nv3_ramin_context_t 
             }
 
             // set a notify as pending.
-            nv3->pgraph.notifier = param; 
+            /* NOTIFY register: armed (16), select (23:20), the notifier instance (15:0) */
+            nv3->pgraph.notifier = (1 << NV3_PGRAPH_NOTIFY_REQUEST_PENDING) | ((param & 0xF) << NV3_PGRAPH_NOTIFY_REQUEST_TYPE)
+                | (grobj.grobj_1 >> 16);
+            nv3->pgraph.notify_index = 0;
             nv3->pgraph.notify_pending = true; 
             break;
         default:

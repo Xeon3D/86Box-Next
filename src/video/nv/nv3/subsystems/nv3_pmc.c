@@ -77,8 +77,7 @@ uint32_t nv3_pmc_handle_interrupts(bool send_now)
     && nv3->pgraph.intr_en_0 & (1 << 8))
         new_intr_value |= (NV3_PMC_INTERRUPT_PFB_PENDING << NV3_PMC_INTERRUPT_PFB);
 
-    if (nv3->pgraph.intr_0 & ~(1 << 8)
-    && nv3->pgraph.intr_en_0 & ~(1 << 8)) // otherwise PGRAPH-0 interurpt
+    if (nv3->pgraph.intr_0 & nv3->pgraph.intr_en_0 & ~(1 << 8)) // otherwise PGRAPH-0 interrupt
         new_intr_value |= (NV3_PMC_INTERRUPT_PGRAPH0_PENDING << NV3_PMC_INTERRUPT_PGRAPH0);
 
     // Check second pgraph interrupt register

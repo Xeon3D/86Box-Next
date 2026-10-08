@@ -10,6 +10,9 @@ extern "C" {
 
 extern void debug_cmd_poll(void);
 
+/* A device can answer "dev <args>" (one at a time; NULL to drop it). */
+extern void debug_cmd_set_device_hook(void (*hook)(const char *args));
+
 #ifdef __cplusplus
 }
 #endif
