@@ -174,3 +174,5 @@ Open:
   nv3.dll 3.43 has no D3D HAL at all (notes file). A restart from Windows 2000 hangs in the
   p55tvp4 BIOS at F000:E5A3 (keyboard controller wait loop) -- with the Cirrus GD5446 too, so
   not NV3; a cold start (stop/start the emulator) is fine.
+- 2026-10-09: Release 2.1 published (tag release-2.1 = 01c2ab5f9: the RIVA 128 ZX, the AGP entries, the
+  Windows 2000 fixes); zip in RELEASES-ARCHIVE, staged in every rig.
