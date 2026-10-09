@@ -43,7 +43,7 @@ Last updated: 2026-10-09.
     boot's load delta: it reads the first logged `cache1 ctx[0]` EIP, which is
     only logged with `dev nv3 swm N` armed — arm it right after start, or
     calibrate by hand: see the notes file).
-  - `le.py` (LE fixup parser), `dis.py`, `xref.py` — capstone helpers.
+  - `le.py` (LE fixup parser), `pedis.py` (disassemble a PE at a VA), `xref.py` (search NV3DD32 code) — capstone helpers; capstone is in the user Python (`~/AppData/Local/Python/bin/python`), not MSYS2's.
 - Debug command file (src/debug_cmd.c): `key`, `type`, `shot`, `log`, `cpu`,
   `peek lin`, `bp lin [n]`, `bp clear`, `wp lin`, `interp 1|0` (force the interpreter), `dev nv3 ...`.
 - `dev nv3` (nv3_core.c hook): no args = state dump; `inst N`, `mmio N`, `m2mf N`,
@@ -113,3 +113,7 @@ Open:
   CPU 3DMarks (CPU score tracks host load). The private rig copy's desktop is
   1024x768x8 now (my resolution tests), so 3DMark's windowed loading screen is
   posterised there -- expected at 256 colours.
+- 2026-10-09: NV3DD32.DLL state upload mapped (NV3-DRIVER-NOTES.md, "Direct3D
+  driver"). Point vs bilinear is CONFIG bits 1:0 (0 / 2), confirmed in the
+  3DMark filtering subtests; FILTER stays 0x80EC0000. tools/nv3/dis.py renamed
+  pedis.py (it shadowed the stdlib dis that capstone imports).

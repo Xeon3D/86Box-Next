@@ -109,3 +109,34 @@ is an error), and which handler runs when the method is executed in software.
   each burst.
 - Object setup at init (0x6F380, 0x70C20): binds and patchcord/DMA setup through
   subchannel 3 software objects (methods 0x300/0x304 with object handles).
+
+## Direct3D driver (NV3DD32.DLL)
+
+PE image base 0xB00B0000, .text at 0xB00B1000 (file 0x400), .data at 0xB00E9000.
+Disassemble with tools/nv3/pedis.py (VA) or search with tools/nv3/xref.py.
+
+- Push buffer, subchannel 7 = the D3D triangle object (class 0x17). Before a
+  batch the driver writes `0x0004E000, <texture DMA object>` (SET_OBJECT on
+  subchannel 7) and `0x0018E304` + six words for methods 0x304-0x318: texture
+  offset, format, FILTER, FOG_COLOR, CONFIG, ALPHA (e.g. 0xB00BE19B, 0xB00D95AE).
+  Vertices follow as `0x0020F000` headers (8 words at method 0x1000: fog/indices,
+  colour, sx, sy, sz, rhw, tu, tv), always at vertex 0's address; the low nibble
+  of the first word names the slot, the nibbles above it the triangle(s) to draw.
+- The state words come from per-texture arrays indexed by the current texture
+  slot [0xB00EC140]: offset 0xB00EC214[], format 0xB00EC1D4[], filter
+  0xB00EC1F4[], DMA object 0xB00EC234[], config 0xB00EC1B4[] ORed with the
+  global word [0xB00EC118]; fog colour [0xB00EC114], alpha [0xB00EC124].
+- The global config word is the context's `[ctx+8]` (render targets, 0xB00C0705):
+  bits 14:0 kept, Z func / Z write / colour write (`and 0xF8807FFF`) rebuilt.
+- Texture stage states: per-stage config `[ctx+0xA4+stage*4]` and filter
+  `[ctx+0xE4+stage*4]` (0xB00C230B): the filter setter clears config bits 1:0,
+  sets 2 for linear (FOH), keeps a default otherwise; the filter word is a
+  default from the context (`[+0x7BC]`, 0x00EC0000 here) with bit 31 set on the
+  point path. Observed in 3DMark 99: FILTER is 0x80EC0000 for every pass; the
+  point and bilinear filtering subtests differ only in CONFIG bits 1:0 (0 vs 2).
+- CONFIG bits 11:8 seen: 0xC (opaque textured geometry, MODULATE), 0x1 (title
+  text, alpha-blended), 0x0 (multiply-with-destination pass). rnndb lists 1/2/3/6
+  for SOURCE_COLOR; where 0xC comes from is not found yet (0xB00C35FF clears bits
+  11:10 of the stage word in the DX6 colour-op code at 0xB00C3585).
+- Depth: the driver passes D3DCMP values straight into CONFIG 19:16, with sz
+  as given (0 near); the zeta buffer must hold z * 0xFFFF for LESSEQUAL to work.
