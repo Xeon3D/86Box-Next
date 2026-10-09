@@ -27,11 +27,7 @@ private slots:
     void on_pushButtonLanguage_released();
 
 private:
-    void fillIconOrder(const QStringList &order); /* 86Box-Next */
-
     Ui::PreferencesEmulator *ui;
-
-    class QListWidget       *iconOrder; /* 86Box-Next: the status bar's icon groups */
 
     SettingsCompleter       *scLanguage;
 

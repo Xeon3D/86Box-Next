@@ -21,11 +21,6 @@
 #include "qt_machinestatus.hpp"
 
 #include <QDialog>
-#include <QGroupBox>
-#include <QHBoxLayout>
-#include <QListWidget>
-#include <QPushButton>
-#include <QVBoxLayout>
 #include <QTranslator>
 #include <QDebug>
 #include <QKeySequence>
@@ -84,51 +79,6 @@ PreferencesEmulator::PreferencesEmulator(QWidget *parent)
 #ifndef Q_OS_WINDOWS
     ui->groupBox->setHidden(true);
 #endif
-
-    /* 86Box-Next: the order of the status bar's icon groups, left to right. */
-    auto *icons       = new QGroupBox(tr("Status bar icons"));
-    auto *iconsLayout = new QHBoxLayout(icons);
-    iconOrder         = new QListWidget;
-    iconOrder->setToolTip(tr("The order of the icons at the bottom left of the window, top to bottom here "
-                             "being left to right there. Drag a group or use the buttons to move it."));
-    iconOrder->setDragDropMode(QAbstractItemView::InternalMove);
-    iconOrder->setDefaultDropAction(Qt::MoveAction);
-    iconOrder->setMinimumHeight(180);
-    iconsLayout->addWidget(iconOrder, 1);
-    auto *iconButtons = new QVBoxLayout;
-    auto *up          = new QPushButton(tr("Move &up"));
-    auto *down        = new QPushButton(tr("Move &down"));
-    auto *reset       = new QPushButton(tr("De&fault order"));
-    iconButtons->addWidget(up);
-    iconButtons->addWidget(down);
-    iconButtons->addStretch(1);
-    iconButtons->addWidget(reset);
-    iconsLayout->addLayout(iconButtons);
-    ui->gridLayout->addWidget(icons, ui->gridLayout->rowCount(), 0, 1, 2);
-
-    const auto move = [this](int delta) {
-        const int row = iconOrder->currentRow();
-        if ((row < 0) || (row + delta < 0) || (row + delta >= iconOrder->count()))
-            return;
-        iconOrder->insertItem(row + delta, iconOrder->takeItem(row));
-        iconOrder->setCurrentRow(row + delta);
-    };
-    connect(up, &QPushButton::clicked, this, [move] { move(-1); });
-    connect(down, &QPushButton::clicked, this, [move] { move(1); });
-    connect(reset, &QPushButton::clicked, this, [this] { fillIconOrder(MachineStatus::iconGroups()); });
-    fillIconOrder(MachineStatus::iconOrder());
-}
-
-void
-PreferencesEmulator::fillIconOrder(const QStringList &order)
-{
-    iconOrder->clear();
-    for (const QString &key : order) {
-        auto *item = new QListWidgetItem(MachineStatus::iconGroupName(key));
-        item->setData(Qt::UserRole, key);
-        iconOrder->addItem(item);
-    }
-    iconOrder->setCurrentRow(0);
 }
 
 PreferencesEmulator::~PreferencesEmulator()
@@ -158,13 +108,6 @@ PreferencesEmulator::save()
     confirm_reset           = ui->checkBoxConfirmHardReset->isChecked() ? 1 : 0;
     chd_precache_level      = ui->checkBoxCHDPrecache->isChecked() ? 1 : 0;
     vmm_disabled            = ui->checkBoxDisableVMM->isChecked() ? 1 : 0;
-
-    /* 86Box-Next: kept only when it differs from the default order. */
-    QStringList order;
-    for (int i = 0; i < iconOrder->count(); i++)
-        order.append(iconOrder->item(i)->data(Qt::UserRole).toString());
-    const QByteArray orderText = (order == MachineStatus::iconGroups()) ? QByteArray() : order.join(',').toUtf8();
-    snprintf(status_icon_order, sizeof(status_icon_order), "%s", orderText.constData());
 
     color_scheme       = (ui->radioButtonSystem->isChecked()) ? 0 : (ui->radioButtonLight->isChecked() ? 1 : 2);
 

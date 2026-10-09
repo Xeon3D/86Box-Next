@@ -44,6 +44,7 @@ extern "C" {
 #include "qt_preferencesemulator.hpp"
 #include "qt_preferencesinput.hpp"
 #include "qt_preferenceskeybindings.hpp"
+#include "qt_preferencesstatusbar.hpp"
 #include "qt_defs.hpp"
 
 #include <QDebug>
@@ -86,11 +87,13 @@ private:
         "Emulator",
         "Input",
         "Key bindings",
+        "Status bar",
     };
     QStringList page_icons = {
         "emulator",
         "input_devices",
         "key_bindings",
+        "floppy_and_cdrom_drives",
     };
     int fontHeight;
 };
@@ -169,10 +172,12 @@ Preferences::Preferences(QWidget *parent)
     emulator                  = new PreferencesEmulator(this);
     input                     = new PreferencesInput(this);
     key_bindings              = new PreferencesKeyBindings(this);
+    status_bar                = new PreferencesStatusBar(this);
 
     ui->stackedWidget->addWidget(emulator);
     ui->stackedWidget->addWidget(input);
     ui->stackedWidget->addWidget(key_bindings);
+    ui->stackedWidget->addWidget(status_bar);
 
     connect(ui->listView->selectionModel(), &QItemSelectionModel::currentChanged, this,
             [this](const QModelIndex &current, const QModelIndex &previous) {
@@ -196,6 +201,7 @@ Preferences::~Preferences()
 void
 Preferences::save()
 {
+    status_bar->save(); /* first: the emulator page's save rebuilds the status bar */
     emulator->save();
     input->save();
     key_bindings->save();

@@ -156,6 +156,8 @@ add_library(ui STATIC
     qt_preferenceskeybindings.cpp
     qt_preferenceskeybindings.hpp
     qt_preferenceskeybindings.ui
+    qt_preferencesstatusbar.cpp
+    qt_preferencesstatusbar.hpp
 
     qt_settings.cpp
     qt_settings.hpp
