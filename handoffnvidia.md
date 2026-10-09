@@ -56,18 +56,25 @@ Works: Win98 16bpp desktop at 640–1280, mode switches in both directions
 (fixed in 58f4c78c8: CACHE1 ctx 0x32F0 read), DirectDraw (dxdiag all OK),
 GetPixel/M2MF readback, DMA pusher, context switches between channels,
 dxdiag Direct3D 7 and 8 tests render correctly (37ce5fc63). 3DMark 99 MAX
-Game 1 (Race) renders textured with fog and Z (tools/nv3/3dmark.sh starts it).
+Game 1 (Race) renders textured with fog and Z (tools/nv3/3dmark.sh starts it);
+the whole default benchmark runs through: 1468 3DMarks, 3333 CPU 3DMarks
+(800x600x16, Z16, triple buffer). Game 2, fill rate, texture speed and
+filtering tests draw plausibly; bump mapping says "not supported" (right).
 
 Open:
-1. D3D8 test: white window (only class 0x11 blits, no 0x17 triangles) — next.
+1. 3DMark "n Pixel Polygons" tests draw nearly black: the vertices arrive with
+   colour 0xff000000 (lighting computed on the guest CPU with "Intel processor
+   optimizations"), every triangle is rasterised and written. Check by switching
+   3DMark's CPU optimisation to D3D software, or compare on a non-NV3 card; may be
+   a CPU-emulation issue, not NV3.
 2. Not yet checked against real hardware: texture filtering, mipmaps, Z,
    alpha blending. Fully fogged far geometry shows hard-edged grey shapes in
    3DMark Race (may be right: per-vertex fog 0xff).
-4. D3D_CONFIG bits 0-15 are only partly decoded (rnndb: UNK0/UNK4/UNK10/UNK12/
+3. D3D_CONFIG bits 0-15 are only partly decoded (rnndb: UNK0/UNK4/UNK10/UNK12/
    UNK15). NV3DD32.DLL builds the config word in its render-state code
    (VA 0xB00C5xxx/0xB00DCxxx, image base 0xB00B3000): a per-texture-format word
    OR a global state word at VA 0xB00EC118.
-3. 8-px artifact at the right edge at 640/1024 widths.
+4. 8-px artifact at the right edge at 640/1024 widths.
 
 ## Log
 - 2026-10-09: started 3D. The D3D7 test drew black: (a) the DMA pusher added the
