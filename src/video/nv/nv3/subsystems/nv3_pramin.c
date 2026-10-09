@@ -39,12 +39,16 @@ void nv3_debug_ramin_print_context_info(uint32_t name, nv3_ramin_context_t conte
 // real VRAM address = VRAM_size - (ramin_address - (ramin_address % reversal_unit_size)) - reversal_unit_size + (ramin_address % reversal_unit_size) 
 // reversal unit size in this case is 16 bytes, vram size is 2-8mb (but 8mb is zx/nv3t only and 2mb...i haven't found a 22mb card)
 
+/* Addresses are offsets into RAMIN, either from the BAR1 window (whose bus address is masked to
+   the 4MB window here) or from the chip itself; RAMIN offset x is VRAM (x ^ (size - 16)). Masking
+   with the VRAM size alone kept bit 22 of the window's 0xC00000 on 8MB cards (RIVA 128 ZX), so
+   the driver's RAMHT went 4MB away from where the chip looked it up. */
 // Read 8-bit ramin
 uint8_t nv3_ramin_read8(uint32_t addr, void* priv)
 {
     if (!nv3) return 0x00;
 
-    addr &= (nv3->nvbase.svga.vram_max - 1);
+    addr &= (NV3_LFB_MAPPING_SIZE - 1) & (nv3->nvbase.svga.vram_max - 1);
 
     // why does this not work in one line
     uint32_t ramin_addr = (addr ^ nv3->nvbase.svga.vram_max - 0x10);
@@ -60,7 +64,7 @@ uint16_t nv3_ramin_read16(uint32_t addr, void* priv)
 {
     if (!nv3) return 0x00;
 
-    addr &= (nv3->nvbase.svga.vram_max - 1);
+    addr &= (NV3_LFB_MAPPING_SIZE - 1) & (nv3->nvbase.svga.vram_max - 1);
 
     // why does this not work in one line
     uint16_t* vram_16bit = (uint16_t*)nv3->nvbase.svga.vram;
@@ -78,7 +82,7 @@ uint32_t nv3_ramin_read32(uint32_t addr, void* priv)
 {
     if (!nv3) return 0x00;
 
-    addr &= (nv3->nvbase.svga.vram_max - 1);
+    addr &= (NV3_LFB_MAPPING_SIZE - 1) & (nv3->nvbase.svga.vram_max - 1);
 
     // why does this not work in one line
     uint32_t* vram_32bit = (uint32_t*)nv3->nvbase.svga.vram;
@@ -97,7 +101,7 @@ void nv3_ramin_write8(uint32_t addr, uint8_t val, void* priv)
 {
     if (!nv3) return;
 
-    addr &= (nv3->nvbase.svga.vram_max - 1);
+    addr &= (NV3_LFB_MAPPING_SIZE - 1) & (nv3->nvbase.svga.vram_max - 1);
 
     uint32_t ramin_addr = (addr ^ nv3->nvbase.svga.vram_max - 0x10);
     nv3_watch(ramin_addr, val, 108);
@@ -111,7 +115,7 @@ void nv3_ramin_write16(uint32_t addr, uint16_t val, void* priv)
 {
     if (!nv3) return;
 
-    addr &= (nv3->nvbase.svga.vram_max - 1);
+    addr &= (NV3_LFB_MAPPING_SIZE - 1) & (nv3->nvbase.svga.vram_max - 1);
 
     // why does this not work in one line
     svga_t* svga = &nv3->nvbase.svga;
@@ -129,7 +133,7 @@ void nv3_ramin_write32(uint32_t addr, uint32_t val, void* priv)
 {
     if (!nv3) return;
 
-    addr &= (nv3->nvbase.svga.vram_max - 1);
+    addr &= (NV3_LFB_MAPPING_SIZE - 1) & (nv3->nvbase.svga.vram_max - 1);
 
     // why does this not work in one line
     svga_t* svga = &nv3->nvbase.svga;

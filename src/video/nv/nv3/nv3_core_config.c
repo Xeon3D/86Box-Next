@@ -144,10 +144,45 @@ const device_config_t nv3t_config[] =
         .name = "vbios",
         .description = "Model",
         .type = CONFIG_BIOS,
-        .default_string = "NV3T_VBIOS_DIAMOND_V330_V182B",
+        .default_string = "NV3T_VBIOS_STB_V128ZX_V120",
         .default_int = 0,
         .bios = 
         {
+           {
+                .name = "STB Velocity 128 ZX - Version 1.20", .files_no = 1,
+                .internal_name = "NV3T_VBIOS_STB_V128ZX_V120",
+                .files = { NV3T_VBIOS_STB_V128ZX_V120, "" },
+           },
+           {
+                .name = "ASUS AGP-V3000 ZX - V1.70D.03", .files_no = 1,
+                .internal_name = "NV3T_VBIOS_ASUS_V3000ZX_V170",
+                .files = { NV3T_VBIOS_ASUS_V3000ZX_V170, "" },
+           },
+           {
+                .name = "AGP-300S - V1.70Y", .files_no = 1,
+                .internal_name = "NV3T_VBIOS_AGP300S_V170Y",
+                .files = { NV3T_VBIOS_AGP300S_V170Y, "" },
+           },
+           {
+                .name = "Chaintech AGP-RI20 - V1.72B", .files_no = 1,
+                .internal_name = "NV3T_VBIOS_CHAINTECH_RI20_V172B",
+                .files = { NV3T_VBIOS_CHAINTECH_RI20_V172B, "" },
+           },
+           {
+                .name = "Creative CT6730 - V1.72.3D", .files_no = 1,
+                .internal_name = "NV3T_VBIOS_CREATIVE_CT6730_V1723D",
+                .files = { NV3T_VBIOS_CREATIVE_CT6730_V1723D, "" },
+           },
+           {
+                .name = "NVidia RIVA 128 ZX BIOS - V1.72D", .files_no = 1,
+                .internal_name = "NV3T_VBIOS_REFERENCE_V172D",
+                .files = { NV3T_VBIOS_REFERENCE_V172D, "" },
+           },
+           {
+                .name = "ELSA VICTORY Erazor/LT - Version 1.58.00", .files_no = 1,
+                .internal_name = "NV3T_VBIOS_ELSA_ERAZOR_LT_V15800",
+                .files = { NV3T_VBIOS_ELSA_ERAZOR_LT_V15800, "" },
+           },
            {
             
                 .name = "Diamond Multimedia Viper V330 8M BIOS - Version 1.82B", .files_no = 1,

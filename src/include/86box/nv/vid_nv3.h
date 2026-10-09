@@ -74,6 +74,14 @@ extern const device_config_t nv3t_config[];                             // Confi
 #define NV3T_VBIOS_ASUS_V170                            "roms/video/nvidia/nv3/A170D03T.rom"            // ASUS AGP-V3000 ZXTV BIOS - V1.70D.03 (C) 1996-98 Nvidia Corporation
 #define NV3T_VBIOS_REFERENCE_CEK_V171                   "roms/video/nvidia/nv3/BIOS_49_Riva 128"        // Reference BIOS: RIVA 128 ZX BIOS - V1.71B-N (C) 1996-98 NVidia Corporation
 #define NV3T_VBIOS_REFERENCE_CEK_V172                   "roms/video/nvidia/nv3/vgasgram.rom"            // Reference(?) BIOS: RIVA 128 ZX BIOS - V1.72B (C) 1996-98 NVidia Corporation
+// RIVA 128 ZX dumps (all report PCI 12D2:0018; the 64K ones are a 32K ROM and padding)
+#define NV3T_VBIOS_STB_V128ZX_V120                      "roms/video/nvidia/nv3/stb_velocity_128zx_v1_2.bin"        // STB Velocity 128 (NV3T) Ver.1.20
+#define NV3T_VBIOS_ASUS_V3000ZX_V170                    "roms/video/nvidia/nv3/asus-agp-v3000zx.vbi"               // ASUS AGP-V3000 ZX: RIVA 128 BIOS - V1.70D.03
+#define NV3T_VBIOS_AGP300S_V170Y                        "roms/video/nvidia/nv3/AGP-300S_riva128zx.BIN"             // AGP-300S: RIVA 128 BIOS - V1.70Y
+#define NV3T_VBIOS_CHAINTECH_RI20_V172B                 "roms/video/nvidia/nv3/Chaintech-AGP-RI20_riva128zx.BIN"   // Chaintech AGP-RI20: RIVA 128 BIOS - V1.72B
+#define NV3T_VBIOS_CREATIVE_CT6730_V1723D               "roms/video/nvidia/nv3/creative-ct6730.vbi"                // Creative CT6730 (Graphics Blaster RIVA 128 ZX): RIVA 128 BIOS V1.72.3D
+#define NV3T_VBIOS_REFERENCE_V172D                      "roms/video/nvidia/nv3/r128zx.VBI"                         // RIVA 128 BIOS - V1.72D
+#define NV3T_VBIOS_ELSA_ERAZOR_LT_V15800                "roms/video/nvidia/nv3/elsa.vbi"                           // ELSA VICTORY Erazor/LT Ver. 1.58.00 [WD/VBE30/DDC2B/DPMS/ZX/SD]
 
 // The default VBIOS to use
 #define NV3_VBIOS_DEFAULT                               NV3_VBIOS_DIAMOND_V330_V162

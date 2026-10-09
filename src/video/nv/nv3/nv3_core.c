@@ -1542,7 +1542,14 @@ int32_t nv3_available(void)
     || rom_present(NV3T_VBIOS_ASUS_V170)
     || rom_present(NV3T_VBIOS_DIAMOND_V330_V182B)
     || rom_present(NV3T_VBIOS_REFERENCE_CEK_V171)
-    || rom_present(NV3T_VBIOS_REFERENCE_CEK_V172);
+    || rom_present(NV3T_VBIOS_REFERENCE_CEK_V172)
+    || rom_present(NV3T_VBIOS_STB_V128ZX_V120)
+    || rom_present(NV3T_VBIOS_ASUS_V3000ZX_V170)
+    || rom_present(NV3T_VBIOS_AGP300S_V170Y)
+    || rom_present(NV3T_VBIOS_CHAINTECH_RI20_V172B)
+    || rom_present(NV3T_VBIOS_CREATIVE_CT6730_V1723D)
+    || rom_present(NV3T_VBIOS_REFERENCE_V172D)
+    || rom_present(NV3T_VBIOS_ELSA_ERAZOR_LT_V15800);
 }
 
 // NV3 (RIVA 128)
