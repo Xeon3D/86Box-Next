@@ -55,13 +55,18 @@ Last updated: 2026-10-09.
 Works: Win98 16bpp desktop at 640–1280, mode switches in both directions
 (fixed in 58f4c78c8: CACHE1 ctx 0x32F0 read), DirectDraw (dxdiag all OK),
 GetPixel/M2MF readback, DMA pusher, context switches between channels,
-D3D7 fullscreen test (dxdiag's textured spinning cube) renders correctly
-(37ce5fc63).
+dxdiag Direct3D 7 and 8 tests render correctly (37ce5fc63). 3DMark 99 MAX
+Game 1 (Race) renders textured with fog and Z (tools/nv3/3dmark.sh starts it).
 
 Open:
 1. D3D8 test: white window (only class 0x11 blits, no 0x17 triangles) — next.
 2. Not yet checked against real hardware: texture filtering, mipmaps, Z,
-   alpha blending, fog colour.
+   alpha blending. Fully fogged far geometry shows hard-edged grey shapes in
+   3DMark Race (may be right: per-vertex fog 0xff).
+4. D3D_CONFIG bits 0-15 are only partly decoded (rnndb: UNK0/UNK4/UNK10/UNK12/
+   UNK15). NV3DD32.DLL builds the config word in its render-state code
+   (VA 0xB00C5xxx/0xB00DCxxx, image base 0xB00B3000): a per-texture-format word
+   OR a global state word at VA 0xB00EC118.
 3. 8-px artifact at the right edge at 640/1024 widths.
 
 ## Log
@@ -71,3 +76,9 @@ Open:
   0x04..0x70, `dev nv3 push N` shows headers); (b) the vertex fog byte is the
   amount of fog (0 = none), not D3D's 255 = none. Both fixed; cube renders.
   Flips are CRTC start-address writes (CR0C/0D/CR19), already working.
+- 2026-10-09: 3DMark 99 Race drew opaque geometry black: vertex alpha 0 with
+  config "src x srcalpha, dst x 0" (blending off). With config bits 11:10 = 3
+  the alpha is the texture's (R5G6B5 = 1), not texture x vertex. Fog byte =
+  amount of fog (0 none): 3DMark sends 0xff only for far geometry (z~1).
+  The guest keyboard is Portuguese: tools/nv3/3dmark.sh shows the scancodes
+  for '"', ':' and '\'.

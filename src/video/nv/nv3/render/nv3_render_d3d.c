@@ -496,11 +496,19 @@ nv3_d3d_triangle(nv3_grobj_t grobj, const nv3_d3d_vertex_t *a, const nv3_d3d_ver
                     default:
                         break;
                 }
-                color = nv3_d3d_mul(texel, color);
+                uint32_t lit = nv3_d3d_mul(texel, color);
+                /* D3D_CONFIG bits 11:10 = 3 (what NV3DD32.DLL sends for MODULATE): the alpha is the
+                   texture's, not texture x vertex -- with blending off the driver still programs
+                   src x source alpha / dst x 0, so 3DMark 99's opaque geometry (vertex alpha 0,
+                   R5G6B5 textures) must come out with alpha 1 */
+                if (((config >> 10) & 3) == 3)
+                    lit = (lit & 0x00FFFFFF) | (texel & 0xFF000000);
+                color = lit;
             }
 
-            /* fog: the vertices' fog byte is the amount of fog colour, 0 = none -- NV3DD32.DLL sends
-               0 in every vertex when fog is off (dxdiag's cube), so it is not D3D's 255 = no fog */
+            /* fog: the vertex fog byte is the amount of fog colour (0 = none). NV3DD32.DLL sends 0 with
+               fog off (dxdiag's cube: fog colour 0, bytes 0); in 3DMark 99 the far geometry (z ~ 1,
+               w ~ 0.004) carries 0xff and the near geometry and sky 0 -- the reverse of D3D's 255 = no fog */
             float fog = 1.0f - (a->fog * w[0] + b->fog * w[1] + c->fog * w[2]) / 255.0f;
             if (fog < 1.0f) {
                 uint32_t res = color & 0xFF000000;
@@ -602,12 +610,12 @@ nv3_class_017_method(uint32_t param, uint32_t method_id, nv3_ramin_context_t con
                             const nv3_d3d_vertex_t *a = &nv3_d3d.vtx[i0], *b = &nv3_d3d.vtx[i1], *c = &nv3_d3d.vtx[i2];
                             nv3_d3d_trace_left--;
                             always_log("nv3: d3d tri (%.1f,%.1f z%.3f w%.3f c%08x) (%.1f,%.1f) (%.1f,%.1f) cfg %08x alpha %03x tex %08x/%08x ctx %08x "
-                                       "surf %06x/%d %06x/%d %06x/%d z %06x/%d | frags %u clipped %u written %u%c",
+                                       "surf %06x/%d %06x/%d %06x/%d z %06x/%d fog %02x %02x %02x/%08x | frags %u clipped %u written %u%c",
                                        a->x, a->y, a->z, a->rhw, a->color, b->x, b->y, c->x, c->y, nv3_d3d.config, nv3_d3d.alpha,
                                        nv3_d3d.tex_offset, nv3_d3d.tex_format, grobj.grobj_0,
                                        nv3->pgraph.boffset[0], nv3->pgraph.bpitch[0], nv3->pgraph.boffset[1], nv3->pgraph.bpitch[1],
                                        nv3->pgraph.boffset[2], nv3->pgraph.bpitch[2], nv3->pgraph.boffset[3], nv3->pgraph.bpitch[3],
-                                       nv3_d3d_frag_in, nv3_d3d_frag_clip, nv3_d3d_frag_written, 10);
+                                       a->fog, b->fog, c->fog, nv3_d3d.fog_color, nv3_d3d_frag_in, nv3_d3d_frag_clip, nv3_d3d_frag_written, 10);
                             always_log("nv3: d3d tex dma %04x flags %08x limit %08x target %d page0 %08x lin %08x texels %04x %04x %04x%c",
                                        nv3->pgraph.dma_settings & 0xFFFF, nv3_ramin_read32((nv3->pgraph.dma_settings & 0xFFFF) << 4, nv3),
                                        nv3_ramin_read32(((nv3->pgraph.dma_settings & 0xFFFF) << 4) + 4, nv3), nv3_d3d.tex_target,
