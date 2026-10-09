@@ -160,6 +160,9 @@ load_global_emulator(void)
 
     chd_precache_level = ini_section_get_int(cat, "chd_precache_level", 0);
 
+    p = ini_section_get_string(cat, "status_icon_order", "");
+    snprintf(status_icon_order, sizeof(status_icon_order), "%s", p);
+
     p = ini_section_get_string(cat, "vmm_path", NULL);
     if (p != NULL) {
         /* Convert relative paths to absolute in portable mode */
@@ -3118,6 +3121,11 @@ save_global_emulator(void)
         ini_section_set_int(cat, "chd_precache_level", chd_precache_level);
     else
         ini_section_delete_var(cat, "chd_precache_level");
+
+    if (status_icon_order[0])
+        ini_section_set_string(cat, "status_icon_order", status_icon_order);
+    else
+        ini_section_delete_var(cat, "status_icon_order");
 
     if (vmm_disabled != 1)
         ini_section_set_int(cat, "vmm_disabled", vmm_disabled);

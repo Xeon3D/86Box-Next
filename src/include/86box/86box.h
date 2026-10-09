@@ -227,6 +227,7 @@ extern int      confirm_reset;              /* (G) enable reset confirmation */
 extern int      confirm_exit;               /* (G) enable exit confirmation */
 extern int      confirm_save;               /* (G) enable save confirmation */
 extern int      chd_precache_level;         /* (G) CHD precache level */
+extern char     status_icon_order[256];     /* (G) 86Box-Next: status bar icon groups, in order */
 extern int      enable_discord;             /* (C) enable Discord integration */
 extern int      force_10ms;                 /* (C) force 10ms CPU frame interval */
 extern int      jumpered_internal_ecp_dma;  /* (C) Jumpered internal EPC DMA */

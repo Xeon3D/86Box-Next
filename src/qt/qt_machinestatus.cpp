@@ -49,6 +49,7 @@ extern bool         fast_forward;
 extern int          is_dynarec_active(void);
 };
 
+#include <QHash>
 #include <QIcon>
 #include <QPicture>
 #include <QLabel>
@@ -508,6 +509,20 @@ MachineStatus::setUsbManager(UsbManager *usb)
     usbManager = usb;
 }
 
+/* 86Box-Next: Preferences replaces the status bar's MachineStatus (for a new language); without
+   these the PC Card, USB, modem and Sound Canvas icons would be gone until the next restart. */
+void
+MachineStatus::adoptMenus(const MachineStatus &from)
+{
+    if (from.pcCardMenu)
+        setPcCardMenu(from.pcCardMenu);
+    if (from.modemMenu)
+        setModemMenu(from.modemMenu);
+    setUsbManager(from.usbManager);
+    if (from.soundCanvas)
+        setSoundCanvas(from.soundCanvas);
+}
+
 void
 MachineStatus::setSoundMenu(QMenu *menu)
 {
@@ -849,6 +864,66 @@ MachineStatus::clearActivity()
     }
 }
 
+/* 86Box-Next: the status bar's icon groups, by key, in their default order. */
+QStringList
+MachineStatus::iconGroups()
+{
+    return { "midi", "cassette", "cartridge", "floppy", "cdrom", "rdisk", "mo", "tape",
+             "network", "hdd", "pccard", "usb", "modem", "sound", "dynarec" };
+}
+
+QStringList
+MachineStatus::iconOrder()
+{
+    const QStringList all = iconGroups();
+    QStringList       order;
+    for (const QString &key : QString::fromUtf8(status_icon_order).split(',', Qt::SkipEmptyParts)) {
+        const QString k = key.trimmed();
+        if (all.contains(k) && !order.contains(k))
+            order.append(k);
+    }
+    for (const QString &key : all)
+        if (!order.contains(key))
+            order.append(key);
+    return order;
+}
+
+QString
+MachineStatus::iconGroupName(const QString &key)
+{
+    if (key == "midi")
+        return tr("Roland Sound Canvas");
+    if (key == "cassette")
+        return tr("Cassette");
+    if (key == "cartridge")
+        return tr("Cartridges");
+    if (key == "floppy")
+        return tr("Floppy drives");
+    if (key == "cdrom")
+        return tr("CD-ROM drives");
+    if (key == "rdisk")
+        return tr("Removable disk drives");
+    if (key == "mo")
+        return tr("MO drives");
+    if (key == "tape")
+        return tr("Tape drives");
+    if (key == "network")
+        return tr("Network");
+    if (key == "hdd")
+        return tr("Hard disks");
+    if (key == "pccard")
+        return tr("PC Card slots");
+    if (key == "usb")
+        return tr("USB");
+    if (key == "modem")
+        return tr("Modems");
+    if (key == "sound")
+        return tr("Sound");
+    if (key == "dynarec")
+        return tr("Dynamic recompiler");
+    return key;
+}
+
 void
 MachineStatus::refresh(QStatusBar *sbar)
 {
@@ -889,6 +964,7 @@ MachineStatus::refresh(QStatusBar *sbar)
         sbar->removeWidget(d->net[i].label.get());
     }
     sbar->removeWidget(d->dynarec.get());
+    sbar->removeWidget(d->text.get());
     sbar->removeWidget(d->sound.get());
     if (d->pccard)
         sbar->removeWidget(d->pccard.get());
@@ -899,7 +975,10 @@ MachineStatus::refresh(QStatusBar *sbar)
     if (d->soundCanvas)
         sbar->removeWidget(d->soundCanvas.get());
 
-    /* 86Box-Next: the piano, first of all, while MIDI out is the Roland Sound Canvas: lit while
+    /* 86Box-Next: each group's icons are collected, then placed in the chosen order. */
+    QHash<QString, QList<QWidget *>> groups;
+
+    /* 86Box-Next: the piano, first of all (by default), while MIDI out is the Roland Sound Canvas: lit while
        its board runs, a click shows its front panel. */
     d->soundCanvas.reset();
 #ifdef USE_SOUNDCANVAS
@@ -909,7 +988,7 @@ MachineStatus::refresh(QStatusBar *sbar)
             if (this->soundCanvas)
                 this->soundCanvas->showPanel();
         });
-        sbar->addWidget(d->soundCanvas.get());
+        groups["midi"].append(d->soundCanvas.get());
         updateSoundCanvasIcon();
     }
 #endif
@@ -932,7 +1011,7 @@ MachineStatus::refresh(QStatusBar *sbar)
         });
         d->cassette.label->setToolTip(MediaMenu::ptr->cassetteMenu->toolTip());
         d->cassette.label->setAcceptDrops(true);
-        sbar->addWidget(d->cassette.label.get());
+        groups["cassette"].append(d->cassette.label.get());
     }
 
     if (machine_has_cartridge(machine)) {
@@ -948,11 +1027,11 @@ MachineStatus::refresh(QStatusBar *sbar)
             });
             d->cartridge[i].label->setToolTip(MediaMenu::ptr->cartridgeMenus[i]->toolTip());
             d->cartridge[i].label->setAcceptDrops(true);
-            sbar->addWidget(d->cartridge[i].label.get());
+            groups["cartridge"].append(d->cartridge[i].label.get());
         }
     }
 
-    iterateFDD([this, sbar](int i) {
+    iterateFDD([this, &groups](int i) {
         fdd_drive_t *drv = &drives[i];
         int t = fdd_get_type(drv);
         if (t == 0)
@@ -980,10 +1059,10 @@ MachineStatus::refresh(QStatusBar *sbar)
         });
         d->fdd[i].label->setToolTip(MediaMenu::ptr->floppyMenus[i]->toolTip());
         d->fdd[i].label->setAcceptDrops(true);
-        sbar->addWidget(d->fdd[i].label.get());
+        groups["floppy"].append(d->fdd[i].label.get());
     });
 
-    iterateCDROM([this, sbar](int i) {
+    iterateCDROM([this, &groups](int i) {
         int t = cdrom[i].type;
         if (cdrom_is_dvd(t))
             d->cdrom[i].pixmaps = &d->pixmaps.dvdrom;
@@ -1002,10 +1081,10 @@ MachineStatus::refresh(QStatusBar *sbar)
         });
         d->cdrom[i].label->setToolTip(MediaMenu::ptr->cdromMenus[i]->toolTip());
         d->cdrom[i].label->setAcceptDrops(true);
-        sbar->addWidget(d->cdrom[i].label.get());
+        groups["cdrom"].append(d->cdrom[i].label.get());
     });
 
-    iterateRDisk([this, sbar](int i) {
+    iterateRDisk([this, &groups](int i) {
         int t = rdisk_drives[i].type;
         if (rdisk_drives[i].bus_type == RDISK_BUS_DISABLED)
             d->rdisk[i].pixmaps = &d->pixmaps.rdisk_disabled;
@@ -1036,10 +1115,10 @@ MachineStatus::refresh(QStatusBar *sbar)
         });
         d->rdisk[i].label->setToolTip(MediaMenu::ptr->rdiskMenus[i]->toolTip());
         d->rdisk[i].label->setAcceptDrops(true);
-        sbar->addWidget(d->rdisk[i].label.get());
+        groups["rdisk"].append(d->rdisk[i].label.get());
     });
 
-    iterateMO([this, sbar](int i) {
+    iterateMO([this, &groups](int i) {
         d->mo[i].label = std::make_unique<ClickableLabel>();
         d->mo[i].setEmpty(QString(mo_drives[i].image_path).isEmpty());
         if (QString(mo_drives[i].image_path).isEmpty())
@@ -1059,10 +1138,10 @@ MachineStatus::refresh(QStatusBar *sbar)
         });
         d->mo[i].label->setToolTip(MediaMenu::ptr->moMenus[i]->toolTip());
         d->mo[i].label->setAcceptDrops(true);
-        sbar->addWidget(d->mo[i].label.get());
+        groups["mo"].append(d->mo[i].label.get());
     });
 
-    iterateTape([this, sbar](int i) {
+    iterateTape([this, &groups](int i) {
         d->tape[i].label = std::make_unique<ClickableLabel>();
         d->tape[i].setEmpty(QString(tape_drives[i].image_path).isEmpty());
         if (QString(tape_drives[i].image_path).isEmpty())
@@ -1082,10 +1161,10 @@ MachineStatus::refresh(QStatusBar *sbar)
         });
         d->tape[i].label->setToolTip(MediaMenu::ptr->tapeMenus[i]->toolTip());
         d->tape[i].label->setAcceptDrops(true);
-        sbar->addWidget(d->tape[i].label.get());
+        groups["tape"].append(d->tape[i].label.get());
     });
 
-    iterateNIC([this, sbar](int i) {
+    iterateNIC([this, &groups](int i) {
         d->net[i].label = std::make_unique<ClickableLabel>();
         d->net[i].setEmpty(!network_is_connected(i));
         d->net[i].setActive(false);
@@ -1095,7 +1174,7 @@ MachineStatus::refresh(QStatusBar *sbar)
         connect((ClickableLabel *) d->net[i].label.get(), &ClickableLabel::clicked, [i](QPoint pos) {
             MediaMenu::ptr->netMenus[i]->popup(pos - QPoint(0, MediaMenu::ptr->netMenus[i]->sizeHint().height()));
         });
-        sbar->addWidget(d->net[i].label.get());
+        groups["network"].append(d->net[i].label.get());
     });
 
     auto hdc_name = QString(hdc_get_internal_name(hdc_current[0]));
@@ -1113,7 +1192,7 @@ MachineStatus::refresh(QStatusBar *sbar)
             }
         }
         d->hdds[HDD_BUS_MFM].label->setToolTip(tooltip);
-        sbar->addWidget(d->hdds[HDD_BUS_MFM].label.get());
+        groups["hdd"].append(d->hdds[HDD_BUS_MFM].label.get());
     }
     if ((has_esdi || (hdc_name.left(4) == QStringLiteral("esdi"))) && (c_esdi > 0)) {
         d->hdds[HDD_BUS_ESDI].label = std::make_unique<QLabel>();
@@ -1129,7 +1208,7 @@ MachineStatus::refresh(QStatusBar *sbar)
             }
         }
         d->hdds[HDD_BUS_ESDI].label->setToolTip(tooltip);
-        sbar->addWidget(d->hdds[HDD_BUS_ESDI].label.get());
+        groups["hdd"].append(d->hdds[HDD_BUS_ESDI].label.get());
     }
     if ((has_xta || (hdc_name.left(3) == QStringLiteral("xta"))) && (c_xta > 0)) {
         d->hdds[HDD_BUS_XTA].label = std::make_unique<QLabel>();
@@ -1145,7 +1224,7 @@ MachineStatus::refresh(QStatusBar *sbar)
             }
         }
         d->hdds[HDD_BUS_XTA].label->setToolTip(tooltip);
-        sbar->addWidget(d->hdds[HDD_BUS_XTA].label.get());
+        groups["hdd"].append(d->hdds[HDD_BUS_XTA].label.get());
     }
     if (hasIDE() || hdc_name.startsWith(QStringLiteral("xtide")) ||
         hdc_name.startsWith(QStringLiteral("jride")) ||
@@ -1165,7 +1244,7 @@ MachineStatus::refresh(QStatusBar *sbar)
                 }
             }
             d->hdds[HDD_BUS_IDE].label->setToolTip(tooltip);
-            sbar->addWidget(d->hdds[HDD_BUS_IDE].label.get());
+            groups["hdd"].append(d->hdds[HDD_BUS_IDE].label.get());
         }
         if (c_atapi > 0) {
             d->hdds[HDD_BUS_ATAPI].label = std::make_unique<QLabel>();
@@ -1181,7 +1260,7 @@ MachineStatus::refresh(QStatusBar *sbar)
                 }
             }
             d->hdds[HDD_BUS_ATAPI].label->setToolTip(tooltip);
-            sbar->addWidget(d->hdds[HDD_BUS_ATAPI].label.get());
+            groups["hdd"].append(d->hdds[HDD_BUS_ATAPI].label.get());
         }
     }
     if (hasAnySCSI() && (c_scsi > 0)) {
@@ -1198,7 +1277,7 @@ MachineStatus::refresh(QStatusBar *sbar)
             }
         }
         d->hdds[HDD_BUS_SCSI].label->setToolTip(tooltip);
-        sbar->addWidget(d->hdds[HDD_BUS_SCSI].label.get());
+        groups["hdd"].append(d->hdds[HDD_BUS_SCSI].label.get());
     }
 
     /* 86Box-Next: the PC Card icon, with the drives and network icons, while
@@ -1210,7 +1289,7 @@ MachineStatus::refresh(QStatusBar *sbar)
             QMenu *m = this->pcCardMenu->menu();
             m->popup(pos - QPoint(0, m->sizeHint().height()));
         });
-        sbar->addWidget(d->pccard.get());
+        groups["pccard"].append(d->pccard.get());
         updatePcCardIcon();
     }
 
@@ -1229,7 +1308,7 @@ MachineStatus::refresh(QStatusBar *sbar)
             if (d->usb && usbManager)
                 d->usb->setToolTip(usbManager->toolTip());
         });
-        sbar->addWidget(d->usb.get());
+        groups["usb"].append(d->usb.get());
     }
 
     /* 86Box-Next: the modem icon, while a modem is plugged into a COM port or
@@ -1245,7 +1324,7 @@ MachineStatus::refresh(QStatusBar *sbar)
             this->modemMenu->buildMenu(); /* so the size is the real one */
             m->popup(pos - QPoint(0, m->sizeHint().height()));
         });
-        sbar->addWidget(d->modem.get());
+        groups["modem"].append(d->modem.get());
         updateModemIcon();
     }
 
@@ -1257,7 +1336,7 @@ MachineStatus::refresh(QStatusBar *sbar)
     });
 
     d->sound->setToolTip(tr("Sound"));
-    sbar->addWidget(d->sound.get());
+    groups["sound"].append(d->sound.get());
 
     d->dynarec = std::make_unique<ClickableLabel>();
     d->dynarec->setPixmap(!is_dynarec_active() ? d->pixmaps.dynarec.disabled : d->pixmaps.dynarec.normal);
@@ -1270,7 +1349,11 @@ MachineStatus::refresh(QStatusBar *sbar)
             this->dynarecMenu->popup(pos - QPoint(0, this->dynarecMenu->sizeHint().height()));
     });
 
-    sbar->addWidget(d->dynarec.get());
+    groups["dynarec"].append(d->dynarec.get());
+
+    for (const QString &key : iconOrder())
+        for (QWidget *w : groups.value(key))
+            sbar->addWidget(w);
 
     d->text = std::make_unique<QLabel>();
     sbar->addWidget(d->text.get());

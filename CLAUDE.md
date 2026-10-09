@@ -252,6 +252,15 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   closes its OPL with `device_close_priv()`); MIDI out/in and the standalone MPU-401 on ISA
   (`mpu401_standalone_hotplug()`; MCA stays hard). Port enable/disable and the ECP DMA jumper
   stay hard (the UARTs/ports are made at the hard reset).
+- Status bar icon order (Preferences > Emulator > Status bar icons: a list of the icon groups --
+  Sound Canvas, cassette, cartridges, floppy, CD-ROM, removable disk, MO, tape, network, hard
+  disks, PC Card, USB, modems, sound, dynarec -- drag or Move up/down, Default order): saved as
+  `status_icon_order` (comma-separated keys from `MachineStatus::iconGroups()`, blank = default;
+  unknown keys dropped, missing groups follow in default order) with the other emulator
+  preferences; `MachineStatus::refresh()` collects each group's widgets, then adds them in
+  `iconOrder()`. A new icon group needs a key there and a name in `iconGroupName()`.
+  Preferences OK replaces `MachineStatus`; `adoptMenus()` carries the PC Card/USB/modem/Sound
+  Canvas hooks over (they were lost before).
 - Upstream's CI workflows and Dependabot are disabled/removed in this repo; only
   `sync-upstream.yml` runs.
 - Build number in the title bar / About box: `.build-number` (git-ignored, repo root)
