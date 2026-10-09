@@ -45,7 +45,7 @@ Last updated: 2026-10-09.
     calibrate by hand: see the notes file).
   - `le.py` (LE fixup parser), `dis.py`, `xref.py` — capstone helpers.
 - Debug command file (src/debug_cmd.c): `key`, `type`, `shot`, `log`, `cpu`,
-  `peek lin`, `bp lin [n]`, `bp clear`, `wp lin`, `dev nv3 ...`.
+  `peek lin`, `bp lin [n]`, `bp clear`, `wp lin`, `interp 1|0` (force the interpreter), `dev nv3 ...`.
 - `dev nv3` (nv3_core.c hook): no args = state dump; `inst N`, `mmio N`, `m2mf N`,
   `d3d N` (triangle trace), `notify N`, `watch lo hi n` (VRAM/RAMIN writes),
   `swm N` (software methods, RAMHT misses/binds, ctx writes + resman MMIO),
@@ -58,23 +58,18 @@ GetPixel/M2MF readback, DMA pusher, context switches between channels,
 dxdiag Direct3D 7 and 8 tests render correctly (37ce5fc63). 3DMark 99 MAX
 Game 1 (Race) renders textured with fog and Z (tools/nv3/3dmark.sh starts it);
 the whole default benchmark runs through: 1468 3DMarks, 3333 CPU 3DMarks
-(800x600x16, Z16, triple buffer). Game 2, fill rate, texture speed and
-filtering tests draw plausibly; bump mapping says "not supported" (right).
+(800x600x16, Z16, triple buffer). Game 2, fill rate, texture speed,
+filtering and n Pixel Polygons tests draw plausibly; bump mapping says "not supported" (right).
 
 Open:
-1. 3DMark "n Pixel Polygons" tests draw nearly black: the vertices arrive with
-   colour 0xff000000 (lighting computed on the guest CPU with "Intel processor
-   optimizations"), every triangle is rasterised and written. Check by switching
-   3DMark's CPU optimisation to D3D software, or compare on a non-NV3 card; may be
-   a CPU-emulation issue, not NV3.
-2. Not yet checked against real hardware: texture filtering, mipmaps, Z,
+1. Not yet checked against real hardware: texture filtering, mipmaps, Z,
    alpha blending. Fully fogged far geometry shows hard-edged grey shapes in
    3DMark Race (may be right: per-vertex fog 0xff).
-3. D3D_CONFIG bits 0-15 are only partly decoded (rnndb: UNK0/UNK4/UNK10/UNK12/
+2. D3D_CONFIG bits 0-15 are only partly decoded (rnndb: UNK0/UNK4/UNK10/UNK12/
    UNK15). NV3DD32.DLL builds the config word in its render-state code
    (VA 0xB00C5xxx/0xB00DCxxx, image base 0xB00B3000): a per-texture-format word
    OR a global state word at VA 0xB00EC118.
-4. 8-px artifact at the right edge at 640/1024 widths.
+3. 8-px artifact at the right edge at 640/1024 widths.
 
 ## Log
 - 2026-10-09: started 3D. The D3D7 test drew black: (a) the DMA pusher added the
@@ -89,3 +84,10 @@ Open:
   amount of fog (0 none): 3DMark sends 0xff only for far geometry (z~1).
   The guest keyboard is Portuguese: tools/nv3/3dmark.sh shows the scancodes
   for '"', ':' and '\'.
+- 2026-10-09: the "n Pixel Polygons" tests are not broken: each frame is a fixed
+  number of triangles (6 push buffer batches of 2412 at y 5/116/230/341/455/566 for
+  the small sizes), so the small-polygon frames are mostly black bands and the large
+  ones fill the screen with the lit cloud texture. Same with the interpreter
+  (`interp 1`, new debug command) and with fpu_softfloat. tools/nv3/3dmark-npoly.sh
+  selects and runs only those tests. The driver double-buffers its push buffer:
+  GET 0x180 / 0x40180, ~0x3FA00 bytes each.
