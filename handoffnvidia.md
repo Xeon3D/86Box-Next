@@ -55,18 +55,19 @@ Last updated: 2026-10-09.
 Works: Win98 16bpp desktop at 640â€“1280, mode switches in both directions
 (fixed in 58f4c78c8: CACHE1 ctx 0x32F0 read), DirectDraw (dxdiag all OK),
 GetPixel/M2MF readback, DMA pusher, context switches between channels,
-D3D7 windowed test renders triangles through the DMA pusher.
+D3D7 fullscreen test (dxdiag's textured spinning cube) renders correctly
+(37ce5fc63).
 
 Open:
-1. **D3D7 fullscreen: frames show black** even though triangles are written
-   (investigating now â€” see log below).
-2. D3D8 test: white window (only class 0x11 blits, no 0x17 triangles).
+1. D3D8 test: white window (only class 0x11 blits, no 0x17 triangles) â€” next.
+2. Not yet checked against real hardware: texture filtering, mipmaps, Z,
+   alpha blending, fog colour.
 3. 8-px artifact at the right edge at 640/1024 widths.
 
 ## Log
 - 2026-10-09: started 3D. The D3D7 test drew black: (a) the DMA pusher added the
-  push buffer DMA object's adjust (0x80) to DMA_GET — the resman already folds it
-  in — so it parsed from inside a command (runouts with vertex floats on methods
+  push buffer DMA object's adjust (0x80) to DMA_GET; the resman already folds it
+  in, so it parsed from inside a command (runouts with vertex floats on methods
   0x04..0x70, `dev nv3 push N` shows headers); (b) the vertex fog byte is the
   amount of fog (0 = none), not D3D's 255 = none. Both fixed; cube renders.
   Flips are CRTC start-address writes (CR0C/0D/CR19), already working.
