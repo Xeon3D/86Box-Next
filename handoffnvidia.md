@@ -75,7 +75,11 @@ Open:
    CULLING 14:12, Z_PERSPECTIVE 15. Unknown: what 11:10 = 3 (NV3DD32's
    MODULATE, alpha from the texture) really means; ZOH corner vs centre; how
    the w buffer (bit 15) is stored -- untested, no app seen using it.
-3. 8-px artifact at the right edge at 640/1024 widths.
+3. Right edge: the dumped buffer has stray columns just past the active width
+   (800x600: column 800 black, 801-807 content; 1024: 1025-1027). They are in the
+   overscan border, which is cropped unless Show overscan is on (off in the rig),
+   so not visible normally. Low priority; the svga core's overscan maths with
+   override = 0 (nv3_recalc_timings) is where to look.
 
 ## Log
 - 2026-10-09: started 3D. The D3D7 test drew black: (a) the DMA pusher added the
@@ -105,3 +109,7 @@ Open:
   level from the texture-coordinate derivatives (was one level per triangle),
   barycentrics in double. tools/nv3/3dmark-tests.sh SC... runs chosen tests
   (Alt-letter scancodes listed in it); `dev nv3 tex` dumps mip levels.
+- 2026-10-09: full default 3DMark 99 run after the zeta fix: 1465 3DMarks, 2093
+  CPU 3DMarks (CPU score tracks host load). The private rig copy's desktop is
+  1024x768x8 now (my resolution tests), so 3DMark's windowed loading screen is
+  posterised there -- expected at 256 colours.
