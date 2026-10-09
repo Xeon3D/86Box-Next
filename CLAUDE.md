@@ -271,7 +271,9 @@ an exit without a Windows shutdown: Enter for both -- `MS-DOS`, `OS2 Warp 3`, ..
 each with the newest build. `tools/stage-rig.sh` replaces only the exe (plus DLLs for a
 dynamic build) in every rig folder holding an `86box.cfg` or an exe; a rig's
 `roms/` is only created when missing (86Box ROM set + MegaPPBox's `roms/megatouch`) and
-only refreshed with `--update-roms` -- leave the ROMs alone unless strictly necessary. **Never delete
+only refreshed with `--update-roms`; ROMs in neither set (the NVIDIA RIVA 128/128 ZX BIOSes in
+`video/nvidia/nv3/`) live in `F:\Claude\86Box-Next\ROMS-EXTRA` (roms/ layout, outside the repo) and are
+added to every rig that lacks them -- leave the ROMs alone unless strictly necessary. **Never delete
 anything else in the rigs** -- `86box.cfg`, `nvr/` and disk images are theirs.
 Restage after every change; it refuses while 86Box-Next is running.
 

@@ -4,7 +4,8 @@
 # folder with its own 86box.cfg, nvr/, disk images and roms/: the exe goes
 # into every rig folder that has an 86box.cfg or an 86Box-Next.exe (folders
 # with neither are left alone).  A rig without roms/ gets the 86Box ROM set
-# and MegaPPBox's Megatouch ROMs.
+# and MegaPPBox's Megatouch ROMs; every rig gets whatever ../ROMS-EXTRA holds
+# (ROMs in neither set, e.g. the NVIDIA BIOSes) that its roms/ lacks.
 #
 # The rigs are where the machines being tested live, so this only ever
 # replaces the exe (and, for a dynamic build, its DLLs and Qt plugins) and
@@ -27,6 +28,7 @@ if [ "$1" = "--update-roms" ]; then
 fi
 BUILD=${1:-build-static}
 OUT=../Latest
+EXTRA=../ROMS-EXTRA
 UCRT=/c/msys64/ucrt64
 EXE="$BUILD/src/86Box-Next.exe"
 export PATH="$UCRT/bin:/c/msys64/usr/bin:$PATH"
@@ -88,6 +90,18 @@ stage_rig() {
         mkdir -p "$RIG/roms/megatouch"
         cp -r "$MEGA/roms/megatouch/." "$RIG/roms/megatouch/"
         [ -n "$TMP" ] && rm -rf "$TMP"
+    fi
+
+    # ROMs that are in neither set (the NVIDIA RIVA 128 / 128 ZX BIOSes in
+    # video/nvidia/nv3), kept outside the repository in ../ROMS-EXTRA with
+    # the roms/ layout: missing files are added, existing ones are only
+    # replaced when asked.
+    if [ -d "$EXTRA" ]; then
+        if [ "$UPDATE_ROMS" = 1 ]; then
+            cp -r "$EXTRA/." "$RIG/roms/"
+        else
+            cp -rn "$EXTRA/." "$RIG/roms/"
+        fi
     fi
 
     strip -o "$RIG/86Box-Next.exe" "$EXE"
