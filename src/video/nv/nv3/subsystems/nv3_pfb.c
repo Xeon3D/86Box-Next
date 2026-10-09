@@ -39,7 +39,9 @@ void nv3_pfb_init(void)
     | (NV3_PFB_BOOT_RAM_WIDTH_128 << NV3_PFB_BOOT_RAM_WIDTH)
     );
 
-    if (nv3->nvbase.vram_amount == NV3_VRAM_SIZE_4MB)
+    if (nv3->nvbase.vram_amount == NV3_VRAM_SIZE_2MB)
+        nv3->pfb.boot |= (NV3_PFB_BOOT_RAM_AMOUNT_2MB << NV3_PFB_BOOT_RAM_AMOUNT);
+    else if (nv3->nvbase.vram_amount == NV3_VRAM_SIZE_4MB)
         nv3->pfb.boot |= (NV3_PFB_BOOT_RAM_AMOUNT_4MB << NV3_PFB_BOOT_RAM_AMOUNT);
     else    
         nv3->pfb.boot |= (NV3_PFB_BOOT_RAM_AMOUNT_8MB << NV3_PFB_BOOT_RAM_AMOUNT);

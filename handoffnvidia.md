@@ -129,3 +129,7 @@ Open:
   made the resman's handler re-submit and re-interrupt without end). Checked with
   tools/nv3/ovltest: scaled, 1:1 and colour-keyed phases all right. Not yet: YV12/YVU9
   planar FOURCCs (the driver may convert them), interlaced (bob) fields, 8/32 bpp desktops.
+- 2026-10-09: the 2 MB option (NEC G7AGK) no longer fatal()s: BAR1 laid out as for 4 MB with a
+  2 MB framebuffer and mirror, PFB_BOOT reports 2 MB. Win98: dxdiag shows 2.0 MB, DirectDraw
+  tests pass, desktop 1024x768x8. To test: add `[nVIDIA RIVA 128 (NV3) PCI]` /
+  `vram_size = 2097152` to the private rig's cfg.

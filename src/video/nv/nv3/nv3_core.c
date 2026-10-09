@@ -1122,11 +1122,12 @@ void nv3_update_mappings(void)
 
     if (nv3->nvbase.bar1_lfb_base)
     {
-        if (nv3->nvbase.vram_amount == NV3_VRAM_SIZE_4MB)
+        if (nv3->nvbase.vram_amount == NV3_VRAM_SIZE_4MB || nv3->nvbase.vram_amount == NV3_VRAM_SIZE_2MB)
         {    
-            mem_mapping_set_addr(&nv3->nvbase.framebuffer_mapping, nv3->nvbase.bar1_lfb_base, NV3_VRAM_SIZE_4MB);
+            /* 2MB (NEC G7AGK): the 4MB layout with the framebuffer and its mirror 2MB long */
+            mem_mapping_set_addr(&nv3->nvbase.framebuffer_mapping, nv3->nvbase.bar1_lfb_base, nv3->nvbase.vram_amount);
             mem_mapping_set_addr(&nv3->nvbase.ramin_mapping_mirror, nv3->nvbase.bar1_lfb_base + NV3_LFB_RAMIN_MIRROR_START, NV3_LFB_MAPPING_SIZE);
-            mem_mapping_set_addr(&nv3->nvbase.framebuffer_mapping_mirror, nv3->nvbase.bar1_lfb_base + NV3_LFB_MIRROR_START, NV3_VRAM_SIZE_4MB);
+            mem_mapping_set_addr(&nv3->nvbase.framebuffer_mapping_mirror, nv3->nvbase.bar1_lfb_base + NV3_LFB_MIRROR_START, nv3->nvbase.vram_amount);
             mem_mapping_set_addr(&nv3->nvbase.ramin_mapping, nv3->nvbase.bar1_lfb_base + NV3_LFB_RAMIN_START, NV3_LFB_MAPPING_SIZE);
         }
         else if (nv3->nvbase.vram_amount == NV3_VRAM_SIZE_8MB)
@@ -1137,8 +1138,6 @@ void nv3_update_mappings(void)
             mem_mapping_set_addr(&nv3->nvbase.framebuffer_mapping_mirror, nv3->nvbase.bar1_lfb_base + NV3_LFB_MIRROR_START, NV3_LFB_MAPPING_SIZE);
             mem_mapping_set_addr(&nv3->nvbase.ramin_mapping, nv3->nvbase.bar1_lfb_base + NV3_LFB_RAMIN_START, NV3_LFB_MAPPING_SIZE);
         }
-        else
-            fatal("NV3 2MB not implemented yet"); 
     }
 
     // Did we change the banked SVGA mode?
