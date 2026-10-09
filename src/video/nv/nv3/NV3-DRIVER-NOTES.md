@@ -167,3 +167,16 @@ colour key 0x57296); NV3DD32.DLL never touches it. DirectDraw reports one overla
   bit 8 YUY2 (clear: UYVY).
 - 0x238/0x23C FIFO threshold/burst; 0x280-0x288 = 0x69, 0x3E, 0x89 at boot (unknown, maybe
   colour-space coefficients).
+
+## Windows 2000 display driver (nv3.dll 5.00.2146.0343, inbox)
+
+NVIDIA's "RIVA 128/RIVA 128 ZX Windows 2000 Display driver, Version 3.43" (nv3.sys miniport
+1999-10-27, nv3.dll 1999-12-07; the INF takes DEV_0018 and DEV_0019). Image base 0x69AE0000,
+no exports; DrvEnableDriver's DRVFN table at file 0x1D738 (33 entries).
+- DrvGetDirectDrawInfo (0x69AE6B66): DD_HALINFO 0x1A0 bytes; caps 0x14427940 (no DDCAPS_3D),
+  FOURCCs YUY2, UYVY, YV12, I420... (IF09 when [pdev+0x4208]); GetDriverInfo = 0x69AE6F2C,
+  DDHALINFO_GETDRIVERINFOSET. lpD3DGlobalDriverData / lpD3DHALCallbacks / lpD3DBufCallbacks
+  (+0x194..0x19C) are never set: **no Direct3D HAL on Windows 2000**.
+- GetDriverInfo answers only GUID_MiscellaneousCallbacks (GetAvailDriverMemory 0x69AE6EE8);
+  every other GUID gets DDERR_CURRENTLYNOTAVAIL (0x88760028).
+- It names an OpenGL ICD, nv3oglnt.dll / nvoglnt.dll, which Windows 2000 does not ship.

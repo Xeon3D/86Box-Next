@@ -167,3 +167,10 @@ Open:
   Tested in the private rig (nv3t_pci, STB V128ZX BIOS): desktop at 640x480x8, 1024x768x8 and
   x16, dxdiag D3D7 and D3D8 cubes. After a failed boot Windows comes back in 16 colours (VGA);
   set 256 colours and restart. Not tried yet: 32 bpp, DirectDraw test, 3DMark, OpenGL, AGP.
+- 2026-10-09: Windows 2000 (private copy of Latest\Windows 2000; drop `uuid` from a copied cfg,
+  else the "moved or copied" dialog blocks the start). The RIVA 128 ZX (nv3t_pci, STB BIOS ->
+  "Velocity 128" in the inbox INF) reaches the desktop at 1024x768x32 accelerated, dxdiag
+  DirectDraw: all tests successful. Direct3D in software on both cards = the driver: the inbox
+  nv3.dll 3.43 has no D3D HAL at all (notes file). A restart from Windows 2000 hangs in the
+  p55tvp4 BIOS at F000:E5A3 (keyboard controller wait loop) -- with the Cirrus GD5446 too, so
+  not NV3; a cold start (stop/start the emulator) is fine.

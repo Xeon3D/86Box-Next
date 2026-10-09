@@ -379,6 +379,11 @@ All on Windows 98 SE, a Pentium 233 MMX, with NVIDIA's 4.11.01.0337 driver:
 | DirectDraw overlay (YUY2, scaled, 1:1, colour-keyed) | correct (test program in `tools/nv3/ovltest`) |
 | 2 MB configuration | boots, DirectDraw tests pass |
 
+The RIVA 128 ZX (8 MB) on Windows 98 SE: desktop at 640x480 and 1024x768 (8/16 bpp), dxdiag
+Direct3D 7 and 8 cubes. On Windows 2000 SP4 with its inbox NVIDIA driver (`nv3.dll`/`nv3.sys`
+3.43), both cards reach the desktop at 1024x768x32 with 2D acceleration and pass dxdiag's
+DirectDraw tests.
+
 ## 12. Known limitations and open questions
 
 - Not compared with a real card: exact filtering, blending rounding, dithering and the
@@ -392,6 +397,11 @@ All on Windows 98 SE, a Pentium 233 MMX, with NVIDIA's 4.11.01.0337 driver:
   only visible with "Show overscan".
 - Speed: the 3D rasteriser is software and per pixel; fine for the era's resolutions.
 - The AGP variants are untested; the ZX has had less testing than the RIVA 128 (section 9).
+- Windows 2000 has no Direct3D for these cards: its driver (NVIDIA's "RIVA 128/RIVA 128 ZX
+  Windows 2000 Display driver" 3.43) fills in DirectDraw only -- no `DDCAPS_3D`, no D3D HAL
+  pointers in `DD_HALINFO`, and its GetDriverInfo answers only GUID_MiscellaneousCallbacks.
+  dxdiag shows "Direct3D Acceleration: Not Available" and its Direct3D tests run in software,
+  as on a real card. Its OpenGL ICD (`nv3oglnt.dll`) is not part of Windows 2000.
 
 ## 13. Debugging and test tools
 
