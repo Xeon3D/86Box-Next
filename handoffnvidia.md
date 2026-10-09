@@ -44,6 +44,10 @@ Last updated: 2026-10-09.
     only logged with `dev nv3 swm N` armed — arm it right after start, or
     calibrate by hand: see the notes file).
   - `le.py` (LE fixup parser), `pedis.py` (disassemble a PE at a VA), `xref.py` (search NV3DD32 code) — capstone helpers; capstone is in the user Python (`~/AppData/Local/Python/bin/python`), not MSYS2's.
+- tools/nv3/ovltest: OVLTEST.EXE, a DirectDraw overlay test (build.sh: WSL's i686 MinGW, no CRT
+  -- MinGW's CRT has CMOV, which the Pentium MMX rig faults on -- onto an ISO; point the private
+  rig's cdrom_01_image_path at it; run.sh starts it and takes a shot per phase). It logs to
+  C:\OVLTEST.TXT in the guest (7z e the image after stopping the VM).
 - Debug command file (src/debug_cmd.c): `key`, `type`, `shot`, `log`, `cpu`,
   `peek lin`, `bp lin [n]`, `bp clear`, `wp lin`, `interp 1|0` (force the interpreter), `dev nv3 ...`.
 - `dev nv3` (nv3_core.c hook): no args = state dump; `inst N`, `mmio N`, `m2mf N`,
@@ -60,6 +64,8 @@ Game 1 (Race) renders textured with fog and Z (tools/nv3/3dmark.sh starts it);
 the whole default benchmark runs through: 1468 3DMarks, 3333 CPU 3DMarks
 (800x600x16, Z16, triple buffer). Game 2, fill rate, texture speed,
 filtering and n Pixel Polygons tests draw plausibly; bump mapping says "not supported" (right).
+DirectDraw video overlay (PVIDEO): YUY2/UYVY, scaled, colour-keyed, buffer handoff with
+interrupts -- tools/nv3/ovltest (a Win98 test program, see below) shows it.
 
 Open:
 1. Not yet checked against real hardware: filtering details (bilinear is
@@ -117,3 +123,9 @@ Open:
   driver"). Point vs bilinear is CONFIG bits 1:0 (0 / 2), confirmed in the
   3DMark filtering subtests; FILTER stays 0x80EC0000. tools/nv3/dis.py renamed
   pedis.py (it shadowed the stdlib dis that capstone imports).
+- 2026-10-09: video overlay implemented (nv3_pvideo.c): registers mapped from NV3RM's code
+  (NV3-DRIVER-NOTES.md "Video overlay"), scanout through the svga overlay hook (4:2:2,
+  bilinear, BT.601, destination colour key), buffers taken at vblank (taking them at once
+  made the resman's handler re-submit and re-interrupt without end). Checked with
+  tools/nv3/ovltest: scaled, 1:1 and colour-keyed phases all right. Not yet: YV12/YVU9
+  planar FOURCCs (the driver may convert them), interlaced (bob) fields, 8/32 bpp desktops.

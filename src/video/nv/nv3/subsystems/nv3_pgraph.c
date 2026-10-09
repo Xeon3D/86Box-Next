@@ -533,6 +533,7 @@ void nv3_pgraph_interrupt_invalid(uint32_t num)
 void nv3_pgraph_vblank_start(svga_t* svga)
 {
     nv3_pgraph_interrupt_valid(NV3_PGRAPH_INTR_0_VBLANK);
+    nv3_pvideo_vblank();
 }
 
 /* Arbitrates graphics object submission to the right object types */

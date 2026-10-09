@@ -1429,7 +1429,7 @@ void* nv3_init(const device_t *info)
         pci_add_card(PCI_ADD_AGP, nv3_pci_read, nv3_pci_write, NULL, &nv3->nvbase.pci_slot);
 
     svga_init(device_id, &nv3->nvbase.svga, nv3, nv3->nvbase.vram_amount, 
-        nv3_recalc_timings, nv3_svga_read, nv3_svga_write, nv3_draw_cursor, NULL);
+        nv3_recalc_timings, nv3_svga_read, nv3_svga_write, nv3_draw_cursor, nv3_pvideo_draw);
 
     video_inform(VIDEO_FLAG_TYPE_SPECIAL, timing_id);
     

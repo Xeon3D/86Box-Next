@@ -140,3 +140,27 @@ Disassemble with tools/nv3/pedis.py (VA) or search with tools/nv3/xref.py.
   11:10 of the stage word in the DX6 colour-op code at 0xB00C3585).
 - Depth: the driver passes D3DCMP values straight into CONFIG 19:16, with sz
   as given (0 near); the zeta buffer must hold z * 0xFFFF for LESSEQUAL to work.
+
+## Video overlay (PVIDEO, 0x680200-0x6802FF)
+
+Programmed by NV3RM.VXD (init 0x5696A, UpdateOverlay 0x56AFB, interrupt handler 0x57719,
+colour key 0x57296); NV3DD32.DLL never touches it. DirectDraw reports one overlay, stretch
+0.062-20x, FOURCCs UYVY UYNV YUY2 YUNV YV12 YVU9 IF09 IV32 IV31 RAW8.
+
+- 0x200 scale: Y step 31:16, X step 15:0, (src-1)*2048/(dst-1) (0x0553054E for 320x240
+  to 480x360; the driver widens the destination by 2).
+- 0x204 bit 4 set when the source is at most 384 wide; 0x208 = 0x110; 0x28C = 0x10000 (init).
+- 0x20C/0x210 buffer 0/1 start in VRAM; 0x214/0x218 pitch (& 0x7FF0; doubled with the start
+  moved one line for one field of interlaced video); 0x21C/0x220 bits 5:4 = the low bits of
+  the driver's pitch word.
+- 0x224 status, 0x228 ready, 0x22C ack: buffer n is submitted by toggling 0x228 bit 16+4n so
+  it equals 0x224's; the hardware takes the buffer other than 0x224 bit 24 at a retrace,
+  toggling 0x224 bits 16+4n and 4n, and raises PVIDEO interrupt bit 0 (0x680100, enable
+  0x680140). The handler sees (0x228^0x224) bit 16+4n and (0x22C^0x224) bit 4n set, calls
+  DirectDraw back, toggles 0x22C bit 4n, and re-arms: it writes 0x224 bit 24 = 1 and submits
+  buffer 0 again, every frame. So bit 24 is a steering bit, not the buffer on screen.
+- 0x230 position (y 31:16, x 15:0), 0x234 size (h 31:16, w 15:0).
+- 0x240 key colour (& 0x7FFF at 16 bpp), 0x244: bit 0 on, bit 4 destination colour key,
+  bit 8 YUY2 (clear: UYVY).
+- 0x238/0x23C FIFO threshold/burst; 0x280-0x288 = 0x69, 0x3E, 0x89 at boot (unknown, maybe
+  colour-space coefficients).

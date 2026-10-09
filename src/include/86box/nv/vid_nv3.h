@@ -1353,6 +1353,8 @@ typedef struct nv3_pvideo_s
     uint32_t fifo_threshold;            // FIFO threshold
     uint32_t fifo_burst_size;           // FIFO burst size
     uint32_t overlay_settings;          // Overlay settings
+    uint32_t regs[0x40];                // 0x680200-0x6802FC as written (scaler, buffers, key, control)
+    uint32_t shown;                     // buffer being scanned out (the last one taken)
 } nv3_pvideo_t;
 
 typedef struct nv3_pme_s                // Mediaport
@@ -1599,3 +1601,5 @@ void        nv3_ptimer_tick(double real_time);
 // NV3 PVIDEO
 uint32_t    nv3_pvideo_read(uint32_t address);
 void        nv3_pvideo_write(uint32_t address, uint32_t value);
+void        nv3_pvideo_draw(svga_t *svga, int displine);
+void        nv3_pvideo_vblank(void);
