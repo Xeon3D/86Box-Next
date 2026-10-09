@@ -32,8 +32,35 @@
 #include "cpu.h"
 
 
-uint32_t nv3_pfifo_read(uint32_t address) 
-{ 
+static uint32_t nv3_pfifo_cache1_ptr_mask(void);
+static uint32_t nv3_pfifo_gray_to_binary(uint32_t gray);
+uint32_t        nv3_pfifo_cache1_slot(uint32_t ptr);
+uint32_t        nv3_pfifo_cache1_next(uint32_t ptr);
+
+/* CACHE1's entries (method at +0, data at +4, 8 bytes each), indexed by the Gray-coded GET/PUT
+   index: 32 at 0x3300 on rev A/B; the RIVA 128 ZX's 64 at 0x3400 (NV3RM.VXD's cache-error
+   handler reads 0x3400 + GET*2 there). Gives the slot when the address is in the window. */
+static bool nv3_pfifo_cache1_method_slot(uint32_t address, uint32_t *slot)
+{
+    if (nv3->nvbase.gpu_revision >= NV3_PCI_CFG_REVISION_C00) {
+        if (address < NV3_PFIFO_CACHE1_METHOD_START_REV_C || address >= NV3_PFIFO_CACHE1_METHOD_END_REV_C)
+            return false;
+
+        *slot = ((address - NV3_PFIFO_CACHE1_METHOD_START_REV_C) >> 3) & (NV3_PFIFO_CACHE1_SIZE_REV_C - 1);
+    } else {
+        if (address < NV3_PFIFO_CACHE1_METHOD_START || address >= NV3_PFIFO_CACHE1_METHOD_END)
+            return false;
+
+        *slot = ((address - NV3_PFIFO_CACHE1_METHOD_START) >> 3) & (NV3_PFIFO_CACHE1_SIZE_REV_AB - 1);
+    }
+
+    return true;
+}
+
+uint32_t nv3_pfifo_read(uint32_t address)
+{
+    uint32_t slot;
+
     // before doing anything, check the subsystem enablement state
 
     if (!(nv3->pmc.enable >> NV3_PMC_ENABLE_PFIFO)
@@ -236,17 +263,8 @@ uint32_t nv3_pfifo_read(uint32_t address)
             ret = final;
         }
     }
-    else if (address >= NV3_PFIFO_CACHE1_METHOD_START && address < NV3_PFIFO_CACHE1_METHOD_END)
-    {       
-        // Not sure if REV C changes this. It should...
-        uint32_t slot = 0;
-        
-        // shift right by 3, convert from address, to slot.
-        if (nv3->nvbase.gpu_revision == NV3_PCI_CFG_REVISION_C00)
-            slot = (address >> 3) & 0x3F;
-        else 
-            slot = (address >> 3) & 0x1F; 
-            
+    else if (nv3_pfifo_cache1_method_slot(address, &slot))
+    {
         nv_log_verbose_only("PFIFO Cache1 Read slot=%d", slot);
 
         // See if we want the object name or the channel/subchannel information.
@@ -371,6 +389,8 @@ void nv3_pfifo_trigger_dma_if_required(void)
 
 void nv3_pfifo_write(uint32_t address, uint32_t val)
 {
+    uint32_t slot;
+
     // before doing anything, check the subsystem enablement
 
     if (!(nv3->pmc.enable >> NV3_PMC_ENABLE_PFIFO)
@@ -518,10 +538,10 @@ void nv3_pfifo_write(uint32_t address, uint32_t val)
             nv3->pfifo.cache0_settings.get_address = val;
             break;
         case NV3_PFIFO_CACHE1_PUT:
-            nv3->pfifo.cache1_settings.put_address = val;
-            break; 
-        case NV3_PFIFO_CACHE1_GET: 
-            nv3->pfifo.cache1_settings.get_address = val;
+            nv3->pfifo.cache1_settings.put_address = val & (nv3_pfifo_cache1_ptr_mask() << 2);
+            break;
+        case NV3_PFIFO_CACHE1_GET:
+            nv3->pfifo.cache1_settings.get_address = val & (nv3_pfifo_cache1_ptr_mask() << 2);
             break;
         case NV3_PFIFO_RUNOUT_GET:
             nv3->pfifo.runout_get = val & nv3->pfifo.ramro_size - 0x07; // either 1F7 or 1FF7, because ramro entries are 8bytes
@@ -554,17 +574,10 @@ void nv3_pfifo_write(uint32_t address, uint32_t val)
         }
 
     }
-    else if (address >= NV3_PFIFO_CACHE1_METHOD_START && address < NV3_PFIFO_CACHE1_METHOD_END)
-    {       
-        // Not sure if REV C changes this. It should...
-        uint32_t slot = 0;
-        
-        if (nv3->nvbase.gpu_revision == NV3_PCI_CFG_REVISION_C00)
-            slot = (address >> 3) & 0x3F;
-        else 
-            slot = (address >> 3) & 0x1F; 
-
-        uint32_t real_entry = nv3_pfifo_cache1_normal2gray(slot);
+    else if (nv3_pfifo_cache1_method_slot(address, &slot))
+    {
+        /* Indexed like the read side and the pusher: the slot already is the Gray-coded index */
+        uint32_t real_entry = slot;
 
         nv_log_verbose_only("Cache1 Write Slot %d (Gray code)", real_entry);
 
@@ -650,6 +663,42 @@ Back to sanity
 uint32_t nv3_pfifo_cache1_gray2normal(uint32_t val)
 {
     return nv3_pfifo_cache1_binary_code_table[val];
+}
+
+/* CACHE1's PUT and GET are Gray-coded entry pointers (register bits 2 up). Rev A/B: 5 bits over
+   32 entries. The RIVA 128 ZX: 7 bits over 64 entries, one bit more than the ring needs so a full
+   ring differs from an empty one -- NV3RM.VXD steps them as gray((binary + 1) & 0x7F) and finds
+   the entry at 0x3400 + 8 * the 6-bit Gray code of the binary pointer. */
+static uint32_t nv3_pfifo_cache1_ptr_mask(void)
+{
+    return (nv3->nvbase.gpu_revision >= NV3_PCI_CFG_REVISION_C00) ? 0x7F : 0x1F;
+}
+
+static uint32_t nv3_pfifo_gray_to_binary(uint32_t gray)
+{
+    gray ^= gray >> 4;
+    gray ^= gray >> 2;
+    gray ^= gray >> 1;
+    return gray;
+}
+
+/* The entry a PUT/GET register value points at */
+uint32_t nv3_pfifo_cache1_slot(uint32_t ptr)
+{
+    uint32_t binary = nv3_pfifo_gray_to_binary((ptr >> 2) & nv3_pfifo_cache1_ptr_mask());
+
+    binary &= (nv3->nvbase.gpu_revision >= NV3_PCI_CFG_REVISION_C00) ? (NV3_PFIFO_CACHE1_SIZE_REV_C - 1)
+                                                                     : (NV3_PFIFO_CACHE1_SIZE_REV_AB - 1);
+    return binary ^ (binary >> 1);
+}
+
+/* The PUT/GET register value after this one */
+uint32_t nv3_pfifo_cache1_next(uint32_t ptr)
+{
+    uint32_t mask   = nv3_pfifo_cache1_ptr_mask();
+    uint32_t binary = (nv3_pfifo_gray_to_binary((ptr >> 2) & mask) + 1) & mask;
+
+    return (binary ^ (binary >> 1)) << 2;
 }
 
 /* 
@@ -865,21 +914,12 @@ void nv3_pfifo_cache1_push(uint32_t addr, uint32_t param)
     }
 
     // We didn't. Let's put it in CACHE1
-    uint32_t current_put_index = nv3->pfifo.cache1_settings.put_address >> 2;
+    uint32_t current_put_index = nv3_pfifo_cache1_slot(nv3->pfifo.cache1_settings.put_address);
     nv3->pfifo.cache1_entries[current_put_index].subchannel = subchannel;
     nv3->pfifo.cache1_entries[current_put_index].method = method_offset;
     nv3->pfifo.cache1_entries[current_put_index].data = param;
 
-    // now we have to recalculate the cache1 put address
-    uint32_t next_put_address = nv3_pfifo_cache1_gray2normal(current_put_index);
-    next_put_address++;
-
-    if (nv3->nvbase.gpu_revision >= NV3_PCI_CFG_REVISION_C00) // RIVA 128ZX#
-        next_put_address &= (NV3_PFIFO_CACHE1_SIZE_REV_C - 1);
-    else 
-        next_put_address &= (NV3_PFIFO_CACHE1_SIZE_REV_AB - 1);
-
-    nv3->pfifo.cache1_settings.put_address = nv3_pfifo_cache1_normal2gray(next_put_address) << 2;
+    nv3->pfifo.cache1_settings.put_address = nv3_pfifo_cache1_next(nv3->pfifo.cache1_settings.put_address);
 
     nv_log_verbose_only("Submitted object [PIO]: Channel %d.%d, Parameter 0x%08x, Method ID 0x%04x (Put Address is now %d)\n",
          channel, subchannel, param, method_offset, nv3->pfifo.cache1_settings.put_address);
@@ -902,7 +942,7 @@ void nv3_pfifo_cache1_pull(void)
     if (!nv3->pgraph.fifo_access)
         return;
 
-    uint32_t get_index = nv3->pfifo.cache1_settings.get_address >> 2; // 32 bit aligned probably
+    uint32_t get_index = nv3_pfifo_cache1_slot(nv3->pfifo.cache1_settings.get_address);
 
     uint8_t current_channel = nv3->pfifo.cache1_settings.channel;
     uint8_t current_subchannel = nv3->pfifo.cache1_entries[get_index].subchannel;
@@ -921,12 +961,7 @@ void nv3_pfifo_cache1_pull(void)
     uint8_t class_id = ((nv3_ramin_context_t*)&current_context)->class_id;
 
     // start by incrementing
-    uint32_t next_get_address = nv3_pfifo_cache1_gray2normal(get_index) + 1;
-    
-    if (nv3->nvbase.gpu_revision >= NV3_PCI_CFG_REVISION_C00) // RIVA 128ZX
-        next_get_address &= (NV3_PFIFO_CACHE1_SIZE_REV_C - 1);
-    else 
-        next_get_address &= (NV3_PFIFO_CACHE1_SIZE_REV_AB - 1);
+    uint32_t next_get_address = nv3_pfifo_cache1_next(nv3->pfifo.cache1_settings.get_address);
 
         // Tell the CPU if we found a software method
     //bit23 unset=software
@@ -964,7 +999,7 @@ void nv3_pfifo_cache1_pull(void)
     }
 
     // Is this needed?
-    nv3->pfifo.cache1_settings.get_address = nv3_pfifo_cache1_normal2gray(next_get_address) << 2;
+    nv3->pfifo.cache1_settings.get_address = next_get_address;
 
     #ifndef RELEASE_BUILD
     nv_log_verbose_only("***** DEBUG: CACHE1 PULLED ****** Contextual information below\n");
@@ -980,12 +1015,19 @@ uint32_t nv3_pfifo_cache1_num_free_spaces(void)
 {
     // get the index
 
-    uint32_t get_index = nv3->pfifo.cache1_settings.get_address >> 2;
-    uint32_t put_index = nv3->pfifo.cache1_settings.put_address >> 2;
-    
-    uint32_t real_get_address = nv3_pfifo_cache1_gray2normal(get_index) << 2;
-    uint32_t real_put_address = nv3_pfifo_cache1_gray2normal(put_index) << 2;
-    
-    // There is no hope of being able to understand it. Nobody can understand
-    return (real_get_address - real_put_address - 4) & 0x7C; // 0x7C is GUARANTEED_FIFO_DEPTH
+    uint32_t mask   = nv3_pfifo_cache1_ptr_mask();
+    uint32_t get    = nv3_pfifo_gray_to_binary((nv3->pfifo.cache1_settings.get_address >> 2) & mask);
+    uint32_t put    = nv3_pfifo_gray_to_binary((nv3->pfifo.cache1_settings.put_address >> 2) & mask);
+    uint32_t queued = (put - get) & mask;
+
+    /* Free bytes: rev A/B's 5-bit pointers leave one of the 32 entries empty (31 free at most);
+       the ZX's 7-bit pointers use all 64. Reported no higher than 0x7C (GUARANTEED_FIFO_DEPTH,
+       what USER +0x10 gives on rev A/B). */
+    if (nv3->nvbase.gpu_revision >= NV3_PCI_CFG_REVISION_C00) {
+        uint32_t free_bytes = (queued >= NV3_PFIFO_CACHE1_SIZE_REV_C) ? 0 : (NV3_PFIFO_CACHE1_SIZE_REV_C - queued) << 2;
+
+        return (free_bytes > 0x7C) ? 0x7C : free_bytes;
+    }
+
+    return ((NV3_PFIFO_CACHE1_SIZE_REV_AB - 1 - queued) << 2) & 0x7C;
 }

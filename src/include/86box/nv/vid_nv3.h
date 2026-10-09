@@ -401,8 +401,10 @@ extern const device_config_t nv3t_config[];                             // Confi
 #define NV3_PFIFO_CACHE1_CTX_START                      0x3280      
 #define NV3_PFIFO_CACHE1_CTX_END                        0x3300      // exclusive: 8 entries, 0x10 apart
 
-#define NV3_PFIFO_CACHE1_METHOD_START                   0x3300
+#define NV3_PFIFO_CACHE1_METHOD_START                   0x3300      // 32 entries (rev A/B)
 #define NV3_PFIFO_CACHE1_METHOD_END                     0x3400
+#define NV3_PFIFO_CACHE1_METHOD_START_REV_C             0x3400      // 64 entries (rev C, RIVA 128 ZX)
+#define NV3_PFIFO_CACHE1_METHOD_END_REV_C               0x3600
 #define NV3_PFIFO_CACHE1_METHOD_ADDRESS                 2           // 12:2
 #define NV3_PFIFO_CACHE1_METHOD_SUBCHANNEL              13          // 15:13
 
@@ -1061,8 +1063,8 @@ typedef struct nv3_pbus_s
 typedef struct nv3_pfifo_cache_s
 {
     bool push0;                         // Can we even access this cache?
-    uint8_t put_address;                // Trigger a DMA into the value you put here.
-    uint8_t get_address;                // Trigger a DMA from the value you put here into where you were going.
+    uint32_t put_address;               // Trigger a DMA into the value you put here.
+    uint32_t get_address;               // Trigger a DMA from the value you put here into where you were going.
     uint8_t channel;                    // The DMA channel ID of this cache.
     uint32_t status;
     uint32_t pull0;
