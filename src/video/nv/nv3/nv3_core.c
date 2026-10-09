@@ -1533,6 +1533,38 @@ void* nv3t_init_agp(const device_t* info)
     return nv3;
 }
 
+/* PCI RST#: the GPU's engines go back to their power-on state, as nv3_init()
+   left them. Without this a warm reboot (Windows' restart pulses the KBC reset,
+   then the BIOS the PCI reset) kept the old driver's state: PMC interrupts
+   enabled with PTIMER/vblank pending held INTA asserted before any NVIDIA
+   driver was loaded, and Windows 2000 stalled at its boot screen. VRAM, the
+   VBIOS, the SVGA core and the PCI configuration are left alone -- the BIOS
+   enumerates the card and runs its VBIOS again after the reset. */
+static void nv3_reset(void* priv)
+{
+    timer_disable(&nv3->dma_pusher_timer);
+
+    memset(&nv3->pmc, 0, sizeof(nv3->pmc));
+    memset(&nv3->pfb, 0, sizeof(nv3->pfb));
+    memset(&nv3->pbus, 0, sizeof(nv3->pbus));
+    memset(&nv3->pfifo, 0, sizeof(nv3->pfifo));
+    memset(&nv3->pramdac, 0, sizeof(nv3->pramdac));
+    memset(&nv3->pgraph, 0, sizeof(nv3->pgraph));
+    memset(&nv3->ptimer, 0, sizeof(nv3->ptimer));
+    memset(&nv3->ramfc, 0, sizeof(nv3->ramfc));
+    memset(&nv3->pvideo, 0, sizeof(nv3->pvideo));
+    memset(&nv3->pme, 0, sizeof(nv3->pme));
+    nv3->nvbase.cio_read_bank = nv3->nvbase.cio_write_bank = 0;
+
+    nv3_pstraps_init();
+    nv3_pmc_init();
+    nv3_pfb_init();
+    nv3_pramdac_init();
+    nv3_pgraph_init();
+
+    nv3_pmc_clear_interrupts();
+}
+
 void nv3_close(void* priv)
 {
     debug_cmd_set_device_hook(NULL);
@@ -1590,6 +1622,7 @@ const device_t nv3_device_pci =
     .local = 0,
     .init = nv3_init_pci,
     .close = nv3_close,
+    .reset = nv3_reset,
     .speed_changed = nv3_speed_changed,
     .force_redraw = nv3_force_redraw,
     .available = nv3_available,
@@ -1607,6 +1640,7 @@ const device_t nv3_device_agp =
     .local = 0,
     .init = nv3_init_agp,
     .close = nv3_close,
+    .reset = nv3_reset,
     .speed_changed = nv3_speed_changed,
     .force_redraw = nv3_force_redraw,
     .available = nv3_available,
@@ -1624,6 +1658,7 @@ const device_t nv3t_device_pci =
     .local = 0,
     .init = nv3t_init_pci,
     .close = nv3_close,
+    .reset = nv3_reset,
     .speed_changed = nv3_speed_changed,
     .force_redraw = nv3_force_redraw,
     .available = nv3_available,
@@ -1641,6 +1676,7 @@ const device_t nv3t_device_agp =
     .local = 0,
     .init = nv3t_init_agp,
     .close = nv3_close,
+    .reset = nv3_reset,
     .speed_changed = nv3_speed_changed,
     .force_redraw = nv3_force_redraw,
     .available = nv3_available,
