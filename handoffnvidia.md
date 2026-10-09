@@ -48,6 +48,8 @@ Last updated: 2026-10-09.
   -- MinGW's CRT has CMOV, which the Pentium MMX rig faults on -- onto an ISO; point the private
   rig's cdrom_01_image_path at it; run.sh starts it and takes a shot per phase). It logs to
   C:\OVLTEST.TXT in the guest (7z e the image after stopping the VM).
+- `glsaver.sh NAME` runs Win98's OpenGL screensaver "3D NAME" (Pipes, Maze, Text, Flower Box,
+  Flying Objects) through NVIDIA's OpenGL ICD (NV3OGL.DLL); needs a 16 bpp desktop.
 - Debug command file (src/debug_cmd.c): `key`, `type`, `shot`, `log`, `cpu`,
   `peek lin`, `bp lin [n]`, `bp clear`, `wp lin`, `interp 1|0` (force the interpreter), `dev nv3 ...`.
 - `dev nv3` (nv3_core.c hook): no args = state dump; `inst N`, `mmio N`, `m2mf N`,
@@ -133,3 +135,6 @@ Open:
   2 MB framebuffer and mirror, PFB_BOOT reports 2 MB. Win98: dxdiag shows 2.0 MB, DirectDraw
   tests pass, desktop 1024x768x8. To test: add `[nVIDIA RIVA 128 (NV3) PCI]` /
   `vram_size = 2097152` to the private rig's cfg.
+- 2026-10-09: OpenGL: NV3OGL.DLL (the ICD) renders all five 3D screensavers in hardware
+  (class 0x17; untextured geometry uses a 4x4 white X1R5G5B5 texture with CONFIG 11:8 = 0xC,
+  so the texture-alpha rule keeps it opaque). The private rig's desktop is now 1024x768x16.
