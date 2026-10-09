@@ -126,7 +126,9 @@ PFB, RAMDAC, PGRAPH). Everything after that is driven by register writes from th
 A driver writes, say, `0x00010000` to `USER + channel*0x10000 + subchannel*0x2000 + 0x304`.
 `nv3_user.c` turns that into a FIFO entry (channel, subchannel, method 0x304, data) and
 pushes it into **CACHE1** (`nv3_pfifo_cache1_push`). CACHE1 holds 32 entries on the original
-chip (64 on the ZX). If the entry belongs to another channel than the one CACHE1 is serving,
+chip, readable at 0x3300; the ZX has 64 at 0x3400. Its PUT and GET registers are Gray-coded
+entry pointers: 5 bits on the original chip; 7 bits on the ZX, one more than its 64 entries
+need, so that a full ring differs from an empty one. If the entry belongs to another channel than the one CACHE1 is serving,
 PFIFO switches channels first: it saves the old channel's eight subchannel contexts and
 CACHE1 pointers into **RAMFC** and loads the new one's (`nv3_pfifo_context_switch`).
 
@@ -333,9 +335,11 @@ where the desktop pixel equals the key colour when keying is on.
   1.51B, ELSA VICTORY Erazor 1.47/1.54/1.55, STB Velocity 128 1.60/1.82. The ROMs come from
   86Box's ROM set (`roms/video/nvidia/nv3/`).
 - The chip revision (A, B, C) is selectable; revision C is the RIVA 128 ZX.
-- **RIVA 128 ZX** (8 MB, revision C, 64-entry FIFO) and the **AGP** variants exist in the code
-  but are not offered yet: they were never added to the video card list, and the ZX does not
-  get through the driver's initialisation yet (work in progress).
+- **RIVA 128 ZX, PCI** (`nv3t_pci`): 8 MB, revision C, 64-entry FIFO. BIOS choices: STB
+  Velocity 128 ZX 1.20, ASUS AGP-V3000 ZX, AGP-300S, Chaintech AGP-RI20, Creative CT6730, NVIDIA's
+  reference BIOS and ELSA VICTORY Erazor/LT. With NVIDIA's Windows 98 driver it reaches the desktop
+  (8/16 bit, up to 1024x768 tried) and passes dxdiag's Direct3D 7 and 8 tests.
+- The **AGP** variants (`nv3_agp`, `nv3t_agp`) are in the list but untested.
 
 ## 10. Working with NVIDIA's drivers
 
@@ -387,7 +391,7 @@ All on Windows 98 SE, a Pentium 233 MMX, with NVIDIA's 4.11.01.0337 driver:
 - The few pixels of the overscan border right of the picture can hold stray pixels; they are
   only visible with "Show overscan".
 - Speed: the 3D rasteriser is software and per pixel; fine for the era's resolutions.
-- RIVA 128 ZX and AGP variants: see section 9.
+- The AGP variants are untested; the ZX has had less testing than the RIVA 128 (section 9).
 
 ## 13. Debugging and test tools
 

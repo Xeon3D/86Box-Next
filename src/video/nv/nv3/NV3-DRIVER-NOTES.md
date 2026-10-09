@@ -34,7 +34,10 @@ the file): resolve them through the LE fixup table.
   in software through its class tables (dispatcher 0x19BF6): method found in the
   recorded object's class table -> handler(obj, entry, method, data).
 - PFIFO cache-error handler: 0x27EB6. It reads the entry at GET (0x3300 + GET*2,
-  method at +0, data at +4; 0x3400 for 64-entry caches), handles methods < 0x100
+  method at +0, data at +4) on rev A/B. On rev C (64-entry cache, `[dev+0x34] == 0x20`) GET
+  is a 7-bit Gray pointer: it steps it as gray((binary + 1) & 0x7F) (0x25A54) and reads
+  0x3400 + 8 * slot, slot = (g & 0x1F) | (((g >> 1) ^ g) & 0x20) -- the 6-bit Gray code of
+  the binary pointer (0x281F0-0x28378). handles methods < 0x100
   through a small table (0x0-0x3 bind -> 0x19D00, 0x20-0x2C, 0x30-0x37, 0x38-0x4B),
   others through the object's class table; then keeps going while the next
   entries also belong to software objects, advancing GET (0x3270) itself.

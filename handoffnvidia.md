@@ -145,7 +145,7 @@ Open:
 - 2026-10-09: Release 2 published (tag release-2 = d7a1479f0, the pre-ZX code plus
   doc/nvidia-riva128.md, a human-oriented write-up of the whole emulation); built in a clean
   worktree F:\Claude\86Box-Next\wt-rel2, zip in RELEASES-ARCHIVE, staged in every rig.
-- 2026-10-09 (in progress, uncommitted in wt-nv3): RIVA 128 ZX. The owner's ZX ROMs (7, all PCI
+- 2026-10-09: RIVA 128 ZX. The owner's ZX ROMs (7, all PCI
   12D2:0018 rev C) were copied into NVIDIA-RIG's and the private rig's roms/video/nvidia/nv3 and
   added as BIOS choices; nv3t_pci/nv3_agp/nv3t_agp were missing from vid_table.c (added).
   Win98 installs the driver, then every bind misses RAMHT and the driver never instantiates its
@@ -160,3 +160,10 @@ Open:
   Win2000 reaches its desktop, Win98 still does. The class 0x1C method 0x304 trap it logs twice
   at startup is a software method the NT driver handles. `dev nv3` now prints the DAC mask and
   a few palette entries.
+- 2026-10-09: RIVA 128 ZX reaches the Win98 desktop (commit 8ae6d033f): CACHE1 entries at
+  0x3400-0x35FF on rev C (patch from another session), and rev C's PUT/GET as 7-bit Gray
+  pointers over 64 entries (the resman's own stepping, see the notes file); the pointer fields
+  were uint8_t and dropped the wrap bit (GET 0x180 -> 0x80, the ring stalled after 64 methods).
+  Tested in the private rig (nv3t_pci, STB V128ZX BIOS): desktop at 640x480x8, 1024x768x8 and
+  x16, dxdiag D3D7 and D3D8 cubes. After a failed boot Windows comes back in 16 colours (VGA);
+  set 256 colours and restart. Not tried yet: 32 bpp, DirectDraw test, 3DMark, OpenGL, AGP.
