@@ -138,3 +138,7 @@ Open:
 - 2026-10-09: OpenGL: NV3OGL.DLL (the ICD) renders all five 3D screensavers in hardware
   (class 0x17; untextured geometry uses a 4x4 white X1R5G5B5 texture with CONFIG 11:8 = 0xC,
   so the texture-alpha rule keeps it opaque). The private rig's desktop is now 1024x768x16.
+- 2026-10-09: 1024x768x32 desktop works (2D, Start menu); OpenGL there falls back to
+  Microsoft's software renderer (no class 0x17 methods, frames blitted with class 0x11) and
+  draws right. The RIVA 128 ZX variants (nv3t_pci/agp) cannot be tried: none of their BIOS
+  ROMs (nv3t182b.rom, A170D03T.rom, vgasgram.rom, "BIOS_49_Riva 128") is on this machine.
