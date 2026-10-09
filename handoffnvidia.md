@@ -142,3 +142,14 @@ Open:
   Microsoft's software renderer (no class 0x17 methods, frames blitted with class 0x11) and
   draws right. The RIVA 128 ZX variants (nv3t_pci/agp) cannot be tried: none of their BIOS
   ROMs (nv3t182b.rom, A170D03T.rom, vgasgram.rom, "BIOS_49_Riva 128") is on this machine.
+- 2026-10-09: Release 2 published (tag release-2 = d7a1479f0, the pre-ZX code plus
+  doc/nvidia-riva128.md, a human-oriented write-up of the whole emulation); built in a clean
+  worktree F:\Claude\86Box-Next\wt-rel2, zip in RELEASES-ARCHIVE, staged in every rig.
+- 2026-10-09 (in progress, uncommitted in wt-nv3): RIVA 128 ZX. The owner's ZX ROMs (7, all PCI
+  12D2:0018 rev C) were copied into NVIDIA-RIG's and the private rig's roms/video/nvidia/nv3 and
+  added as BIOS choices; nv3t_pci/nv3_agp/nv3t_agp were missing from vid_table.c (added).
+  Win98 installs the driver, then every bind misses RAMHT and the driver never instantiates its
+  objects (black screen, then safe mode). Fixed on the way: RAMIN BAR1 addresses masked to the
+  4 MB window (8 MB cards kept bit 22). Next lead: on rev C the resman's cache-error handler
+  reads CACHE1 entries at 0x3400+GET*2 (64-entry cache) -- check the emulator serves them there.
+  Temporary "TEMP" logs are still in nv3_core.c, nv3_core_arbiter.c and nv3_pramin.c.
