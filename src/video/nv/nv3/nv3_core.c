@@ -59,6 +59,35 @@ bool nv3_is_svga_redirect_address(uint32_t addr)
     || (addr >= NV3_USER_DAC_START && addr <= NV3_USER_DAC_END);                  // 6813c6-6813c9: the VGA DAC (CLUT) itself
 }
 
+/* Each of the three VGA windows decodes only its own registers (envytools nv_vga.xml:
+   nv_vga_vio, nv_vga_cio, nv_vga_dio). The Windows 2000 miniport writes the sequencer
+   index with a 32-bit store to PRMVIO 0x3C4; bytes 2-3 of it must not reach the DAC's
+   pixel mask at 0x3C6, or every pixel of the desktop comes out black. */
+static bool nv3_redirect_port_decoded(uint32_t addr)
+{
+    uint16_t port = addr & 0x3FF;
+
+    if (addr >= NV3_PRMVIO_START && addr <= NV3_PRMVIO_END)
+        return (port >= 0x3C2 && port <= 0x3C5) || port == 0x3CC || port == 0x3CE || port == 0x3CF;
+
+    if (addr >= NV3_PRMCIO_START && addr <= NV3_PRMCIO_END)
+        return port == 0x3B4 || port == 0x3B5 || port == 0x3BA || port == 0x3C0 || port == 0x3C1
+            || port == 0x3C2 || port == 0x3CA || port == 0x3D4 || port == 0x3D5 || port == 0x3DA;
+
+    return port >= 0x3C6 && port <= 0x3C9; // PRMDIO: the DAC
+}
+
+static uint8_t nv3_redirect_read(uint32_t addr)
+{
+    return nv3_redirect_port_decoded(addr) ? nv3_svga_read(addr & 0x3FF, nv3) : 0x00;
+}
+
+static void nv3_redirect_write(uint32_t addr, uint8_t val)
+{
+    if (nv3_redirect_port_decoded(addr))
+        nv3_svga_write(addr & 0x3FF, val, nv3);
+}
+
 // All MMIO regs are 32-bit i believe internally
 // so we have to do some munging to get this to read
 
@@ -73,9 +102,8 @@ uint8_t nv3_mmio_read8(uint32_t addr, void* priv)
     if (nv3_is_svga_redirect_address(addr))
     {
         // svga writes are not logged anyway rn
-        uint32_t real_address = addr & 0x3FF;
 
-        ret = nv3_svga_read(real_address, nv3);
+        ret = nv3_redirect_read(addr);
 
         nv_log_verbose_only("Redirected MMIO read8 to SVGA: addr=0x%04x returned 0x%04x\n", addr, ret);
 
@@ -98,10 +126,9 @@ uint16_t nv3_mmio_read16(uint32_t addr, void* priv)
     if (nv3_is_svga_redirect_address(addr))
     {
         // svga writes are not logged anyway rn
-        uint32_t real_address = addr & 0x3FF;
 
-        ret = nv3_svga_read(real_address, nv3)
-        | (nv3_svga_read(real_address + 1, nv3) << 8);
+        ret = nv3_redirect_read(addr)
+        | (nv3_redirect_read(addr + 1) << 8);
         
         nv_log_verbose_only("Redirected MMIO read16 to SVGA: addr=0x%04x returned 0x%04x\n", addr, ret);
 
@@ -123,12 +150,11 @@ uint32_t nv3_mmio_read32(uint32_t addr, void* priv)
     if (nv3_is_svga_redirect_address(addr))
     {
         // svga writes are not logged anyway rn
-        uint32_t real_address = addr & 0x3FF;
 
-        ret = nv3_svga_read(real_address, nv3)
-        | (nv3_svga_read(real_address + 1, nv3) << 8)
-        | (nv3_svga_read(real_address + 2, nv3) << 16)
-        | (nv3_svga_read(real_address + 3, nv3) << 24);
+        ret = nv3_redirect_read(addr)
+        | (nv3_redirect_read(addr + 1) << 8)
+        | (nv3_redirect_read(addr + 2) << 16)
+        | (nv3_redirect_read(addr + 3) << 24);
 
         nv_log_verbose_only("Redirected MMIO read32 to SVGA: addr=0x%04x returned 0x%04x\n", addr, ret);
 
@@ -150,11 +176,10 @@ void nv3_mmio_write8(uint32_t addr, uint8_t val, void* priv)
     if (nv3_is_svga_redirect_address(addr))
     {
         // svga writes are not logged anyway rn
-        uint32_t real_address = addr & 0x3FF;
 
         nv_log_verbose_only("Redirected MMIO write8 to SVGA: addr=0x%04x val=0x%02x\n", addr, val);
 
-        nv3_svga_write(real_address, val & 0xFF, nv3);
+        nv3_redirect_write(addr, val & 0xFF);
 
         return; 
     }
@@ -177,12 +202,11 @@ void nv3_mmio_write16(uint32_t addr, uint16_t val, void* priv)
     if (nv3_is_svga_redirect_address(addr))
     {
         // svga writes are not logged anyway rn
-        uint32_t real_address = addr & 0x3FF;
 
         nv_log_verbose_only("Redirected MMIO write16 to SVGA: addr=0x%04x val=0x%02x\n", addr, val);
 
-        nv3_svga_write(real_address, val & 0xFF, nv3);
-        nv3_svga_write(real_address + 1, (val >> 8) & 0xFF, nv3);
+        nv3_redirect_write(addr, val & 0xFF);
+        nv3_redirect_write(addr + 1, (val >> 8) & 0xFF);
         
         return; 
     }
@@ -205,14 +229,13 @@ void nv3_mmio_write32(uint32_t addr, uint32_t val, void* priv)
     if (nv3_is_svga_redirect_address(addr))
     {
         // svga writes are not logged anyway rn
-        uint32_t real_address = addr & 0x3FF;
 
         nv_log_verbose_only("Redirected MMIO write32 to SVGA: addr=0x%04x val=0x%02x\n", addr, val);
 
-        nv3_svga_write(real_address, val & 0xFF, nv3);
-        nv3_svga_write(real_address + 1, (val >> 8) & 0xFF, nv3);
-        nv3_svga_write(real_address + 2, (val >> 16) & 0xFF, nv3);
-        nv3_svga_write(real_address + 3, (val >> 24) & 0xFF, nv3);
+        nv3_redirect_write(addr, val & 0xFF);
+        nv3_redirect_write(addr + 1, (val >> 8) & 0xFF);
+        nv3_redirect_write(addr + 2, (val >> 16) & 0xFF);
+        nv3_redirect_write(addr + 3, (val >> 24) & 0xFF);
         
         return; 
     }
@@ -1191,6 +1214,10 @@ static void nv3_debug_hook(const char *args)
                svga->crtc[0], svga->crtc[1], svga->crtc[2], svga->crtc[3], svga->crtc[4], svga->crtc[5], svga->crtc[6], svga->crtc[7],
                svga->crtc[0x25], svga->crtc[0x2d], svga->crtc[0x30], svga->crtc[0x31],
                svga->seqregs[1], svga->gdcreg[6], svga->attrregs[0x10], svga->miscout);
+    always_log("nv3: dac mask %02x ramdac %d | pal 0 %06x 1 %06x 7 %06x 15 %06x 255 %06x | user_dac mask %02x\n",
+               svga->dac_mask, svga->ramdac_type, svga->pallook[0] & 0xffffff, svga->pallook[1] & 0xffffff,
+               svga->pallook[7] & 0xffffff, svga->pallook[15] & 0xffffff, svga->pallook[255] & 0xffffff,
+               nv3->pramdac.user_pixel_mask);
     {
         /* Refresh as the CRTC and VPLL give it (htotal in characters of 8 dots) */
         double pclk = nv3->nvbase.pixel_clock_frequency;

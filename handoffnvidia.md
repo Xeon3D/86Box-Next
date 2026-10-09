@@ -153,3 +153,10 @@ Open:
   4 MB window (8 MB cards kept bit 22). Next lead: on rev C the resman's cache-error handler
   reads CACHE1 entries at 0x3400+GET*2 (64-entry cache) -- check the emulator serves them there.
   Temporary "TEMP" logs are still in nv3_core.c, nv3_core_arbiter.c and nv3_pramin.c.
+- 2026-10-09: Windows 2000 (Latest\Windows 2000 rig, nv3_pci, default V330 BIOS) booted to a black
+  screen with only the hardware cursor: its miniport writes the sequencer index with a 32-bit
+  store to PRMVIO 0x0C03C4, and bytes 2-3 fell through to the DAC pixel mask (3C6 = 0). Each
+  VGA window (PRMVIO / PRMCIO / PRMDIO) now decodes only its own ports (envytools nv_vga.xml);
+  Win2000 reaches its desktop, Win98 still does. The class 0x1C method 0x304 trap it logs twice
+  at startup is a software method the NT driver handles. `dev nv3` now prints the DAC mask and
+  a few palette entries.
