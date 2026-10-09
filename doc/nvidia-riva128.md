@@ -434,9 +434,18 @@ does:
 
 ## 15. References
 
-- envytools (rnndb register database, hardware tests, nvhw reference code), especially
-  `rnndb/graph/nv3_pgraph.xml` and `rnndb/graph/nv3_3d.xml`.
-- The NVIDIA RIVA 128 datasheet.
-- Linux's rivafb driver (`riva_hw.c`) for the CRTC and PLL setup.
-- NVIDIA's Windows 98 driver 4.11.01.0337, read in a disassembler.
-- The original NV3 work for 86Box by Connor Hyde (starfrost), which this builds on.
+- **starfrost (Connor Hyde)'s NV3 emulation for 86Box**, which this builds on: the device,
+  its subsystem and class structure, much of the register handling.
+  <https://github.com/starfrost013/86Box> (branch `nv3_reintegration`).
+- **envytools**: the rnndb register database (especially `rnndb/graph/nv3_pgraph.xml`,
+  `rnndb/graph/nv3_3d.xml` and `nv_vga.xml`), hardware tests and the nvhw reference code the 2D
+  pixel pipeline is modelled on. <https://github.com/envytools/envytools>
+- **nvwiki**: NV3 memory mapping, configuration and hardware errata. <https://nvwiki.org>
+- The NVIDIA RIVA 128 datasheet (straps, subsystem IDs).
+- Linux's rivafb driver (`drivers/video/fbdev/riva/riva_hw.c`, `fbdev.c`) for the CRTC and PLL
+  setup. <https://github.com/torvalds/linux/tree/master/drivers/video/fbdev/riva>
+- Ralf Brown's Interrupt List, VGA CRTC port pages, for the extended CRTC registers.
+  <https://fd.lod.bz/rbil/ports/other/p03c403c5.html>
+- NVIDIA's drivers, read in a disassembler (nothing copied): Windows 98 4.11.01.0337
+  (NV3RM.VXD, NV3DISP.DRV, NV3DD32.DLL) and Windows 2000's inbox nv3.dll / nv3.sys 3.43.
+- 86Box, whose SVGA, PCI and device frameworks the card plugs into. <https://github.com/86Box/86Box>
