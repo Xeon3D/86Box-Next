@@ -223,7 +223,9 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   (`emu88_lcd.cpp`, ported from 88emuPlayer). ROMs: `roms/soundcanvas` under every ROM path,
   recursive, identified by MD5+size. One device ("Roland Sound Canvas", internal name
   `soundcanvas`; config `model` = key, legacy numeric values map to SC-55/SC-55mkII,
-  `factory_reset`, `fast_boot`, `output_gain` = the panel's knob, `panel_x/y/width`).
+  `factory_reset`, `fast_boot`, `output_gain` = the panel's knob, `panel_x/y/width`, `panel_scale` =
+  the size the panel opens at, 25-200 % of the 612 x 187 dp skin, 0 = last size; set in the
+  Configure dialog, applied to an open panel at once, no board restart).
   The board outlives a device close for 3 s (hard resets re-create devices): the next init with
   the same options takes it back, so the synth keeps running through a PC reset.
   Qt (`src/qt/qt_soundcanvas.cpp`): Settings > Sound > MIDI Out > Configure opens

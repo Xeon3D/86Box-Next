@@ -24,6 +24,7 @@
 
 class QAction;
 class QCheckBox;
+class QComboBox;
 class QLabel;
 class QListWidget;
 class QPushButton;
@@ -52,6 +53,7 @@ private:
     QLabel      *folder;
     QCheckBox   *factoryReset;
     QCheckBox   *fastBoot;
+    QComboBox   *panelScale;
     QPushButton *okButton;
 };
 
@@ -63,6 +65,9 @@ public:
     ~SoundCanvasPanel() override;
 
     emu88h *board() const { return board_; }
+
+    /* The size the panel opens at: the chosen scale of the skin, or the last size. */
+    void resizeToDefault();
 
 protected:
     void paintEvent(QPaintEvent *event) override;

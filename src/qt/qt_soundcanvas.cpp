@@ -16,6 +16,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QCloseEvent>
 #include <QContextMenuEvent>
 #include <QDesktopServices>
@@ -186,6 +187,13 @@ SoundCanvasConfigDialog::SoundCanvasConfigDialog(QWidget *parent)
     options->addWidget(factoryReset);
     options->addWidget(fastBoot);
     options->addStretch(1);
+    options->addWidget(new QLabel(tr("Panel window size:")));
+    panelScale = new QComboBox;
+    panelScale->setToolTip(tr("The size the front panel window opens at, as a scale of the unit's panel."));
+    panelScale->addItem(tr("Last size used"), 0);
+    for (int pct = 25; pct <= 200; pct += 25)
+        panelScale->addItem(tr("%1%").arg(pct), pct);
+    options->addWidget(panelScale);
     layout->addLayout(options);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
@@ -212,6 +220,7 @@ SoundCanvasConfigDialog::SoundCanvasConfigDialog(QWidget *parent)
 
     factoryReset->setChecked(config_int("factory_reset", 1));
     fastBoot->setChecked(config_int("fast_boot", 0));
+    panelScale->setCurrentIndex(std::max(panelScale->findData(config_int("panel_scale", 0)), 0));
 
     QApplication::setOverrideCursor(Qt::WaitCursor);
     soundcanvas_set_rom_dirs();
@@ -334,6 +343,18 @@ SoundCanvasConfigDialog::configure(QWidget *parent)
     if (config_int("fast_boot", 0) != (dialog.fastBoot->isChecked() ? 1 : 0)) {
         config_put_int("fast_boot", dialog.fastBoot->isChecked() ? 1 : 0);
         changed = true;
+    }
+
+    /* Only the panel's look: no restart of the board, applied to an open panel at once. */
+    const int scale = dialog.panelScale->currentData().toInt();
+    if (config_int("panel_scale", 0) != scale) {
+        config_put_int("panel_scale", scale);
+        config_save();
+        if (scale) {
+            for (QWidget *w : QApplication::topLevelWidgets())
+                if (auto *panel = qobject_cast<SoundCanvasPanel *>(w))
+                    panel->resizeToDefault();
+        }
     }
     return changed;
 }
@@ -499,9 +520,8 @@ SoundCanvasPanel::SoundCanvasPanel(emu88h *board, QWidget *parent)
             lcd[s] = QImage(w, h, QImage::Format_ARGB32);
     }
 
-    const int width = config_int("panel_width", 1040);
-    resize(width, qRound(width * PANEL_H / PANEL_W));
-    setMinimumSize(306, 94);
+    resizeToDefault();
+    setMinimumSize(qRound(PANEL_W / 4), qRound(PANEL_H / 4));
     const int x = config_int("panel_x", INT_MIN), y = config_int("panel_y", INT_MIN);
     if (x != INT_MIN && y != INT_MIN && QGuiApplication::screenAt(QPoint(x + 40, y + 20)))
         move(x, y);
@@ -997,7 +1017,11 @@ SoundCanvasPanel::contextMenuEvent(QContextMenuEvent *event)
         poll();
     });
     menu.addSeparator();
-    menu.addAction(tr("Default &size"), this, [this] { resize(1040, qRound(1040 * PANEL_H / PANEL_W)); });
+    menu.addAction(tr("Default &size"), this, [this] {
+        const int scale = config_int("panel_scale", 0);
+        const int width = scale ? qRound(PANEL_W * scale / 100.0) : 1040;
+        resize(width, qRound(width * PANEL_H / PANEL_W));
+    });
     QString keys;
     if (panel == EMU88H_PANEL_SC8850)
         keys = tr("Q power; E EDIT, D DRUM, X EFFECTS, Left/Right PART, V VARIATION, N INSTRUMENT, I INST MAP, "
@@ -1012,6 +1036,15 @@ SoundCanvasPanel::contextMenuEvent(QContextMenuEvent *event)
     auto *help = menu.addAction(tr("Keyboard shortcuts..."));
     connect(help, &QAction::triggered, this, [this, keys] { QToolTip::showText(QCursor::pos(), keys, this); });
     menu.exec(event->globalPos());
+}
+
+void
+SoundCanvasPanel::resizeToDefault()
+{
+    /* 100% is the skin's 612 x 187 dp, as 88emuPlayer draws it. */
+    const int scale = config_int("panel_scale", 0);
+    const int width = scale ? qRound(PANEL_W * scale / 100.0) : config_int("panel_width", 1040);
+    resize(width, qRound(width * PANEL_H / PANEL_W));
 }
 
 void
