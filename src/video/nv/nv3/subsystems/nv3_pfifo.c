@@ -305,6 +305,9 @@ void nv3_pfifo_cache1_drain(void)
     }
 }
 
+/* Debug: log the next N push buffer headers ("dev nv3 push N") */
+uint32_t nv3_push_trace_left;
+
 void nv3_pfifo_trigger_dma_if_required(void)
 {
     nv3_pfifo_cache_t *c1 = &nv3->pfifo.cache1_settings;
@@ -314,9 +317,11 @@ void nv3_pfifo_trigger_dma_if_required(void)
     nv3_pfifo_dma_pusher_active = true;
 
     while ((c1->dma_state & 1) && (c1->dma_length >= 4) && c1->push0) {
-        /* DMA_PT_INST points at the page table (word 2) of the push buffer's DMA object; the
-           object's adjust (word 0, bits 11:0) is added like for any DMA object access */
-        uint32_t linear = c1->dma_address + (nv3_ramin_read32(c1->dma_tlb_pt_base - 8, nv3) & 0xFFF);
+        /* DMA_PT_INST points at the page table (word 2) of the push buffer's DMA object. DMA_GET
+           indexes the page table directly: the resman (NV3RM.VXD) folds the object's adjust
+           (word 0, bits 11:0) into the GET it programs, so it is not added again -- with it, a
+           buffer whose object has adjust 0x80 was read 0x80 bytes late and parsed mid-command */
+        uint32_t linear = c1->dma_address;
         uint32_t page   = linear & 0xFFFFF000;
         uint32_t word;
 
@@ -342,6 +347,12 @@ void nv3_pfifo_trigger_dma_if_required(void)
 
         uint32_t count = (c1->dma_status >> 18) & 0x7FF;
         if (!count) {
+            extern uint32_t nv3_push_trace_left;
+            if (nv3_push_trace_left) {
+                nv3_push_trace_left--;
+                always_log("nv3: push header %08x at %08x (chan %d, %x bytes left)%c", word, c1->dma_address - 4,
+                           c1->channel, c1->dma_length, 10);
+            }
             /* a header: method and subchannel in bits 15:2, count in 28:18 */
             c1->dma_status = word & 0x1FFCFFFC;
             continue;

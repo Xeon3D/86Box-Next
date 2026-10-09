@@ -499,8 +499,9 @@ nv3_d3d_triangle(nv3_grobj_t grobj, const nv3_d3d_vertex_t *a, const nv3_d3d_ver
                 color = nv3_d3d_mul(texel, color);
             }
 
-            /* fog: the vertices' fog factor, 255 = no fog */
-            float fog = (a->fog * w[0] + b->fog * w[1] + c->fog * w[2]) / 255.0f;
+            /* fog: the vertices' fog byte is the amount of fog colour, 0 = none -- NV3DD32.DLL sends
+               0 in every vertex when fog is off (dxdiag's cube), so it is not D3D's 255 = no fog */
+            float fog = 1.0f - (a->fog * w[0] + b->fog * w[1] + c->fog * w[2]) / 255.0f;
             if (fog < 1.0f) {
                 uint32_t res = color & 0xFF000000;
                 for (int sh = 0; sh < 24; sh += 8) {

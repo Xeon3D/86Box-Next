@@ -56,10 +56,13 @@ nv_register_t* nv_get_register(uint32_t addr, nv_register_t* register_list)
 
 /* Debug: the next N register accesses (not PTIMER's clock) go to the log ("dev nv3 mmio N") */
 uint32_t nv3_mmio_trace_left;
+uint32_t nv3_mmio_trace_lo, nv3_mmio_trace_hi = 0xFFFFFFFF;
 
 static void nv3_mmio_trace(char rw, uint32_t addr, uint32_t val)
 {
     if (!nv3_mmio_trace_left || addr == NV3_PTIMER_TIME_0_NSEC || addr == NV3_PTIMER_TIME_1_NSEC)
+        return;
+    if ((addr < nv3_mmio_trace_lo) || (addr > nv3_mmio_trace_hi))
         return;
     nv3_mmio_trace_left--;
     always_log("nv3: mmio %c %06x %08x\n", rw, addr, val);

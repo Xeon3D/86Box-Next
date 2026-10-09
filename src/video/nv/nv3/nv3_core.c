@@ -1247,11 +1247,16 @@ static void nv3_debug_hook(const char *args)
                        v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15]);
         }
     }
-    /* "dev nv3 mmio <count>": log the next <count> register accesses */
+    /* "dev nv3 mmio <count> [lo hi]": log the next <count> register accesses (within [lo, hi]) */
     const char *mmio_arg = args ? strstr(args, "mmio ") : NULL;
     if (mmio_arg) {
-        extern uint32_t nv3_mmio_trace_left;
-        nv3_mmio_trace_left = strtoul(mmio_arg + 5, NULL, 0);
+        extern uint32_t nv3_mmio_trace_left, nv3_mmio_trace_lo, nv3_mmio_trace_hi;
+        char *end;
+        nv3_mmio_trace_left = strtoul(mmio_arg + 5, &end, 0);
+        nv3_mmio_trace_lo   = strtoul(end, &end, 16);
+        nv3_mmio_trace_hi   = strtoul(end, NULL, 16);
+        if (!nv3_mmio_trace_hi)
+            nv3_mmio_trace_hi = 0xFFFFFFFF;
     }
     /* "dev nv3 inst <instance>": the first 16 words of an object in RAMIN */
     const char *inst_arg = args ? strstr(args, "inst ") : NULL;
@@ -1280,6 +1285,12 @@ static void nv3_debug_hook(const char *args)
     if (d3d_arg) {
         extern uint32_t nv3_d3d_trace_left;
         nv3_d3d_trace_left = strtoul(d3d_arg + 4, NULL, 0);
+    }
+    /* "dev nv3 push <count>": log the next <count> push buffer headers */
+    const char *push_arg = args ? strstr(args, "push ") : NULL;
+    if (push_arg) {
+        extern uint32_t nv3_push_trace_left;
+        nv3_push_trace_left = strtoul(push_arg + 5, NULL, 0);
     }
     /* "dev nv3 swm <count>": log the next <count> software methods */
     const char *swm_arg = args ? strstr(args, "swm ") : NULL;
