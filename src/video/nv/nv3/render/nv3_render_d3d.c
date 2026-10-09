@@ -120,15 +120,18 @@ nv3_d3d_wren(int func, bool zeta_test, bool alpha_test)
     }
 }
 
-/* Depth as the hardware keeps it: inverted, 16 bits (nvhw nv03_pgraph_convert_z) */
+/* Depth as the zeta buffer keeps it: 16 bits, 0 = near (D3D's sz scaled). envytools' convert_z
+   holds the 24-bit vertex z inverted, but with the compare functions as NV3DD32.DLL passes them
+   (D3DCMP values: LESSEQUAL = 4, a <= b with a the new value) the inverted form lets the farther
+   surface win: 3DMark 99 Race drew its sky over the track. Not inverted, it renders right. */
 static uint32_t
-nv3_d3d_zeta(float z)
+nv3_d3d_zeta(double z)
 {
-    if (!(z > 0.0f))
-        return 0xFFFF;
-    if (z >= 1.0f)
+    if (!(z > 0.0))
         return 0;
-    return (uint32_t) ((1.0f - z) * 65535.0f + 0.5f);
+    if (z >= 1.0)
+        return 0xFFFF;
+    return (uint32_t) (z * 65535.0 + 0.5);
 }
 
 /* ---- textures ---- */
@@ -287,6 +290,36 @@ nv3_d3d_sample(nv3_grobj_t grobj, float u, float v, int level)
     return res;
 }
 
+/* Debug ("dev nv3 tex"): log each mip level of the texture -- offset, size, mean colour, first texels */
+int nv3_d3d_tex_dump;
+
+static void
+nv3_d3d_dump_texture(nv3_grobj_t grobj)
+{
+    int      max_log = (nv3_d3d.tex_format >> 28) & 0xF;
+    int      min_log = (nv3_d3d.tex_format >> 24) & 0xF;
+    uint32_t offset  = 0;
+
+    always_log("nv3: d3d tex %08x format %08x levels %d..%d%c", nv3_d3d.tex_offset, nv3_d3d.tex_format, max_log, min_log, 10);
+    for (int l = max_log; l >= min_log && l >= 0 && l <= 11; l--) {
+        uint32_t size = 1u << l;
+        uint64_t sum[4] = { 0 };
+        for (uint32_t t = 0; t < size; t++)
+            for (uint32_t s = 0; s < size; s++) {
+                uint32_t c = nv3_d3d_texel(grobj, offset, size, s, t);
+                for (int i = 0; i < 4; i++)
+                    sum[i] += (c >> (24 - 8 * i)) & 0xFF;
+            }
+        uint32_t n = size * size;
+        always_log("nv3:   level %2u offset %06x mean argb %02x %02x %02x %02x | %04x %04x %04x %04x %04x %04x %04x %04x%c", size, offset,
+                   (uint32_t) (sum[0] / n), (uint32_t) (sum[1] / n), (uint32_t) (sum[2] / n), (uint32_t) (sum[3] / n),
+                   nv3_d3d_read_tex16(grobj, offset), nv3_d3d_read_tex16(grobj, offset + 2), nv3_d3d_read_tex16(grobj, offset + 4),
+                   nv3_d3d_read_tex16(grobj, offset + 6), nv3_d3d_read_tex16(grobj, offset + 8), nv3_d3d_read_tex16(grobj, offset + 10),
+                   nv3_d3d_read_tex16(grobj, offset + 12), nv3_d3d_read_tex16(grobj, offset + 14), 10);
+        offset += n * 2;
+    }
+}
+
 /* ---- pixel output ---- */
 
 static uint32_t
@@ -362,7 +395,6 @@ nv3_d3d_fragment(nv3_grobj_t grobj, uint32_t config, uint32_t alpha_ctl, int32_t
     uint32_t zcur     = zeta_en ? *(uint16_t *) &nv3->nvbase.svga.vram[zaddr] : 0;
     bool     ztest    = !zeta_en || nv3_d3d_cmp(NV3_D3D_CONFIG_ZFUNC(config), zeta, zcur);
     bool     atest    = nv3_d3d_cmp((alpha_ctl >> 8) & 0xF, color >> 24, alpha_ctl & 0xFF);
-
     if (nv3_d3d_wren(NV3_D3D_CONFIG_CWRITE(config), ztest, atest)) {
         for (uint32_t j = 0; j < 3; j++) { /* surface 3 is the zeta buffer */
             if (!((ctx >> (NV3_PGRAPH_CTX_SWITCH_DST_BUFFER0_ENABLED + j)) & 1))
@@ -411,6 +443,7 @@ nv3_d3d_triangle(nv3_grobj_t grobj, const nv3_d3d_vertex_t *a, const nv3_d3d_ver
     const nv3_d3d_vertex_t *v[3] = { a, b, c };
     uint32_t                config = nv3_d3d.config;
     float                   area   = (b->x - a->x) * (c->y - a->y) - (b->y - a->y) * (c->x - a->x);
+    double                  darea  = ((double) b->x - a->x) * ((double) c->y - a->y) - ((double) b->y - a->y) * ((double) c->x - a->x);
     int                     cull   = NV3_D3D_CONFIG_CULL(config);
 
     if (area == 0.0f || isnan(area))
@@ -428,35 +461,56 @@ nv3_d3d_triangle(nv3_grobj_t grobj, const nv3_d3d_vertex_t *a, const nv3_d3d_ver
     int   y0   = (int) fmaxf(ceilf(miny), 0.0f);
     int   y1   = (int) fminf(floorf(maxy), 2047.0f);
 
-    /* mip level from the texel/pixel area ratio */
+    /* mip level per pixel from the screen-space derivatives of the perspective-correct texture
+       coordinates: u*q, v*q and q (q = 1/w) are linear in screen space */
     int   max_log = (nv3_d3d.tex_format >> 28) & 0xF;
-    int   level   = 0;
     float tsize   = (float) (1 << (max_log > 11 ? 11 : max_log));
-    float tarea   = fabsf((b->u - a->u) * (c->v - a->v) - (b->v - a->v) * (c->u - a->u)) * tsize * tsize;
-    if (tarea > fabsf(area) && fabsf(area) > 0.0f)
-        level = (int) (0.5f * log2f(tarea / fabsf(area)));
+    float pq[3], pu[3], pv[3];
+    bool  persp   = (a->rhw > 0.0f) && isfinite(a->rhw) && (b->rhw > 0.0f) && isfinite(b->rhw) && (c->rhw > 0.0f) && isfinite(c->rhw);
+    for (int i = 0; i < 3; i++) {
+        pq[i] = persp ? v[i]->rhw : 1.0f;
+        pu[i] = v[i]->u * pq[i];
+        pv[i] = v[i]->v * pq[i];
+    }
+    /* d/dx and d/dy of a linear attribute f over the triangle */
+#define NV3_D3D_DX(f) ((((f)[1] - (f)[0]) * (c->y - a->y) - ((f)[2] - (f)[0]) * (b->y - a->y)) / area)
+#define NV3_D3D_DY(f) ((((f)[2] - (f)[0]) * (b->x - a->x) - ((f)[1] - (f)[0]) * (c->x - a->x)) / area)
+    float dqdx = NV3_D3D_DX(pq), dqdy = NV3_D3D_DY(pq);
+    float dudx = NV3_D3D_DX(pu), dudy = NV3_D3D_DY(pu);
+    float dvdx = NV3_D3D_DX(pv), dvdy = NV3_D3D_DY(pv);
+#undef NV3_D3D_DX
+#undef NV3_D3D_DY
 
     bool     textured  = (nv3_d3d.tex_format >> 28) || ((nv3_d3d.tex_format >> 24) & 0xF);
+    if (nv3_d3d_tex_dump && textured && ((nv3_d3d.tex_format >> 28) != ((nv3_d3d.tex_format >> 24) & 0xF))) {
+        nv3_d3d_tex_dump = 0;
+        nv3_d3d_dump_texture(grobj);
+    }
     uint32_t src_color = NV3_D3D_CONFIG_SRC_COLOR(config);
     uint32_t fog_rgb   = nv3_d3d.fog_color & 0xFFFFFF;
 
     for (int y = y0; y <= y1; y++) {
         for (int x = x0; x <= x1; x++) {
-            float w[3];
-            bool  inside = true;
+            float  w[3];
+            double wd[3];
+            bool   inside = true;
 
-            /* barycentric weights at the pixel (D3D samples at integer coordinates); top-left rule */
+            /* barycentric weights at the pixel (D3D samples at integer coordinates); top-left rule.
+               In double: multipass effects draw the same plane tessellated differently and compare
+               with Z EQUAL (3DMark 99's filtering tunnel: 286 triangles write Z, 1626 test it), and
+               float weights on small triangles were off by up to a 16-bit Z step */
             for (int e = 0; e < 3; e++) {
                 const nv3_d3d_vertex_t *p = v[(e + 1) % 3];
                 const nv3_d3d_vertex_t *q = v[(e + 2) % 3];
-                float ef = (q->x - p->x) * ((float) y - p->y) - (q->y - p->y) * ((float) x - p->x);
+                double ef = ((double) q->x - p->x) * ((double) y - p->y) - ((double) q->y - p->y) * ((double) x - p->x);
 
-                w[e] = ef / area;
-                if (w[e] < 0.0f) {
+                wd[e] = ef / darea;
+                w[e]  = (float) wd[e];
+                if (wd[e] < 0.0) {
                     inside = false;
                     break;
                 }
-                if (w[e] == 0.0f) {
+                if (wd[e] == 0.0) {
                     float dy = (area > 0.0f) ? (q->y - p->y) : (p->y - q->y);
                     float dx = (area > 0.0f) ? (q->x - p->x) : (p->x - q->x);
                     bool  tl = (dy < 0.0f) || (dy == 0.0f && dx > 0.0f);
@@ -472,14 +526,21 @@ nv3_d3d_triangle(nv3_grobj_t grobj, const nv3_d3d_vertex_t *a, const nv3_d3d_ver
             uint32_t color = nv3_d3d_lerp_color(v, w);
 
             if (textured) {
-                float q = a->rhw * w[0] + b->rhw * w[1] + c->rhw * w[2];
-                float u, tv;
+                float q  = pq[0] * w[0] + pq[1] * w[1] + pq[2] * w[2];
+                float uq = pu[0] * w[0] + pu[1] * w[1] + pu[2] * w[2];
+                float vq = pv[0] * w[0] + pv[1] * w[1] + pv[2] * w[2];
+                float u = 0.0f, tv = 0.0f;
+                int   level = 0;
                 if (q != 0.0f && isfinite(q)) {
-                    u  = (a->u * a->rhw * w[0] + b->u * b->rhw * w[1] + c->u * c->rhw * w[2]) / q;
-                    tv = (a->v * a->rhw * w[0] + b->v * b->rhw * w[1] + c->v * c->rhw * w[2]) / q;
-                } else {
-                    u  = a->u * w[0] + b->u * w[1] + c->u * w[2];
-                    tv = a->v * w[0] + b->v * w[1] + c->v * w[2];
+                    u  = uq / q;
+                    tv = vq / q;
+                    /* texels per pixel along x and y; the larger picks the level (log2 rounded down) */
+                    float q2  = q * q;
+                    float ux  = (dudx * q - uq * dqdx) / q2, vx = (dvdx * q - vq * dqdx) / q2;
+                    float uy  = (dudy * q - uq * dqdy) / q2, vy = (dvdy * q - vq * dqdy) / q2;
+                    float rho = fmaxf(ux * ux + vx * vx, uy * uy + vy * vy) * tsize * tsize;
+                    if (rho > 1.0f && isfinite(rho))
+                        level = (int) (0.5f * log2f(rho));
                 }
                 uint32_t texel = nv3_d3d_sample(grobj, u, tv, level);
 
@@ -521,10 +582,11 @@ nv3_d3d_triangle(nv3_grobj_t grobj, const nv3_d3d_vertex_t *a, const nv3_d3d_ver
 
             uint32_t zeta;
             if (NV3_D3D_CONFIG_ZPERSP(config)) {
-                float q = a->rhw * w[0] + b->rhw * w[1] + c->rhw * w[2];
-                zeta    = (q >= 1.0f) ? 0xFFFF : ((q > 0.0f) ? (uint32_t) (q * 65535.0f) : 0);
+                /* w buffer: rhw, near = large, so stored complemented like z (unverified) */
+                double q = a->rhw * wd[0] + b->rhw * wd[1] + c->rhw * wd[2];
+                zeta     = 0xFFFF - ((q >= 1.0) ? 0xFFFF : ((q > 0.0) ? (uint32_t) (q * 65535.0) : 0));
             } else
-                zeta = nv3_d3d_zeta(a->z * w[0] + b->z * w[1] + c->z * w[2]);
+                zeta = nv3_d3d_zeta(a->z * wd[0] + b->z * wd[1] + c->z * wd[2]);
 
             nv3_d3d_fragment(grobj, config, nv3_d3d.alpha, x, y, color, zeta);
         }
@@ -609,9 +671,9 @@ nv3_class_017_method(uint32_t param, uint32_t method_id, nv3_ramin_context_t con
                         if (nv3_d3d_trace_left) {
                             const nv3_d3d_vertex_t *a = &nv3_d3d.vtx[i0], *b = &nv3_d3d.vtx[i1], *c = &nv3_d3d.vtx[i2];
                             nv3_d3d_trace_left--;
-                            always_log("nv3: d3d tri (%.1f,%.1f z%.3f w%.3f c%08x) (%.1f,%.1f) (%.1f,%.1f) cfg %08x alpha %03x tex %08x/%08x ctx %08x "
+                            always_log("nv3: d3d tri (%.1f,%.1f z%.3f w%.3f c%08x) (%.1f,%.1f) (%.1f,%.1f) cfg %08x filt %08x alpha %03x tex %08x/%08x ctx %08x "
                                        "surf %06x/%d %06x/%d %06x/%d z %06x/%d fog %02x %02x %02x/%08x | frags %u clipped %u written %u%c",
-                                       a->x, a->y, a->z, a->rhw, a->color, b->x, b->y, c->x, c->y, nv3_d3d.config, nv3_d3d.alpha,
+                                       a->x, a->y, a->z, a->rhw, a->color, b->x, b->y, c->x, c->y, nv3_d3d.config, nv3_d3d.filter, nv3_d3d.alpha,
                                        nv3_d3d.tex_offset, nv3_d3d.tex_format, grobj.grobj_0,
                                        nv3->pgraph.boffset[0], nv3->pgraph.bpitch[0], nv3->pgraph.boffset[1], nv3->pgraph.bpitch[1],
                                        nv3->pgraph.boffset[2], nv3->pgraph.bpitch[2], nv3->pgraph.boffset[3], nv3->pgraph.bpitch[3],

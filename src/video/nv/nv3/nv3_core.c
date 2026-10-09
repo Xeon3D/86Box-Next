@@ -1286,6 +1286,11 @@ static void nv3_debug_hook(const char *args)
         extern uint32_t nv3_d3d_trace_left;
         nv3_d3d_trace_left = strtoul(d3d_arg + 4, NULL, 0);
     }
+    /* "dev nv3 tex": log the mip levels of the next mipmapped texture drawn with */
+    if (args && strstr(args, "tex")) {
+        extern int nv3_d3d_tex_dump;
+        nv3_d3d_tex_dump = 1;
+    }
     /* "dev nv3 push <count>": log the next <count> push buffer headers */
     const char *push_arg = args ? strstr(args, "push ") : NULL;
     if (push_arg) {

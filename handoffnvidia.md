@@ -47,7 +47,7 @@ Last updated: 2026-10-09.
 - Debug command file (src/debug_cmd.c): `key`, `type`, `shot`, `log`, `cpu`,
   `peek lin`, `bp lin [n]`, `bp clear`, `wp lin`, `interp 1|0` (force the interpreter), `dev nv3 ...`.
 - `dev nv3` (nv3_core.c hook): no args = state dump; `inst N`, `mmio N`, `m2mf N`,
-  `d3d N` (triangle trace), `notify N`, `watch lo hi n` (VRAM/RAMIN writes),
+  `d3d N` (triangle trace), `tex` (mip levels of the next mipmapped texture), `notify N`, `watch lo hi n` (VRAM/RAMIN writes),
   `swm N` (software methods, RAMHT misses/binds, ctx writes + resman MMIO),
   `methods` (last 256 methods).
 
@@ -62,13 +62,19 @@ the whole default benchmark runs through: 1468 3DMarks, 3333 CPU 3DMarks
 filtering and n Pixel Polygons tests draw plausibly; bump mapping says "not supported" (right).
 
 Open:
-1. Not yet checked against real hardware: texture filtering, mipmaps, Z,
-   alpha blending. Fully fogged far geometry shows hard-edged grey shapes in
-   3DMark Race (may be right: per-vertex fog 0xff).
-2. D3D_CONFIG bits 0-15 are only partly decoded (rnndb: UNK0/UNK4/UNK10/UNK12/
-   UNK15). NV3DD32.DLL builds the config word in its render-state code
-   (VA 0xB00C5xxx/0xB00DCxxx, image base 0xB00B3000): a per-texture-format word
-   OR a global state word at VA 0xB00EC118.
+1. Not yet checked against real hardware: filtering details (bilinear is
+   config bits 1:0 = 2; FILTER 0x30C = SPREAD_X 4:0, SPREAD_Y 12:8, SIZE_ADJUST
+   23:16 per rnndb nv3_3d.xml, unused: NV3DD32 sends 0x80EC0000 everywhere),
+   alpha blending. The 3DMark filtering tunnel shows hatching at mid distance:
+   its second pass (Z EQUAL) is finer geometry than the Z-writing pass and the
+   app's own vertex z differs by 1-3 zeta units (checked from full-precision
+   vertex dumps), so EQUAL fails in a pattern; likely on real hardware too.
+2. D3D_CONFIG bits 0-15: rnndb graph/nv3_3d.xml (not nv3_pgraph.xml) names them:
+   INTERPOLATOR 3:0 (ZOH corner / ZOH centre / FOH), WRAP_U 5:4, WRAP_V 7:6,
+   SOURCE_COLOR 11:8 (1 normal, 2 colour inverse, 3 alpha inverse, 6 alpha one),
+   CULLING 14:12, Z_PERSPECTIVE 15. Unknown: what 11:10 = 3 (NV3DD32's
+   MODULATE, alpha from the texture) really means; ZOH corner vs centre; how
+   the w buffer (bit 15) is stored -- untested, no app seen using it.
 3. 8-px artifact at the right edge at 640/1024 widths.
 
 ## Log
@@ -88,6 +94,14 @@ Open:
   number of triangles (6 push buffer batches of 2412 at y 5/116/230/341/455/566 for
   the small sizes), so the small-polygon frames are mostly black bands and the large
   ones fill the screen with the lit cloud texture. Same with the interpreter
-  (`interp 1`, new debug command) and with fpu_softfloat. tools/nv3/3dmark-npoly.sh
-  selects and runs only those tests. The driver double-buffers its push buffer:
+  (`interp 1`, new debug command) and with fpu_softfloat. tools/nv3/3dmark-tests.sh
+  (then 3dmark-npoly.sh) selects and runs only some tests. The driver double-buffers its push buffer:
   GET 0x180 / 0x40180, ~0x3FA00 bytes each.
+- 2026-10-09: depth was inverted for triangles: zeta = (1 - z) * 65535 (after
+  envytools' convert_z) with the compare a <= b (new, current) let the farther
+  surface win -- 3DMark Race drew its sky over the track, the z = 0 title text
+  never passed. Now zeta = z * 65535 (0 = near); Race and Game 2 render right
+  (the earlier "correct depth ordering" note was wrong). Also: per-pixel mip
+  level from the texture-coordinate derivatives (was one level per triangle),
+  barycentrics in double. tools/nv3/3dmark-tests.sh SC... runs chosen tests
+  (Alt-letter scancodes listed in it); `dev nv3 tex` dumps mip levels.
