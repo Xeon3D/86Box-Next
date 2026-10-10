@@ -1,4 +1,5 @@
 add_subdirectory(cdrom)
+add_subdirectory(cpu)
 add_subdirectory(floppy)
 add_subdirectory(device)
 add_subdirectory(disk)
@@ -10,6 +11,7 @@ add_subdirectory(pcmcia)
 add_subdirectory(modem)
 add_subdirectory(network)
 add_subdirectory(soundcanvas)
+add_subdirectory(machine)
 
 if(BUILD_TESTING)
     add_library(pcjx_floppy_engine OBJECT
