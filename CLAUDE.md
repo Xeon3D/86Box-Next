@@ -302,3 +302,7 @@ Tests live in their own tree, `build-tests` (`-DBUILD_TESTING=ON -DQT=OFF -DSTAT
 GTest from `mingw-w64-ucrt-x86_64-gtest`): build a suite's target there, then
 `ctest --test-dir build-tests -R <Name>` (ours: `Isp|Modem|Network`). Keep build-static's
 BUILD_TESTING off: some upstream tests (pcjx, fdc_read_id) do not build, which breaks a full build.
+Qt 5 compatibility check only: `build-qt5` (dynamic, `-DUSE_QT6=OFF -DSTATIC_BUILD=OFF`, MSYS2
+`qt5-base` + `qt5-tools`). Never release or stage it: releases are Qt 6 only, and
+`tools/make-release.sh` refuses a build-static that is not `USE_QT6=ON`. Qt 6-only APIs
+(e.g. `QMouseEvent::position()`) need a `QT_VERSION_CHECK(6, 0, 0)` fallback.
