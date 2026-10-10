@@ -225,8 +225,8 @@ uint32_t nv3_pfifo_read(uint32_t address)
             else if (new_size_ramro == 1)
                 new_size_ramro = 0x2000;
             
-            // WTF?
-            if (nv3->pfifo.runout_put + 0x08 & (new_size_ramro - 0x08) == nv3->pfifo.runout_get)
+            // full when advancing PUT by one 8-byte entry would hit GET
+            if (((nv3->pfifo.runout_put + 0x08) & (new_size_ramro - 0x08)) == nv3->pfifo.runout_get)
                 ret |= 1 << NV3_PFIFO_RUNOUT_STATUS_FULL; /* VERY BAD news */
 
             break;
@@ -544,10 +544,10 @@ void nv3_pfifo_write(uint32_t address, uint32_t val)
             nv3->pfifo.cache1_settings.get_address = val & (nv3_pfifo_cache1_ptr_mask() << 2);
             break;
         case NV3_PFIFO_RUNOUT_GET:
-            nv3->pfifo.runout_get = val & nv3->pfifo.ramro_size - 0x07; // either 1F7 or 1FF7, because ramro entries are 8bytes
+            nv3->pfifo.runout_get = val & (nv3->pfifo.ramro_size - 0x08); // either 1F8 or 1FF8, because ramro entries are 8 bytes
             break;
         case NV3_PFIFO_RUNOUT_PUT:
-            nv3->pfifo.runout_put = val & nv3->pfifo.ramro_size - 0x07; // either 1F7 or 1FF7, because ramro entries are 8bytes
+            nv3->pfifo.runout_put = val & (nv3->pfifo.ramro_size - 0x08); // either 1F8 or 1FF8, because ramro entries are 8 bytes
             break;
         /* Cache1 Context is handled below */
         case NV3_PFIFO_CACHE0_CTX:
