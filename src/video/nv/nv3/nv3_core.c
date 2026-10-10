@@ -650,7 +650,17 @@ void nv3_recalc_timings(svga_t* svga)
             svga->render = svga_render_32bpp_highres;
             break;
         default:
-            /* VGA: everything above is the SVGA core's */
+            /* VGA: everything above is the SVGA core's, but it chose the renderer with the
+               bpp of the last extended mode (Windows' 256-colour shutdown screen came out
+               as 32 bpp after a 32-bit desktop) -- VGA has 8 bits per pixel at most */
+            if (svga->bpp > 8) {
+                svga->bpp = 8;
+                if (!svga->attr_palette_enable || !((svga->gdcreg[6] & 1) || (svga->attrregs[0x10] & 1))
+                    || ((svga->gdcreg[5] & 0x60) < 0x40))
+                    break; /* blanked, text, or 16/4 colours: the core got those right */
+                svga->map8   = svga->pallook;
+                svga->render = svga->lowres ? svga_render_8bpp_lowres : svga_render_8bpp_highres;
+            }
             break;
     }
 
