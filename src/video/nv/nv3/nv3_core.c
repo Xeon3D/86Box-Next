@@ -607,6 +607,12 @@ void nv3_recalc_timings(svga_t* svga)
        (the CRTC fetches from the first 256 KB only; set by the BIOS for the VGA modes) */
     if (ext_vert & 0x20)
         svga->rowoffset += 0x800;
+    /* CR1A bit 2 clear (screens of 1280x1024 and over) enables bit 6 of the horizontal blank end,
+       CR25 bit 4 */
+    if (!(svga->crtc[NV3_CRTC_REGISTER_RPC1] & 0x04)) {
+        svga->hblank_end_val |= (ext_vert & 0x10) << 2;
+        svga->hblank_end_mask = 0x7F;
+    }
     svga->dpms              = !!(svga->crtc[NV3_CRTC_REGISTER_RPC1] & 0xC0);
     svga->vram_display_mask = ((pixel_mode == NV3_CRTC_REGISTER_PIXELMODE_VGA) && (svga->crtc[NV3_CRTC_REGISTER_RPC1] & 0x01))
                             ? (svga->vram_mask & 0x3FFFF) : svga->vram_mask;
@@ -1234,6 +1240,9 @@ static void nv3_debug_hook(const char *args)
                svga->crtc[0x25], svga->crtc[0x2d], svga->crtc[0x30], svga->crtc[0x31],
                svga->seqregs[1], svga->gdcreg[6], svga->attrregs[0x10], svga->miscout);
     always_log("nv3: straps %03x pfb boot %08x\n", nv3->straps, nv3_pfb_read(NV3_PFB_BOOT));
+    always_log("nv3: hdisp %d htotal %d hblankstart %d hblank_end %02x/%02x sub %d x_add %d left %d mon_overscan_x %d CR1A %02x CR03 %02x CR05 %02x\n",
+               svga->hdisp, svga->htotal, svga->hblankstart, svga->hblank_end_val, svga->hblank_end_mask, svga->hblank_sub,
+               svga->x_add, svga->left_overscan, svga->monitor->mon_overscan_x, svga->crtc[0x1a], svga->crtc[3], svga->crtc[5]);
     always_log("nv3: dac mask %02x ramdac %d | pal 0 %06x 1 %06x 7 %06x 15 %06x 255 %06x | user_dac mask %02x\n",
                svga->dac_mask, svga->ramdac_type, svga->pallook[0] & 0xffffff, svga->pallook[1] & 0xffffff,
                svga->pallook[7] & 0xffffff, svga->pallook[15] & 0xffffff, svga->pallook[255] & 0xffffff,
