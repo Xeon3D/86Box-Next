@@ -586,6 +586,15 @@ void nv3_pci_write(int32_t func, int32_t addr, UNUSED(int32_t len), uint8_t val,
 //
 // SVGA functions
 //
+extern uint32_t svga_conv_16to32(svga_t *svga, uint16_t color, uint8_t bpp); /* vid_svga.c */
+
+/* 15/16 bpp through the CLUT as a gamma ramp (PRAMDAC_GENERAL_CONTROL IDC_MODE = gamma) */
+static uint32_t
+nv3_conv_16to32(svga_t *svga, uint16_t color, uint8_t bpp)
+{
+    return svga_lookup_lut_ram(svga, svga_conv_16to32(svga, color, bpp));
+}
+
 void nv3_recalc_timings(svga_t* svga)
 {    
     // sanity check
@@ -677,6 +686,17 @@ void nv3_recalc_timings(svga_t* svga)
                 svga->render = svga->lowres ? svga_render_8bpp_lowres : svga_render_8bpp_highres;
             }
             break;
+    }
+
+    /* Direct colour modes go through the CLUT as a per-channel gamma ramp unless
+       PRAMDAC_GENERAL_CONTROL IDC_MODE selects index (nv3_ref.h: reset value gamma). NV3RM sets
+       index at 8 bpp and gamma at 16/32 bpp after loading the CLUT with an identity ramp
+       (vid_mode.c, dacmode.c dacLoadIdentityDAC), so apps' gamma ramps take effect. */
+    {
+        bool gamma = (pixel_mode >= NV3_CRTC_REGISTER_PIXELMODE_16BPP)
+                  && !((nv3->pramdac.general_control >> NV3_PRAMDAC_GENERAL_CONTROL_IDC_MODE) & 1);
+        svga->lut_map     = gamma;
+        svga->conv_16to32 = gamma ? nv3_conv_16to32 : svga_conv_16to32;
     }
 
     /* Hardware cursor: CR31 bit 0 shows it; the image is 32x32 A1R5G5B5 in instance memory */

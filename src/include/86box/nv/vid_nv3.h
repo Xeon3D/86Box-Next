@@ -783,6 +783,7 @@ extern const device_config_t nv3t_config[];                             // Confi
 #define NV3_PRAMDAC_COEFF_SELECT                        0x68050C
 
 #define NV3_PRAMDAC_GENERAL_CONTROL                     0x680600
+#define NV3_PRAMDAC_GENERAL_CONTROL_IDC_MODE            4           // 0 = gamma (direct colour through the CLUT), 1 = index
 #define NV3_PRAMDAC_GENERAL_CONTROL_565_MODE            12
 #define NV3_PRAMDAC_GENERAL_CONTROL_BPC_8BITS           20
 
