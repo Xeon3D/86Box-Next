@@ -233,7 +233,10 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   file's MD5, the known dumps' in its tooltip); `SoundCanvasPanelManager` polls
   `soundcanvas_get_board()` and opens `SoundCanvasPanel` once per new board (no focus steal);
   the status bar's first icon, a piano (`midi.ico`, while MIDI out is the Sound Canvas, lit while
-  its board runs, `MachineStatus::setSoundCanvas()`), shows it again:
+  its board runs, `MachineStatus::setSoundCanvas()`), opens `SoundCanvasPanelManager::menu()`:
+  Show front panel, "Show the panel when the synth starts" (= Preferences > Emulator's "Don't
+  show the Roland Sound Canvas panel...", global `soundcanvas_hide_panel`), Configure... (the
+  same dialog, applied paused with `midi_config_changed()` as Settings' soft path does). The panel:
   88emuPlayer's artwork without the playlist (`src/qt/soundcanvas/*.png`, 2x, generated from
   88emu's assets; SVG faces pre-rendered to PNG -- the dynamic Qt has no Svg module), its
   controls and key bindings in the skin's 612 x 187 dp. Tests: `tests/soundcanvas/`

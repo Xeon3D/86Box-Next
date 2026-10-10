@@ -205,6 +205,7 @@ int      confirm_reset                          = 1;              /* (G) enable 
 int      confirm_exit                           = 1;              /* (G) enable exit confirmation */
 int      confirm_save                           = 1;              /* (G) enable save confirmation */
 int      chd_precache_level                     = 0;              /* (G) CHD precache level */
+int      soundcanvas_hide_panel                 = 0;              /* (G) 86Box-Next: don't open the Sound Canvas panel when its board starts */
 char     status_icon_order[256]                 = { 0 };          /* (G) 86Box-Next: status bar icon groups, in order */
 int      enable_discord                         = 0;              /* (C) enable Discord integration */
 int      pit_mode                               = -1;             /* (C) force setting PIT mode */

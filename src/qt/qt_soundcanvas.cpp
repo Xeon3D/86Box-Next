@@ -57,6 +57,7 @@ extern "C" {
 #include <86box/mem.h>
 #include <86box/path.h>
 #include <86box/rom.h>
+#include <86box/plat.h>
 }
 
 #include "emu88_host.h"
@@ -1098,6 +1099,43 @@ SoundCanvasPanelManager::showPanel()
     }
 }
 
+QMenu *
+SoundCanvasPanelManager::menu()
+{
+    if (!menu_) {
+        menu_       = new QMenu(mainWindow);
+        auto *show  = menu_->addAction(tr("Show &front panel"), this, &SoundCanvasPanelManager::showPanel);
+        auto *start = menu_->addAction(tr("Show the panel when the synth &starts"));
+        start->setCheckable(true);
+        connect(start, &QAction::toggled, this, [](bool on) {
+            soundcanvas_hide_panel = on ? 0 : 1;
+            config_save_global();
+        });
+        menu_->addSeparator();
+        menu_->addAction(tr("&Configure..."), this, &SoundCanvasPanelManager::configure);
+        connect(menu_, &QMenu::aboutToShow, this, [this, show, start] {
+            show->setEnabled(current != nullptr);
+            const QSignalBlocker block(start);
+            start->setChecked(!soundcanvas_hide_panel);
+        });
+    }
+    return menu_;
+}
+
+/* The same dialog as Settings > Sound > MIDI Out > Configure, applied as Settings applies a MIDI
+   out change: no reset, the device made again (the board survives it when its options stay). */
+void
+SoundCanvasPanelManager::configure()
+{
+    const int wasPaused = dopause;
+    plat_pause(1);
+    if (SoundCanvasConfigDialog::configure(mainWindow)) {
+        midi_config_changed();
+        config_save();
+    }
+    plat_pause(wasPaused);
+}
+
 QString
 SoundCanvasPanelManager::toolTip() const
 {
@@ -1117,7 +1155,7 @@ SoundCanvasPanelManager::toolTip() const
         default:
             break;
     }
-    return tr("Roland Sound Canvas: %1%2\nClick to show its front panel").arg(QString::fromUtf8(emu88h_model_name(emu88h_model(current))), state);
+    return tr("Roland Sound Canvas: %1%2\nClick for its front panel and options").arg(QString::fromUtf8(emu88h_model_name(emu88h_model(current))), state);
 }
 
 void
@@ -1145,6 +1183,11 @@ SoundCanvasPanelManager::poll()
     /* A board that just started shows its panel once; closing it is the user's call then. */
     if (pendingOpen && !panel) {
         pendingOpen = false;
+        if (soundcanvas_hide_panel) {
+            if (board)
+                emu88h_release(board);
+            return;
+        }
         emu88h_retain(current);
         panel = new SoundCanvasPanel(current, mainWindow);
         panel->show();

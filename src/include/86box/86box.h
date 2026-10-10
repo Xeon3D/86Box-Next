@@ -227,6 +227,7 @@ extern int      confirm_reset;              /* (G) enable reset confirmation */
 extern int      confirm_exit;               /* (G) enable exit confirmation */
 extern int      confirm_save;               /* (G) enable save confirmation */
 extern int      chd_precache_level;         /* (G) CHD precache level */
+extern int      soundcanvas_hide_panel;     /* (G) 86Box-Next: don't open the Sound Canvas panel when its board starts */
 extern char     status_icon_order[256];     /* (G) 86Box-Next: status bar icon groups, in order */
 extern int      enable_discord;             /* (C) enable Discord integration */
 extern int      force_10ms;                 /* (C) force 10ms CPU frame interval */

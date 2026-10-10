@@ -20,6 +20,7 @@
 #include "ui_qt_mainwindow.h"
 #include "qt_machinestatus.hpp"
 
+#include <QCheckBox>
 #include <QDialog>
 #include <QTranslator>
 #include <QDebug>
@@ -79,6 +80,14 @@ PreferencesEmulator::PreferencesEmulator(QWidget *parent)
 #ifndef Q_OS_WINDOWS
     ui->groupBox->setHidden(true);
 #endif
+
+#ifdef USE_SOUNDCANVAS
+    /* 86Box-Next: the Sound Canvas's front panel; the piano icon still shows it. */
+    hideSoundCanvas = new QCheckBox(tr("Don't show the Roland Sound Canvas panel when the synth starts"));
+    hideSoundCanvas->setToolTip(tr("The status bar's piano icon shows the panel at any time."));
+    hideSoundCanvas->setChecked(soundcanvas_hide_panel != 0);
+    ui->gridLayout->addWidget(hideSoundCanvas, ui->gridLayout->rowCount(), 0, 1, 2);
+#endif
 }
 
 PreferencesEmulator::~PreferencesEmulator()
@@ -108,6 +117,8 @@ PreferencesEmulator::save()
     confirm_reset           = ui->checkBoxConfirmHardReset->isChecked() ? 1 : 0;
     chd_precache_level      = ui->checkBoxCHDPrecache->isChecked() ? 1 : 0;
     vmm_disabled            = ui->checkBoxDisableVMM->isChecked() ? 1 : 0;
+    if (hideSoundCanvas)
+        soundcanvas_hide_panel = hideSoundCanvas->isChecked() ? 1 : 0;
 
     color_scheme       = (ui->radioButtonSystem->isChecked()) ? 0 : (ui->radioButtonLight->isChecked() ? 1 : 2);
 

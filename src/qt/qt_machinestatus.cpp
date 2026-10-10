@@ -984,9 +984,11 @@ MachineStatus::refresh(QStatusBar *sbar)
 #ifdef USE_SOUNDCANVAS
     if (soundCanvas && (midi_out_device_getdevice(midi_output_device_current) == &soundcanvas_device)) {
         d->soundCanvas = std::make_unique<ClickableLabel>();
-        connect(d->soundCanvas.get(), &ClickableLabel::clicked, this, [this](QPoint) {
-            if (this->soundCanvas)
-                this->soundCanvas->showPanel();
+        connect(d->soundCanvas.get(), &ClickableLabel::clicked, this, [this](QPoint pos) {
+            if (this->soundCanvas) {
+                QMenu *m = this->soundCanvas->menu();
+                m->popup(pos - QPoint(0, m->sizeHint().height()));
+            }
         });
         groups["midi"].append(d->soundCanvas.get());
         updateSoundCanvasIcon();

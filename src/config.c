@@ -160,6 +160,8 @@ load_global_emulator(void)
 
     chd_precache_level = ini_section_get_int(cat, "chd_precache_level", 0);
 
+    soundcanvas_hide_panel = ini_section_get_int(cat, "soundcanvas_hide_panel", 0);
+
     p = ini_section_get_string(cat, "status_icon_order", "");
     snprintf(status_icon_order, sizeof(status_icon_order), "%s", p);
 
@@ -3121,6 +3123,11 @@ save_global_emulator(void)
         ini_section_set_int(cat, "chd_precache_level", chd_precache_level);
     else
         ini_section_delete_var(cat, "chd_precache_level");
+
+    if (soundcanvas_hide_panel)
+        ini_section_set_int(cat, "soundcanvas_hide_panel", soundcanvas_hide_panel);
+    else
+        ini_section_delete_var(cat, "soundcanvas_hide_panel");
 
     if (status_icon_order[0])
         ini_section_set_string(cat, "status_icon_order", status_icon_order);
