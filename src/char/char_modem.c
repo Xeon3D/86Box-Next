@@ -7,7 +7,8 @@
  *          This file is part of the 86Box distribution.
  *
  *          External Hayes-compatible 56k modems on a COM port: a Diamond
- *          SupraExpress 56e PRO and an ELSA MicroLink 56k.
+ *          SupraExpress 56e PRO, an ELSA MicroLink 56k and (86Box-Next) a
+ *          Standard Hayes-compatible one.
  *
  *          Ported from PeepeeBox, where these are the modems the funworld
  *          Photo Play cabinets had on COM4 for fun.net.  The cabinet's own
@@ -218,7 +219,8 @@ static const char *modem_res_text[] = {
    docs/research/33-modem.md walks all thirty. */
 enum {
     MODEM_MODEL_SUPRA = 0,
-    MODEM_MODEL_ELSA  = 1
+    MODEM_MODEL_ELSA  = 1,
+    MODEM_MODEL_HAYES = 2  /* 86Box-Next: none of the cabinet's thirty */
 };
 
 /* char_modem_model_t (char_modem.h): `name` is MD_NAME.CSV's, verbatim, and
@@ -255,6 +257,24 @@ static const modem_model_t modem_models[] = {
             [7] = "ELSA AG, Aachen"
         },
         .voice      = 1
+    },
+    /* 86Box-Next: a modem with no make to it, for a guest to install with
+       its own generic driver -- Windows' "Standard 56000 bps Modem", OS/2's
+       and Linux's plain Hayes set.  Data and fax: the voice commands are
+       vendor sets, and a standard modem has none.  Its answers name no part
+       the cabinet knows (no SupraExpress, no MicroLink). */
+    [MODEM_MODEL_HAYES] = {
+        .name       = "Standard Hayes-compatible 56k Modem",
+        .ident_at   = 3, .ident = "Hayes-compatible 56000 bps Modem",
+        .fmw_at     = 7, .fmw   = "V1.00",
+        .country_at = 5,
+        .info       = {
+            [0] = "56000",
+            [1] = "012", /* not 255: "56000" + "255" is an INSYS Pocket 56k */
+            [2] = "OK",
+            [4] = "Standard Hayes-compatible V.90 Data/Fax Modem"
+        },
+        .voice      = 0
     }
     // clang-format on
 };
@@ -3479,7 +3499,7 @@ char_modem_detach(void *modem)
         modem_close(modem);
 }
 
-/* The config of both parts, and -- from the same entries -- of a device that
+/* The config of all three parts, and -- from the same entries -- of a device that
    carries a modem.  What differs between the parts -- which ATIn carries
    what, and the text of each -- lives in the model table. */
 // clang-format off
@@ -3528,6 +3548,20 @@ const device_t char_modem_elsa_com_device = {
     .internal_name = "modem_elsa",
     .flags         = DEVICE_COM | DEVICE_HOTPLUG,
     .local         = MODEM_MODEL_ELSA,
+    .init          = modem_init,
+    .close         = modem_close,
+    .reset         = NULL,
+    .available     = NULL,
+    .speed_changed = NULL,
+    .force_redraw  = NULL,
+    .config        = modem_config
+};
+
+const device_t char_modem_hayes_com_device = {
+    .name          = "Standard Hayes-compatible 56k Modem",
+    .internal_name = "modem_hayes",
+    .flags         = DEVICE_COM | DEVICE_HOTPLUG,
+    .local         = MODEM_MODEL_HAYES,
     .init          = modem_init,
     .close         = modem_close,
     .reset         = NULL,

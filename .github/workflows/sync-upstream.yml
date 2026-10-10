@@ -3,8 +3,9 @@ name: Sync with upstream
 # Merges 86Box/86Box master into this fork's master once a week (Mondays, 04:17 UTC), and on demand.
 # Never opens pull requests -- here or upstream.  README.md and the Sound Canvas device are the
 # fork's own: upstream's changes to them are left out (KEEP_OURS), and upstream's CLAP Sound
-# Canvas host, which the fork removed, stays removed (KEEP_DELETED).  On a conflict or a failed
-# push it opens (or updates) an issue in this repository instead.
+# Canvas host, MUNT (MT-32) and the network card modem, which the fork removed, stay removed
+# (KEEP_DELETED).  On a conflict or a failed push it opens (or updates) an issue in this
+# repository instead.
 #
 # Pushing a merge that touches upstream's .github/workflows needs a token with
 # the "workflows" permission, which the built-in GITHUB_TOKEN cannot have.  Add
@@ -32,7 +33,7 @@ env:
   # Files upstream never overwrites here (space-separated paths).
   KEEP_OURS: README.md src/sound/midi_soundcanvas.c
   # Upstream files the fork deleted, kept deleted whatever upstream does to them.
-  KEEP_DELETED: src/sound/clap
+  KEEP_DELETED: src/sound/clap src/sound/midi_mt32.c src/sound/munt src/include/mt32emu src/network/net_modem.c
 
 jobs:
   sync:

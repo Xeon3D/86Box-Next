@@ -68,8 +68,11 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   activity trace (USB menu / BOX86NEXT_USB_TRACE=1) to usb_trace.txt.
   Tests: `tests/usb/` (plain C, no framework). Upstream's `src/usb.c` is the
   southbridge stub and is untouched.
-- COM port modems (`src/char/char_modem.c`, PeepeeBox's): Diamond SupraExpress 56e PRO and
-  ELSA MicroLink 56k, chosen as a COM port's device in Settings > Ports. AT engine with ATI
+- COM port modems (`src/char/char_modem.c`, PeepeeBox's): Diamond SupraExpress 56e PRO,
+  ELSA MicroLink 56k and a Standard Hayes-compatible 56k Modem (`modem_hayes`: generic ATI
+  answers matching none of funworld's rows, data/fax, no voice), chosen as a COM port's device
+  in Settings > Ports. Upstream's network-card modem (`net_modem.c`) is removed; a config with it
+  gets `modem_hayes` on that COM port (`load_network()`). AT engine with ATI
   answers that funworld's modem table resolves to exactly one part; the line is dead or dials
   a TCP host (any number), with a real call's timing and sounds (`modem_sound.c`, a pool of
   speakers whose sound handlers are registered once per sound reset: `sound_has_handler()`).
@@ -211,7 +214,9 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   `phone_test.c`: two real modems with real sockets ringing each other through the real exchange)
   and `tests/network/` (`net_slirp.c` behind a stub card).
 - Roland Sound Canvas MIDI out (`src/sound/midi_soundcanvas.c`, replacing upstream's CLAP-plugin
-  device and `src/sound/clap/`; sync-upstream.yml keeps both ours (KEEP_OURS / KEEP_DELETED),
+  device and `src/sound/clap/`, and MUNT's MT-32/CM-32L devices (removed with `src/sound/munt`,
+  the MUNT options; `load_sound()` moves `mt32`/`mt32_new`/`cm32l`/`cm32ln` to `soundcanvas`
+  with the same board); sync-upstream.yml keeps both ours (KEEP_OURS / KEEP_DELETED),
   upstream changes to the SOUNDCANVAS blocks of the CMake files or midi.h can still conflict):
   88emu from gearmulator (GPLv3, so builds with it are GPLv3), vendored in
   `src/sound/emu88/gearmulator/` (`VENDORED.md`: commits, MinGW patches, how to update), built

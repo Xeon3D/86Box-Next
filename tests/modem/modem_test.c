@@ -389,6 +389,7 @@ static const name_row_t names_2001[] = {
 /* ------------------------------------------------------------------ driver */
 extern const device_t char_modem_supra_com_device;
 extern const device_t char_modem_elsa_com_device;
+extern const device_t char_modem_hayes_com_device;
 
 static void *dev;
 
@@ -504,12 +505,16 @@ identify(const char *table_name, const name_row_t *rows, const char *want)
             hits[n++] = rows[r].name;
     }
 
-    const int ok = ((n == 1) && !strcmp(hits[0], want));
+    /* want NULL: a modem the cabinet must not take for any of its own. */
+    const int ok = (want == NULL) ? (n == 0) : ((n == 1) && !strcmp(hits[0], want));
 
     if (!ok)
         failures++;
-    printf("  %-38s %-5s resolves to exactly \"%s\"\n", table_name,
-           ok ? "ok" : "FAIL", want);
+    if (want == NULL)
+        printf("  %-38s %-5s matches no row\n", table_name, ok ? "ok" : "FAIL");
+    else
+        printf("  %-38s %-5s resolves to exactly \"%s\"\n", table_name,
+               ok ? "ok" : "FAIL", want);
     if (!ok) {
         printf("      %d row(s) matched:", n);
         for (int i = 0; i < n; i++)
@@ -1306,6 +1311,8 @@ main(void)
 #endif
     run_model(&char_modem_elsa_com_device, "ELSA MicroLink 56k");
     run_model(&char_modem_supra_com_device, "Diamond SupraExpress 56e PRO");
+    run_model(&char_modem_hayes_com_device, NULL);
+    run_connect(&char_modem_hayes_com_device);
     run_connect(&char_modem_supra_com_device);
     run_plug_in(&char_modem_elsa_com_device);
     run_carried();
