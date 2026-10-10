@@ -191,3 +191,9 @@ Open:
   nv3_pci dxdiag D3D7/8, 3DMark 99 Race + filtering, OVLTEST; nv3t_pci (STB BIOS) desktop + D3D.
   Private rigs: F:/Claude/86Box-Next/work-nv3h (nv3_pci, CD = ovl.iso) and work-nv3z (nv3t_pci).
   Not done: FILTER sizeadj, CRTC extras (CR1B/CR20/CR39...), PRAMDAC extras, AGP-board testing.
+- 2026-10-10 (later): CR25/CR1A/TV VTOTAL/PLL reset fixes; the PBUS PCI mirror now answers dwords
+  (VBE PhysBasePtr was 0 with every NV3 BIOS; now BAR1); gamma mode (IDC_MODE) for 16/32 bpp.
+  AGP: nv3_agp and nv3t_agp reach the NT4 desktop on a copy of the NT4 rig (p6bap). Merged master;
+  release-2.1.3-10-g50e1703c5 staged in every rig but AVM-ISDN-RIG. Win95 note: a copy that was
+  hard-stopped boots to safe mode, then shows "problem with your display settings" once -- a
+  Windows state, not the emulator (release 2.1.3 and every commit since boot it fine afterwards).
