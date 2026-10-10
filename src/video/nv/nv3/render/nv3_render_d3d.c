@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <86box/86box.h>
+#include <86box/plat_unused.h>
 #include <86box/device.h>
 #include <86box/dma.h>
 #include <86box/mem.h>
@@ -144,7 +145,7 @@ nv3_d3d_texture_changed(void)
 }
 
 static uint16_t
-nv3_d3d_read_tex16(nv3_grobj_t grobj, uint32_t byte)
+nv3_d3d_read_tex16(UNUSED(nv3_grobj_t grobj), uint32_t byte)
 {
     if (!nv3_d3d.tex_mapped) {
         nv3_d3d.tex_target = nv3_dma_map_pages(nv3->pgraph.dma_settings & 0xFFFF, nv3_d3d.tex_offset, nv3_d3d.tex_pages, 64, &nv3_d3d.tex_lin);
@@ -179,7 +180,7 @@ nv3_d3d_swizzle(uint32_t s, uint32_t t)
 
 /* A texel as A8R8G8B8 */
 static uint32_t
-nv3_d3d_texel(nv3_grobj_t grobj, uint32_t level_offset, uint32_t size, int32_t s, int32_t t)
+nv3_d3d_texel(nv3_grobj_t grobj, uint32_t level_offset, UNUSED(uint32_t size), int32_t s, int32_t t)
 {
     uint32_t fmt = (nv3_d3d.tex_format >> 20) & 0xF;
     uint16_t p   = nv3_d3d_read_tex16(grobj, level_offset + nv3_d3d_swizzle((uint32_t) s, (uint32_t) t) * 2);

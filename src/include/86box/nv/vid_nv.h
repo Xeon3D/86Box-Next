@@ -166,7 +166,7 @@ typedef struct nv_base_s
 // Typically, unless they are for a special purpose (and handled specially) e.g. vga all register reads and writes are also 32-bit aligned
 typedef struct nv_register_s
 {
-    int32_t     addr;                           // The MMIO register of this address
+    uint32_t    addr;                           // The MMIO register of this address
     char*       friendly_name;                  // Friendly name
     // reg_ptr not needed as a parameter, because we implicitly know which register si being tiwddled
     uint32_t    (*on_read)(void);               // Optional on-read function

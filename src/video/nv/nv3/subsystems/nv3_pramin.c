@@ -19,6 +19,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <86box/86box.h>
+#include <86box/plat_unused.h>
 #include <86box/device.h>
 #include <86box/mem.h>
 #include <86box/pci.h>
@@ -44,7 +45,7 @@ void nv3_debug_ramin_print_context_info(uint32_t name, nv3_ramin_context_t conte
    with the VRAM size alone kept bit 22 of the window's 0xC00000 on 8MB cards (RIVA 128 ZX), so
    the driver's RAMHT went 4MB away from where the chip looked it up. */
 // Read 8-bit ramin
-uint8_t nv3_ramin_read8(uint32_t addr, void* priv)
+uint8_t nv3_ramin_read8(uint32_t addr, UNUSED(void* priv))
 {
     if (!nv3) return 0x00;
 
@@ -59,7 +60,7 @@ uint8_t nv3_ramin_read8(uint32_t addr, void* priv)
 }
 
 // Read 16-bit ramin
-uint16_t nv3_ramin_read16(uint32_t addr, void* priv)
+uint16_t nv3_ramin_read16(uint32_t addr, UNUSED(void* priv))
 {
     if (!nv3) return 0x00;
 
@@ -76,7 +77,7 @@ uint16_t nv3_ramin_read16(uint32_t addr, void* priv)
 }
 
 // Read 32-bit ramin
-uint32_t nv3_ramin_read32(uint32_t addr, void* priv)
+uint32_t nv3_ramin_read32(uint32_t addr, UNUSED(void* priv))
 {
     if (!nv3) return 0x00;
 
@@ -94,7 +95,7 @@ uint32_t nv3_ramin_read32(uint32_t addr, void* priv)
 // RAMIN write functions 
 
 // Write 8-bit ramin
-void nv3_ramin_write8(uint32_t addr, uint8_t val, void* priv)
+void nv3_ramin_write8(uint32_t addr, uint8_t val, UNUSED(void* priv))
 {
     if (!nv3) return;
 
@@ -108,7 +109,7 @@ void nv3_ramin_write8(uint32_t addr, uint8_t val, void* priv)
 }
 
 // Write 16-bit ramin
-void nv3_ramin_write16(uint32_t addr, uint16_t val, void* priv)
+void nv3_ramin_write16(uint32_t addr, uint16_t val, UNUSED(void* priv))
 {
     if (!nv3) return;
 
@@ -125,7 +126,7 @@ void nv3_ramin_write16(uint32_t addr, uint16_t val, void* priv)
 }
 
 // Write 32-bit ramin
-void nv3_ramin_write32(uint32_t addr, uint32_t val, void* priv)
+void nv3_ramin_write32(uint32_t addr, uint32_t val, UNUSED(void* priv))
 {
     if (!nv3) return;
 

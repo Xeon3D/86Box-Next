@@ -64,8 +64,7 @@ uint32_t nv3_pfifo_read(uint32_t address)
 
     // before doing anything, check the subsystem enablement state
 
-    if (!(nv3->pmc.enable >> NV3_PMC_ENABLE_PFIFO)
-    & NV3_PMC_ENABLE_PFIFO_ENABLED)
+    if (!((nv3->pmc.enable >> NV3_PMC_ENABLE_PFIFO) & NV3_PMC_ENABLE_PFIFO_ENABLED))
     {
         nv_log("Repressing PFIFO read. The subsystem is disabled according to pmc_enable, returning 0\n");
         return 0x00;
@@ -385,8 +384,7 @@ void nv3_pfifo_write(uint32_t address, uint32_t val)
 
     // before doing anything, check the subsystem enablement
 
-    if (!(nv3->pmc.enable >> NV3_PMC_ENABLE_PFIFO)
-    & NV3_PMC_ENABLE_PFIFO_ENABLED)
+    if (!((nv3->pmc.enable >> NV3_PMC_ENABLE_PFIFO) & NV3_PMC_ENABLE_PFIFO_ENABLED))
     {
         nv_log("Repressing PFIFO write. The subsystem is disabled according to pmc_enable\n");
         return;

@@ -23,6 +23,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <86box/86box.h>
+#include <86box/plat_unused.h>
 #include <86box/device.h>
 #include <86box/mem.h>
 #include <86box/pci.h>
@@ -53,7 +54,7 @@ void nv3_pramdac_init(void)
 }
 
 // Polls the pixel clock.
-void nv3_pramdac_pixel_clock_poll(double real_time)
+void nv3_pramdac_pixel_clock_poll(UNUSED(double real_time))
 {
     /* Scan-out is the SVGA core's (nv3_recalc_timings picks the renderer) */
 }

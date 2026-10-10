@@ -20,6 +20,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <86box/86box.h>
+#include <86box/plat_unused.h>
 #include <86box/device.h>
 #include <86box/mem.h>
 #include <86box/pci.h>
@@ -28,7 +29,7 @@
 #include <86box/nv/vid_nv.h>
 #include <86box/nv/vid_nv3.h>
 
-void nv3_class_004_method(uint32_t param, uint32_t method_id, nv3_ramin_context_t context, nv3_grobj_t grobj)
+void nv3_class_004_method(UNUSED(uint32_t param), uint32_t method_id, nv3_ramin_context_t context, UNUSED(nv3_grobj_t grobj))
 {
     switch (method_id)
     {

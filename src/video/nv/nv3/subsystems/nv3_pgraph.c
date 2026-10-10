@@ -20,6 +20,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <86box/86box.h>
+#include <86box/plat_unused.h>
 #include <86box/device.h>
 #include <86box/mem.h>
 #include <86box/pci.h>
@@ -44,8 +45,7 @@ uint32_t nv3_pgraph_read(uint32_t address)
 { 
     // before doing anything, check that this is even enabled..
 
-    if (!(nv3->pmc.enable >> NV3_PMC_ENABLE_PGRAPH)
-    & NV3_PMC_ENABLE_PGRAPH_ENABLED)
+    if (!((nv3->pmc.enable >> NV3_PMC_ENABLE_PGRAPH) & NV3_PMC_ENABLE_PGRAPH_ENABLED))
     {
         nv_log("Repressing PGRAPH read. The subsystem is disabled according to pmc_enable, returning 0\n");
         return 0x00;
@@ -251,8 +251,7 @@ uint32_t nv3_pgraph_read(uint32_t address)
 
 void nv3_pgraph_write(uint32_t address, uint32_t value) 
 {
-    if (!(nv3->pmc.enable >> NV3_PMC_ENABLE_PGRAPH)
-    & NV3_PMC_ENABLE_PGRAPH_ENABLED)
+    if (!((nv3->pmc.enable >> NV3_PMC_ENABLE_PGRAPH) & NV3_PMC_ENABLE_PGRAPH_ENABLED))
     {
         nv_log("Repressing PGRAPH write. The subsystem is disabled according to pmc_enable\n");
         return;
@@ -548,7 +547,7 @@ void nv3_pgraph_interrupt_invalid(uint32_t num)
 }
 
 // VBlank. Fired every single frame.
-void nv3_pgraph_vblank_start(svga_t* svga)
+void nv3_pgraph_vblank_start(UNUSED(svga_t* svga))
 {
     nv3_pgraph_interrupt_valid(NV3_PGRAPH_INTR_0_VBLANK);
     nv3_pvideo_vblank();

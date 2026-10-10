@@ -140,7 +140,7 @@ uint16_t nv3_mmio_read16(uint32_t addr, void* priv)
 }
 
 // Read 32-bit MMIO
-uint32_t nv3_mmio_read32(uint32_t addr, void* priv)
+uint32_t nv3_mmio_read32(uint32_t addr, UNUSED(void* priv))
 {
     uint32_t ret = 0x00;
 
@@ -221,7 +221,7 @@ void nv3_mmio_write16(uint32_t addr, uint16_t val, void* priv)
 }
 
 // Write 32-bit MMIO
-void nv3_mmio_write32(uint32_t addr, uint32_t val, void* priv)
+void nv3_mmio_write32(uint32_t addr, uint32_t val, UNUSED(void* priv))
 {
     addr &= 0xFFFFFF;
 
@@ -244,7 +244,7 @@ void nv3_mmio_write32(uint32_t addr, uint32_t val, void* priv)
 }
 
 // AGP read function
-uint8_t nv3_agp_read(int32_t func, int32_t addr)
+uint8_t nv3_agp_read(UNUSED(int32_t func), int32_t addr)
 {
     uint8_t ret = 0x00;
 
@@ -288,7 +288,7 @@ uint8_t nv3_agp_read(int32_t func, int32_t addr)
 // BAR0         Pointer to MMIO space
 // BAR1         Pointer to Linear Framebuffer (NV_USER)
 
-uint8_t nv3_pci_read(int32_t func, int32_t addr, UNUSED(int32_t len), void* priv)
+uint8_t nv3_pci_read(int32_t func, int32_t addr, UNUSED(int32_t len), UNUSED(void* priv))
 {
     uint8_t ret = 0x00;
 
@@ -467,7 +467,7 @@ uint8_t nv3_pci_read(int32_t func, int32_t addr, UNUSED(int32_t len), void* priv
     return ret; 
 }
 
-void nv3_agp_write(int32_t func, int32_t addr, uint8_t val)
+void nv3_agp_write(UNUSED(int32_t func), int32_t addr, uint8_t val)
 {
     nv3->nvbase.pci_config.pci_regs[addr] = val;
 
@@ -481,7 +481,7 @@ void nv3_agp_write(int32_t func, int32_t addr, uint8_t val)
     }
 }
 
-void nv3_pci_write(int32_t func, int32_t addr, UNUSED(int32_t len), uint8_t val, void* priv)
+void nv3_pci_write(int32_t func, int32_t addr, UNUSED(int32_t len), uint8_t val, UNUSED(void* priv))
 {
     // sanity check
     if (!nv3)
@@ -730,7 +730,7 @@ void nv3_recalc_timings(svga_t* svga)
     }
 }
 
-void nv3_speed_changed(void* priv)
+void nv3_speed_changed(UNUSED(void* priv))
 {
     // sanity check
     if (!nv3)
@@ -741,7 +741,7 @@ void nv3_speed_changed(void* priv)
 
 // Force Redraw
 // Reset etc.
-void nv3_force_redraw(void* priv)
+void nv3_force_redraw(UNUSED(void* priv))
 {
     // sanity check
     if (!nv3)
@@ -818,7 +818,7 @@ uint8_t nv3_svga_read(uint16_t addr, void* priv)
 }
 
 // Write to SVGA core memory
-void nv3_svga_write(uint16_t addr, uint8_t val, void* priv)
+void nv3_svga_write(uint16_t addr, uint8_t val, UNUSED(void* priv))
 {
     // sanity check
     if (!nv3)
@@ -932,19 +932,19 @@ void nv3_svga_write(uint16_t addr, uint8_t val, void* priv)
 }
 
 /* DFB, sets up a dumb framebuffer */
-uint8_t nv3_dfb_read8(uint32_t addr, void* priv)
+uint8_t nv3_dfb_read8(uint32_t addr, UNUSED(void* priv))
 {
     addr &= (nv3->nvbase.svga.vram_mask);
     return nv3->nvbase.svga.vram[addr];
 }
 
-uint16_t nv3_dfb_read16(uint32_t addr, void* priv)
+uint16_t nv3_dfb_read16(uint32_t addr, UNUSED(void* priv))
 {
     addr &= (nv3->nvbase.svga.vram_mask);
     return (nv3->nvbase.svga.vram[addr + 1] << 8) | nv3->nvbase.svga.vram[addr];
 }
 
-uint32_t nv3_dfb_read32(uint32_t addr, void* priv)
+uint32_t nv3_dfb_read32(uint32_t addr, UNUSED(void* priv))
 {
     addr &= (nv3->nvbase.svga.vram_mask);
     return (nv3->nvbase.svga.vram[addr + 3] << 24) | (nv3->nvbase.svga.vram[addr + 2] << 16) |
@@ -963,7 +963,7 @@ void nv3_watch(uint32_t addr, uint32_t val, int size)
     }
 }
 
-void nv3_dfb_write8(uint32_t addr, uint8_t val, void* priv)
+void nv3_dfb_write8(uint32_t addr, uint8_t val, UNUSED(void* priv))
 {
     addr &= (nv3->nvbase.svga.vram_mask);
     nv3_watch(addr, val, 8);
@@ -971,7 +971,7 @@ void nv3_dfb_write8(uint32_t addr, uint8_t val, void* priv)
     nv3->nvbase.svga.changedvram[addr >> 12] = changeframecount;
 }
 
-void nv3_dfb_write16(uint32_t addr, uint16_t val, void* priv)
+void nv3_dfb_write16(uint32_t addr, uint16_t val, UNUSED(void* priv))
 {
     addr &= (nv3->nvbase.svga.vram_mask);
     nv3_watch(addr, val, 16);
@@ -980,7 +980,7 @@ void nv3_dfb_write16(uint32_t addr, uint16_t val, void* priv)
     nv3->nvbase.svga.changedvram[addr >> 12] = changeframecount;
 }
 
-void nv3_dfb_write32(uint32_t addr, uint32_t val, void* priv)
+void nv3_dfb_write32(uint32_t addr, uint32_t val, UNUSED(void* priv))
 {
     addr &= (nv3->nvbase.svga.vram_mask);
     nv3_watch(addr, val, 32);
@@ -1036,7 +1036,7 @@ uint8_t nv3_prom_read(uint32_t address)
     uint32_t real_rom_size = max_rom_size;
 
     // set it
-    if (nv3->nvbase.vbios.sz < max_rom_size)
+    if ((uint32_t) nv3->nvbase.vbios.sz < max_rom_size)
         real_rom_size = nv3->nvbase.vbios.sz;
 
     //get our real address
@@ -1430,7 +1430,7 @@ static void nv3_debug_hook(const char *args)
     always_log("nv3: methods by class:%s\n", len ? line : " none");
 }
 
-void* nv3_init(const device_t *info)
+void* nv3_init(UNUSED(const device_t *info))
 {
     // set the vram amount and gpu revision
     
@@ -1600,7 +1600,7 @@ void* nv3t_init_agp(const device_t* info)
    driver was loaded, and Windows 2000 stalled at its boot screen. VRAM, the
    VBIOS, the SVGA core and the PCI configuration are left alone -- the BIOS
    enumerates the card and runs its VBIOS again after the reset. */
-static void nv3_reset(void* priv)
+static void nv3_reset(UNUSED(void* priv))
 {
     timer_disable(&nv3->dma_pusher_timer);
 
@@ -1625,7 +1625,7 @@ static void nv3_reset(void* priv)
     nv3_pmc_clear_interrupts();
 }
 
-void nv3_close(void* priv)
+void nv3_close(UNUSED(void* priv))
 {
     debug_cmd_set_device_hook(NULL);
     // Shut down logging

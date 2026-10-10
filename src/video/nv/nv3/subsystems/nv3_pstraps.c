@@ -21,6 +21,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <86box/86box.h>
+#include <86box/plat_unused.h>
 #include <86box/device.h>
 #include <86box/mem.h>
 #include <86box/pci.h>
@@ -77,12 +78,12 @@ double nv3_pstraps_crystal_hz(void)
 // ****** Read/Write functions start ******
 //
 
-uint32_t nv3_pstraps_read(uint32_t address) 
+uint32_t nv3_pstraps_read(UNUSED(uint32_t address)) 
 { 
     return nv3->straps;
 }
 
-void nv3_pstraps_write(uint32_t address, uint32_t val) 
+void nv3_pstraps_write(UNUSED(uint32_t address), uint32_t val) 
 {
     /* Rev C (RIVA 128 ZX) straps are writable: a write with STRAP_OVERWRITE (bit 11) set replaces
        them -- the ZX BIOS rewrites the RAM type/width it sized this way (nv3sgram.asm: "Bit 11 set
