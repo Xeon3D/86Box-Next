@@ -61,6 +61,8 @@ void nv3_pstraps_init(void)
             nv3->nvbase.pci_config.pci_regs[NV3_PCI_CFG_SUBSYSTEM_ID + i] = nv3->nvbase.vbios.rom[0x54 + i];
     }
 
+    nv3->pbus.agp_rq = NV3_AGP_STATUS_MAX_REQUESTS_AMOUNT;
+
     nv_log("Straps = 0x%04x%c", nv3->straps, 10);
     nv_log("Initialising PSTRAPS: Done%c", 10);
 }
@@ -82,15 +84,14 @@ uint32_t nv3_pstraps_read(uint32_t address)
 
 void nv3_pstraps_write(uint32_t address, uint32_t val) 
 {
-    /* For some reason, all RIVA 128 ZX VBIOSes try to write to the straps. So only indicate this as a problem and return on Rev A/B */
-    if (nv3->nvbase.gpu_revision != NV3_PCI_CFG_REVISION_C00)
-    {
-        nv_warning("Huh? Tried to write to the straps (val=%d). Something is wrong...\n", nv3->straps);
+    /* Rev C (RIVA 128 ZX) straps are writable: a write with STRAP_OVERWRITE (bit 11) set replaces
+       them -- the ZX BIOS rewrites the RAM type/width it sized this way (nv3sgram.asm: "Bit 11 set
+       for Overwrite"). The bit is the written value's, not the old one's (nv3_ref.h: reset 0).
+       Earlier revisions' straps are read-only (their NV_REF.INC marks the fields R-). */
+    if (nv3->nvbase.gpu_revision != NV3_PCI_CFG_REVISION_C00) {
+        nv_warning("Tried to write to the straps (val=%08x) on a rev A/B card\n", val);
         return;
     }
-    else
-    {
-        if (nv3->straps & NV3_PSTRAPS_OVERWRITE_ENABLED)
-            nv3->straps = val; 
-    }
+    if ((val >> NV3_PSTRAPS_OVERWRITE) & 1)
+        nv3->straps = val & 0xFFF;
 }

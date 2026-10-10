@@ -32,9 +32,20 @@
 // This basically works like a shifter, you write one byte at a time from [0x3d0...0x3d3] and it shifts it in to build a 32-bit MMIO address...
 // Putting this in pbus because imo it makes the most sense (related to memory access/memory interface)
 
+/* PBUS 0x1800-0x18FF aliases the PCI configuration space (NV_PBUS_PCI_NV_*). Through it the
+   resman also raises the AGP request depth, read-only in config space: NV3RM's MCINIT.C bumps
+   NV_PBUS_PCI_NV_18 AGP_STATUS_RQ while it is <= 3 */
+#define NV3_PBUS_PCI_ALIAS 0x1800
+
 uint32_t nv3_pbus_read(uint32_t address) 
 { 
     uint32_t ret = 0x00; 
+
+    if (address >= NV3_PBUS_PCI_ALIAS && address < NV3_PBUS_PCI_ALIAS + 0x100) {
+        for (int i = 0; i < 4; i++)
+            ret |= (uint32_t) nv3_pci_read(0, (address & 0xFC) + i, 1, NULL) << (i * 8);
+        return ret;
+    }
 
     switch (address)
     {
@@ -55,6 +66,13 @@ uint32_t nv3_pbus_read(uint32_t address)
 
 void nv3_pbus_write(uint32_t address, uint32_t val) 
 {
+    if (address >= NV3_PBUS_PCI_ALIAS && address < NV3_PBUS_PCI_ALIAS + 0x100) {
+        if ((address & 0xFC) == NV3_AGP_STATUS_RATE)
+            nv3->pbus.agp_rq = val >> 24;
+        for (int i = 0; i < 4; i++)
+            nv3_pci_write(0, (address & 0xFC) + i, 1, (val >> (i * 8)) & 0xFF, NULL);
+        return;
+    }
     switch (address)
     {
         case NV3_PBUS_DEBUG_0:
@@ -104,7 +122,7 @@ uint8_t nv3_pbus_rma_read(uint16_t addr)
             else 
             {
                 /* Do we need to read RAMIN here? */
-                ret = nv3->nvbase.svga.vram[real_final_address - NV3_MMIO_SIZE] & (nv3->nvbase.svga.vram_max - 1);
+                ret = nv3->nvbase.svga.vram[(real_final_address - NV3_MMIO_SIZE) & nv3->nvbase.svga.vram_mask];
             }
 
             // log current location for vbios RE
@@ -181,7 +199,7 @@ void nv3_pbus_rma_write(uint16_t addr, uint8_t val)
                 else // failsafe code, i don't think you will ever write outside of VRAM?
                 {
                     uint32_t* vram_32 = (uint32_t*)nv3->nvbase.svga.vram;
-                    vram_32[(nv3->pbus.rma.addr - NV3_MMIO_SIZE) >> 2] = nv3->pbus.rma.data;
+                    vram_32[((nv3->pbus.rma.addr - NV3_MMIO_SIZE) & nv3->nvbase.svga.vram_mask) >> 2] = nv3->pbus.rma.data;
                 }
                     
                     

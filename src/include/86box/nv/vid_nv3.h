@@ -1055,6 +1055,8 @@ typedef struct nv3_pbus_rma_s
 // Bus Configuration
 typedef struct nv3_pbus_s
 {
+    uint8_t agp_rq;         // AGP status RQ (config 0x4B): read-only in config space, set through the PBUS alias
+
     uint32_t debug_0;
     uint32_t intr;          // Interrupt status
     uint32_t intr_en;          // Interrupt enable

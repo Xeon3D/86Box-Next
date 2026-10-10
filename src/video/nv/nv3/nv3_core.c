@@ -253,8 +253,9 @@ uint8_t nv3_agp_read(int32_t func, int32_t addr)
         case NV3_AGP_CAPABILITIES_CAP_ID:
             ret = NV3_AGP_CAPABILITIES_CAP_ID_AGP;     // AGP capable device
             break;
-        case NV3_AGP_CAPABILITIES_NEXT_PTR:             // Always off
-            ret = 0x00; 
+        case NV3_AGP_CAPABILITIES_NEXT_PTR:             // the last capability
+            ret = 0x00;
+            break;
         case NV3_AGP_CAPABILITIES_AGP_VERSION:
             ret = (0x1 << NV3_AGP_CAPABILITIES_AGP_VERSION_MAJOR) | NV3_AGP_CAPABILITIES_AGP_VERSION_MINOR;
             break;
@@ -269,7 +270,7 @@ uint8_t nv3_agp_read(int32_t func, int32_t addr)
             ret = 0x00;             // SBA not supported
             break;
         case NV3_AGP_STATUS_MAX_REQUESTS:
-            ret = NV3_AGP_STATUS_MAX_REQUESTS_AMOUNT;
+            ret = nv3->pbus.agp_rq;
             break;
         // This is also used for SBA but SBA is always off so we can use a bool
         case NV3_AGP_COMMAND_BYTE1:
@@ -1224,6 +1225,7 @@ static void nv3_debug_hook(const char *args)
                svga->crtc[0], svga->crtc[1], svga->crtc[2], svga->crtc[3], svga->crtc[4], svga->crtc[5], svga->crtc[6], svga->crtc[7],
                svga->crtc[0x25], svga->crtc[0x2d], svga->crtc[0x30], svga->crtc[0x31],
                svga->seqregs[1], svga->gdcreg[6], svga->attrregs[0x10], svga->miscout);
+    always_log("nv3: straps %03x pfb boot %08x\n", nv3->straps, nv3_pfb_read(NV3_PFB_BOOT));
     always_log("nv3: dac mask %02x ramdac %d | pal 0 %06x 1 %06x 7 %06x 15 %06x 255 %06x | user_dac mask %02x\n",
                svga->dac_mask, svga->ramdac_type, svga->pallook[0] & 0xffffff, svga->pallook[1] & 0xffffff,
                svga->pallook[7] & 0xffffff, svga->pallook[15] & 0xffffff, svga->pallook[255] & 0xffffff,
