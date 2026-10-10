@@ -21,6 +21,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
 #include <86box/86box.h>
 #include <86box/device.h>
 #include <86box/mem.h>
@@ -30,18 +31,27 @@
 #include <86box/nv/vid_nv.h>
 #include <86box/nv/vid_nv3.h>
 
-/* 0x680200-0x6802FC, as indexes into pvideo.regs */
-#define PV_SCALE   (0x00 >> 2) /* 0x200: Y step 31:16, X step 15:0, source pixels per screen pixel in 1/2048 */
-#define PV_START0  (0x0C >> 2) /* 0x20C/0x210: buffer 0/1 start in VRAM */
+/* 0x680200-0x6802FC, as indexes into pvideo.regs. Names and field widths per NVIDIA's NV_PVIDEO_*
+   (RIVA 128 Programming Reference Manual ch. 5) */
+#define PV_SCALE   (0x00 >> 2) /* 0x200 STEP_SIZE: Y 27:16, X 11:0; ((src - 1) << 11) / (dst - 1) */
+#define PV_CTRL_Y  (0x04 >> 2) /* 0x204 CONTROL_Y: 0 BLUR (vertical filter, else line replication), 4 LINE */
+#define PV_CTRL_X  (0x08 >> 2) /* 0x208 CONTROL_X: 0 WEIGHT, 4 SHARPENING, 8 SMOOTHING */
+#define PV_START0  (0x0C >> 2) /* 0x20C/0x210 BUFFn_START: 22:2 */
 #define PV_START1  (0x10 >> 2)
-#define PV_PITCH0  (0x14 >> 2) /* 0x214/0x218: buffer 0/1 pitch in bytes */
+#define PV_PITCH0  (0x14 >> 2) /* 0x214/0x218 BUFFn_PITCH: 13:4 */
 #define PV_PITCH1  (0x18 >> 2)
-#define PV_STATUS  (0x24 >> 2) /* 0x224: 24 = last buffer taken (the driver steers it); 16+4n buffer n taken; 4n notify */
-#define PV_READY   (0x28 >> 2) /* 0x228: 16+4n toggled by the driver when buffer n is ready */
-#define PV_POINT   (0x30 >> 2) /* 0x230: screen position, y 31:16, x 15:0 */
-#define PV_SIZE    (0x34 >> 2) /* 0x234: screen size, h 31:16, w 15:0 */
-#define PV_KEY     (0x40 >> 2) /* 0x240: destination colour key */
-#define PV_CONTROL (0x44 >> 2) /* 0x244: 0 on, 4 colour key, 8 YUY2 (else UYVY) */
+#define PV_OFFS0   (0x1C >> 2) /* 0x21C/0x220 BUFFn_OFFSET: X 0 (first pixel of the word), Y 5:4 (off/quarter/half line) */
+#define PV_OFFS1   (0x20 >> 2)
+#define PV_STATUS  (0x24 >> 2) /* 0x224 OE_STATE: 24 CURRENT_BUFFER, 16+4n BUFFn_IN_USE, 8+4n BUFFn_ERROR, 4n BUFFn_INTR_NOTIFY */
+#define PV_READY   (0x28 >> 2) /* 0x228 SU_STATE: 16+4n BUFFn_IN_USE, toggled by the driver when buffer n is ready */
+#define PV_POINT   (0x30 >> 2) /* 0x230 WINDOW_START: Y 26:16, X 10:0 */
+#define PV_SIZE    (0x34 >> 2) /* 0x234 WINDOW_SIZE: Y 26:16, X 10:0 */
+#define PV_KEY     (0x40 >> 2) /* 0x240 KEY: the bits of the desktop's pixel format */
+#define PV_CONTROL (0x44 >> 2) /* 0x244 OVERLAY: 0 VIDEO on, 4 KEY on, 8 FORMAT (1 YUY2, 0 CCIR = UYVY) */
+#define PV_CSC_R   (0x80 >> 2) /* 0x280-0x288 RED/GREEN/BLUE_CSC: 7:0 offsets, default 105/62/137 */
+#define PV_CSC_G   (0x84 >> 2)
+#define PV_CSC_B   (0x88 >> 2)
+#define PV_CSC_ADJ (0x8C >> 2) /* 0x28C CSC_ADJUST: B/G/R/L flags 0/4/8/12, 16 CHROMA (interpolate, else replicate) */
 
 #define PV(r) (nv3->pvideo.regs[(r)])
 
@@ -80,13 +90,24 @@ nv3_pvideo_update(void)
 {
     svga_t *svga = &nv3->nvbase.svga;
 
-    svga->overlay.ena       = (PV(PV_CONTROL) & 1) && (PV(PV_SIZE) & 0xFFFF) && (PV(PV_SIZE) >> 16);
-    svga->overlay.x         = (int16_t) (PV(PV_POINT) & 0xFFFF);
-    svga->overlay.y         = (int16_t) (PV(PV_POINT) >> 16);
-    svga->overlay.cur_xsize = PV(PV_SIZE) & 0xFFFF;
-    svga->overlay.cur_ysize = PV(PV_SIZE) >> 16;
+    svga->overlay.ena       = (PV(PV_CONTROL) & 1) && (PV(PV_SIZE) & 0x7FF) && ((PV(PV_SIZE) >> 16) & 0x7FF);
+    svga->overlay.x         = PV(PV_POINT) & 0x7FF;
+    svga->overlay.y         = (PV(PV_POINT) >> 16) & 0x7FF;
+    svga->overlay.cur_xsize = PV(PV_SIZE) & 0x7FF;
+    svga->overlay.cur_ysize = (PV(PV_SIZE) >> 16) & 0x7FF;
     svga->overlay.xoff      = 0;
     svga->overlay.yoff      = 0;
+}
+
+/* The colour conversion offsets have no reset value (nv3_ref.h); start from the PRM's defaults so
+   an overlay set up without them (no resman yet) still converts sensibly */
+void
+nv3_pvideo_init(void)
+{
+    PV(PV_CSC_R)   = 105;
+    PV(PV_CSC_G)   = 62;
+    PV(PV_CSC_B)   = 137;
+    PV(PV_CSC_ADJ) = 0x10000;
 }
 
 uint32_t nv3_pvideo_read(uint32_t address)
@@ -145,36 +166,58 @@ nv3_pvideo_clamp(int v)
     return (v < 0) ? 0 : ((v > 255) ? 255 : (uint32_t) v);
 }
 
-/* One screen line of the overlay: 4:2:2 from the shown buffer, linearly interpolated both
-   ways, BT.601 to RGB, drawn where the primary surface holds the key colour if keying is on */
+/* The colour conversion. The CSC registers hold the constant terms, halved: with the coefficients
+   below, BT.601's constants come out as R -2 x 105, G +2 x 62, B -2 x 137 -- the defaults the PRM
+   gives and NV3RM writes (class63.c). NV3DD32's brightness control (DDDRV32.C ColourControl) adds an
+   offset to red and blue and takes it from green, which darkens all three alike, as this does. The
+   CSC_ADJUST coefficient flags are not documented and stay at 0. */
+static inline uint32_t
+nv3_pvideo_rgb(int Y, int U, int V)
+{
+    int y = 298 * Y;                                 /* 1.164 Y, in 1/256 */
+    int r = (y + 384 * V) / 256 - 2 * (int) (PV(PV_CSC_R) & 0xFF);
+    int g = (y - 96 * U - 192 * V) / 256 + 2 * (int) (PV(PV_CSC_G) & 0xFF);
+    int b = (y + 512 * U) / 256 - 2 * (int) (PV(PV_CSC_B) & 0xFF);
+
+    return (nv3_pvideo_clamp(r) << 16) | (nv3_pvideo_clamp(g) << 8) | nv3_pvideo_clamp(b);
+}
+
+/* One screen line of the overlay: 4:2:2 from the shown buffer, filtered in x, in y while
+   CONTROL_Y BLUR is on (else lines are replicated), chroma interpolated while CSC_ADJUST CHROMA is
+   on (else each pair's U and V are replicated), converted, drawn where the primary surface holds
+   the key colour if keying is on */
 void
 nv3_pvideo_draw(svga_t *svga, int displine)
 {
-    uint32_t buf   = nv3->pvideo.shown;
-    uint32_t start = PV(buf ? PV_START1 : PV_START0);
-    uint32_t pitch = PV(buf ? PV_PITCH1 : PV_PITCH0) & 0x7FF0;
-    uint32_t xstep = PV(PV_SCALE) & 0xFFFF;
-    uint32_t ystep = PV(PV_SCALE) >> 16;
-    bool     yuy2  = (PV(PV_CONTROL) >> 8) & 1;
-    bool     keyed = (PV(PV_CONTROL) >> 4) & 1;
-    int      ox    = svga->overlay_latch.x;
-    int      sy    = displine - svga->y_add;
-    int      line  = sy - svga->overlay_latch.y;
-    int      w     = svga->overlay_latch.cur_xsize;
-    uint32_t mask  = svga->vram_mask;
-    int      bpp   = svga->bpp;
-    int      bytes = (bpp + 7) >> 3;
-    uint32_t kmask = (bpp == 8) ? 0xFF : ((bpp <= 16) ? 0x7FFF : 0xFFFFFF);
-    uint32_t fb    = (svga->memaddr_latch << 2) + (uint32_t) sy * (svga->rowoffset << 3);
+    uint32_t buf    = nv3->pvideo.shown;
+    uint32_t start  = PV(buf ? PV_START1 : PV_START0) & 0x7FFFFC;
+    uint32_t pitch  = PV(buf ? PV_PITCH1 : PV_PITCH0) & 0x3FF0;
+    uint32_t offs   = PV(buf ? PV_OFFS1 : PV_OFFS0);
+    uint32_t xstep  = PV(PV_SCALE) & 0xFFF;
+    uint32_t ystep  = (PV(PV_SCALE) >> 16) & 0xFFF;
+    bool     yuy2   = (PV(PV_CONTROL) >> 8) & 1;
+    bool     keyed  = (PV(PV_CONTROL) >> 4) & 1;
+    bool     blur   = PV(PV_CTRL_Y) & 1;
+    bool     chroma = (PV(PV_CSC_ADJ) >> 16) & 1;
+    int      ox     = svga->overlay_latch.x;
+    int      sy     = displine - svga->y_add;
+    int      line   = sy - svga->overlay_latch.y;
+    int      w      = svga->overlay_latch.cur_xsize;
+    uint32_t mask   = svga->vram_mask;
+    int      bpp    = svga->bpp;
+    int      bytes  = (bpp + 7) >> 3;
+    uint32_t kmask  = (bpp == 8) ? 0xFF : ((bpp == 15) ? 0x7FFF : ((bpp == 16) ? 0xFFFF : 0xFFFFFF));
+    uint32_t fb     = (svga->memaddr_latch << 2) + (uint32_t) sy * (svga->rowoffset << 3);
 
     if (line < 0)
         return;
     if (ox + w > svga->hdisp)
         w = svga->hdisp - ox;
 
-    uint32_t  yf   = (uint32_t) line * ystep;
+    /* the odd field of an interlaced source starts a quarter or half line down ("bob") */
+    uint32_t  yf   = (uint32_t) line * ystep + ((((offs >> 4) & 3) == 1) ? 512 : ((((offs >> 4) & 3) == 2) ? 1024 : 0));
     uint32_t  row0 = start + (yf >> 11) * pitch;
-    int       fy   = (yf >> 3) & 0xFF;
+    int       fy   = blur ? ((yf >> 3) & 0xFF) : 0;
     uint32_t *p    = &(buffer32->line[displine])[svga->x_add];
 
     for (int x = (ox < 0) ? -ox : 0; x < w; x++) {
@@ -193,13 +236,13 @@ nv3_pvideo_draw(svga_t *svga, int displine)
                 continue;
         }
 
-        uint32_t xf = (uint32_t) x * xstep;
+        uint32_t xf = (uint32_t) x * xstep + ((offs & 1) << 11);
         uint32_t px = xf >> 11;
         int      fx = (xf >> 3) & 0xFF;
         int      c[2][3];
 
         /* Y of source pixels px and px+1 and U, V of their pairs, on two source lines */
-        for (int l = 0; l < 2; l++) {
+        for (int l = 0; l < (fy ? 2 : 1); l++) {
             uint32_t row = row0 + (l ? pitch : 0);
             int      yv[2], uv[2], vv[2];
             for (int k = 0; k < 2; k++) {
@@ -215,16 +258,17 @@ nv3_pvideo_draw(svga_t *svga, int displine)
                     vv[k] = m[2];
                 }
             }
+            int fc  = chroma ? fx : 0;
             c[l][0] = (yv[0] * (256 - fx) + yv[1] * fx) >> 8;
-            c[l][1] = (uv[0] * (256 - fx) + uv[1] * fx) >> 8;
-            c[l][2] = (vv[0] * (256 - fx) + vv[1] * fx) >> 8;
+            c[l][1] = (uv[0] * (256 - fc) + uv[1] * fc) >> 8;
+            c[l][2] = (vv[0] * (256 - fc) + vv[1] * fc) >> 8;
         }
-        int Y = ((c[0][0] * (256 - fy) + c[1][0] * fy) >> 8) - 16;
-        int U = ((c[0][1] * (256 - fy) + c[1][1] * fy) >> 8) - 128;
-        int V = ((c[0][2] * (256 - fy) + c[1][2] * fy) >> 8) - 128;
+        if (!fy)
+            memcpy(c[1], c[0], sizeof(c[0]));
+        int Y = (c[0][0] * (256 - fy) + c[1][0] * fy) >> 8;
+        int U = (c[0][1] * (256 - fy) + c[1][1] * fy) >> 8;
+        int V = (c[0][2] * (256 - fy) + c[1][2] * fy) >> 8;
 
-        p[sx] = (nv3_pvideo_clamp((298 * Y + 409 * V + 128) >> 8) << 16)
-              | (nv3_pvideo_clamp((298 * Y - 100 * U - 208 * V + 128) >> 8) << 8)
-              | nv3_pvideo_clamp((298 * Y + 516 * U + 128) >> 8);
+        p[sx] = nv3_pvideo_rgb(Y, U, V);
     }
 }

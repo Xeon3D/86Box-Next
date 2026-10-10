@@ -1613,3 +1613,4 @@ uint32_t    nv3_pvideo_read(uint32_t address);
 void        nv3_pvideo_write(uint32_t address, uint32_t value);
 void        nv3_pvideo_draw(svga_t *svga, int displine);
 void        nv3_pvideo_vblank(void);
+void        nv3_pvideo_init(void);

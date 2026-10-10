@@ -1488,6 +1488,7 @@ void* nv3_init(const device_t *info)
     nv3_pfb_init();                 // Initialise Framebuffer Interface
     nv3_pramdac_init();             // Initialise RAMDAC (CLUT, final pixel presentation etc)
     nv3_pgraph_init();              // Initialise accelerated graphics engine
+    nv3_pvideo_init();              // Initialise video overlay
     timer_add(&nv3->dma_pusher_timer, nv3_pfifo_dma_pusher_timer, NULL, 0);
 
     nv_log("Initialising I2C...");
