@@ -33,6 +33,7 @@
 
 
 static uint32_t nv3_pfifo_cache1_ptr_mask(void);
+static uint32_t nv3_pfifo_ramro_ptr_mask(void);
 static uint32_t nv3_pfifo_gray_to_binary(uint32_t gray);
 uint32_t        nv3_pfifo_cache1_slot(uint32_t ptr);
 uint32_t        nv3_pfifo_cache1_next(uint32_t ptr);
@@ -216,17 +217,8 @@ uint32_t nv3_pfifo_read(uint32_t address)
             else 
                 ret |= 1 << NV3_PFIFO_RUNOUT_STATUS_RANOUT; /* bad news */
 
-            /* TODO: the following code sucks (move to a functio?) */
-
-            uint32_t new_size_ramro = ((nv3->pfifo.ramro_config >> NV3_PFIFO_CONFIG_RAMRO_SIZE) & 0x01);
-
-            if (new_size_ramro == 0)
-                new_size_ramro = 0x200;
-            else if (new_size_ramro == 1)
-                new_size_ramro = 0x2000;
-            
             // full when advancing PUT by one 8-byte entry would hit GET
-            if (((nv3->pfifo.runout_put + 0x08) & (new_size_ramro - 0x08)) == nv3->pfifo.runout_get)
+            if (((nv3->pfifo.runout_put + 0x08) & nv3_pfifo_ramro_ptr_mask()) == nv3->pfifo.runout_get)
                 ret |= 1 << NV3_PFIFO_RUNOUT_STATUS_FULL; /* VERY BAD news */
 
             break;
@@ -455,10 +447,7 @@ void nv3_pfifo_write(uint32_t address, uint32_t val)
 
             uint32_t new_size_ramro = ((val >> NV3_PFIFO_CONFIG_RAMRO_SIZE) & 0x01);
 
-            if (new_size_ramro == 0)
-                nv3->pfifo.ramro_size = 0x1FF;
-            else if (new_size_ramro == 1)
-                nv3->pfifo.ramro_size = 0x1FFF;
+            nv3->pfifo.ramro_size = new_size_ramro ? 0x2000 : 0x200;
             
             nv_log("RAMRO Reconfiguration\n"
             "Base Address in RAMIN: %d\n"
@@ -544,10 +533,10 @@ void nv3_pfifo_write(uint32_t address, uint32_t val)
             nv3->pfifo.cache1_settings.get_address = val & (nv3_pfifo_cache1_ptr_mask() << 2);
             break;
         case NV3_PFIFO_RUNOUT_GET:
-            nv3->pfifo.runout_get = val & (nv3->pfifo.ramro_size - 0x08); // either 1F8 or 1FF8, because ramro entries are 8 bytes
+            nv3->pfifo.runout_get = val & nv3_pfifo_ramro_ptr_mask();
             break;
         case NV3_PFIFO_RUNOUT_PUT:
-            nv3->pfifo.runout_put = val & (nv3->pfifo.ramro_size - 0x08); // either 1F8 or 1FF8, because ramro entries are 8 bytes
+            nv3->pfifo.runout_put = val & nv3_pfifo_ramro_ptr_mask();
             break;
         /* Cache1 Context is handled below */
         case NV3_PFIFO_CACHE0_CTX:
@@ -672,6 +661,14 @@ uint32_t nv3_pfifo_cache1_gray2normal(uint32_t val)
 static uint32_t nv3_pfifo_cache1_ptr_mask(void)
 {
     return (nv3->nvbase.gpu_revision >= NV3_PCI_CFG_REVISION_C00) ? 0x7F : 0x1F;
+}
+
+/* RUNOUT_GET/PUT are byte offsets of 8-byte RAMRO entries: bits 8:3 (512 bytes) or 12:3 (8 KB).
+   The Win95 resman (V128RM.VXD) writes GET = PUT after running a RAMRO entry; masking bit 3
+   off there left RAMRO looking non-empty, and it re-ran the same entry forever. */
+static uint32_t nv3_pfifo_ramro_ptr_mask(void)
+{
+    return (((nv3->pfifo.ramro_config >> NV3_PFIFO_CONFIG_RAMRO_SIZE) & 0x01) ? 0x2000 : 0x200) - 0x08;
 }
 
 static uint32_t nv3_pfifo_gray_to_binary(uint32_t gray)
@@ -889,20 +886,7 @@ void nv3_pfifo_cache1_push(uint32_t addr, uint32_t param)
         nv3_ramin_write32(nv3->pfifo.ramro_location + nv3->pfifo.runout_put, new_address, nv3);
         nv3_ramin_write32(nv3->pfifo.ramro_location + nv3->pfifo.runout_put + 4, param, nv3);
 
-        nv3->pfifo.runout_put += 0x08;
-
-        uint32_t ramro_size = (nv3->pfifo.ramro_config >> NV3_PFIFO_CONFIG_RAMRO_SIZE) & 0x01;
-
-        /* Make sure it's valid */
-        switch (ramro_size)
-        {
-            case 0:
-                nv3->pfifo.runout_put &= (NV3_RAMIN_RAMRO_SIZE_0 - 0x07);
-                break; 
-            case 1:
-                nv3->pfifo.runout_put &= (NV3_RAMIN_RAMRO_SIZE_1 - 0x07);
-                break; 
-        }
+        nv3->pfifo.runout_put = (nv3->pfifo.runout_put + 0x08) & nv3_pfifo_ramro_ptr_mask();
 
         //Fire the interrupt. Also the very bad interrupt...
         if (nv3->pfifo.runout_get == nv3->pfifo.runout_put)
