@@ -250,7 +250,6 @@ extern const device_t pcnet_am79c973_device;
 extern const device_t pcnet_am79c973_onboard_device;
 
 /* Modem */
-extern const device_t modem_device;
 
 /* LPT */
 extern const device_t pe3_device;

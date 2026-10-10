@@ -1151,6 +1151,28 @@ load_network(void)
         nc = &net_cards_conf[c];
         sprintf(temp, "net_%02i_card", c + 1);
         p = ini_section_get_string(cat, temp, NULL);
+        if ((p != NULL) && !strcmp(p, "modem")) {
+            /* 86Box-Next: the network card that was a Hayes modem on a COM
+               port is gone; the COM port gets the Standard Hayes modem. */
+            char          sect[64];
+            char          key[32];
+            ini_section_t ports;
+            int           com;
+
+            snprintf(sect, sizeof(sect), "Standard Hayes-compliant Modem #%i", c + 1);
+            com = ini_section_get_int(ini_find_section(config, sect), "port", 0);
+            ini_section_delete_var(cat, temp);
+            p = NULL;
+            if ((com >= 0) && (com < (SERIAL_MAX - 1))) {
+                ports = ini_find_or_create_section(config, "Ports (COM & LPT)");
+                snprintf(key, sizeof(key), "serial%d_device", com + 1);
+                if (!strcmp(ini_section_get_string(ports, key, "none"), "none")) {
+                    ini_section_set_string(ports, key, "modem_hayes");
+                    snprintf(key, sizeof(key), "serial%d_enabled", com + 1);
+                    ini_section_set_int(ports, key, 1);
+                }
+            }
+        }
         if (p != NULL)
             nc->device_num = config_known(network_card_get_from_internal_name(p), STRING_UNSUPPORTED_NETWORK, p);
         else

@@ -697,8 +697,8 @@ net_slirp_init(const netcard_t *card, const uint8_t *mac_addr, UNUSED(void *priv
 #endif
 
     const char *nic_name = network_card_get_internal_name(net_cards_conf[net_card_current].device_num);
-    if (!strcmp(nic_name, "modem") || !strcmp(nic_name, "plip")) {
-        /* Send a gratuitous ARP here to make SLiRP work properly with SLIP/PLIP connections. */
+    if (!strcmp(nic_name, "plip")) {
+        /* Send a gratuitous ARP here to make SLiRP work properly with PLIP connections. */
         struct arphdr_local arphdr;
         /* ARP part. */
         arphdr.ar_hrd = htons(1);

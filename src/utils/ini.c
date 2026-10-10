@@ -23,6 +23,7 @@
  *          it on Windows XP, and possibly also Vista. Use the
  *          -DANSI_CFG for use on these systems.
  */
+#include <ctype.h>
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -624,7 +625,47 @@ trim_w(wchar_t *str)
     return str;
 }
 
-extern char* trim(char* str);
+/* 86Box-Next: "trim" itself lived in net_modem.c, which the fork removed;
+   qt_glsl_parser.cpp uses it too. */
+char *
+trim(char *str)
+{
+    size_t len    = 0;
+    char  *frontp = str;
+    char  *endp   = NULL;
+
+    if (str == NULL) {
+        return NULL;
+    }
+    if (str[0] == ' ') {
+        return str;
+    }
+
+    len  = strlen(str);
+    endp = str + len;
+
+    while (isspace((unsigned char) *frontp)) {
+        ++frontp;
+    }
+    if (endp != frontp) {
+        while (isspace((unsigned char) *(--endp)) && endp != frontp) { }
+    }
+
+    if (frontp != str && endp == frontp)
+        *str = ' ';
+    else if ((str + len - 1) != endp)
+        *(endp + 1) = ' ';
+
+    endp = str;
+    if (frontp != str) {
+        while (*frontp) {
+            *endp++ = *frontp++;
+        }
+        *endp = ' ';
+    }
+
+    return str;
+}
 
 void
 ini_strip_quotes(ini_t ini)
