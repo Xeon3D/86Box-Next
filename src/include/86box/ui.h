@@ -68,7 +68,6 @@ extern void  ui_sb_update_icon_state(int tag, int state);
 extern void  ui_sb_update_icon_wp(int tag, int state);
 extern void  ui_sb_set_text(char *str);
 extern void  ui_sb_bugui(char *str);
-extern void  ui_sb_mt32lcd(char *str);
 
 extern void     ui_update_force_interpreter(void);
 

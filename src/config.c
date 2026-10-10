@@ -971,7 +971,28 @@ load_sound(void)
     else
         sound_card_current[3] = 0;
 
+    /* 86Box-Next: the MUNT MT-32 / CM-32L devices are gone; the Sound Canvas
+       runs the same boards on their own firmware. */
     p = ini_section_get_string(cat, "midi_device", NULL);
+    if (p != NULL) {
+        static const char *munt_models[][2] = {
+            { "mt32",     "mt32old" },
+            { "mt32_new", "mt32new" },
+            { "cm32l",    "cm32l"   },
+            { "cm32ln",   "cm32ln"  }
+        };
+
+        for (size_t i = 0; i < (sizeof(munt_models) / sizeof(munt_models[0])); i++) {
+            if (!strcmp(p, munt_models[i][0])) {
+                ini_section_t sc = ini_find_or_create_section(config, "Roland Sound Canvas");
+
+                ini_section_set_string(sc, "model", munt_models[i][1]);
+                ini_section_set_string(cat, "midi_device", "soundcanvas");
+                p = ini_section_get_string(cat, "midi_device", NULL);
+                break;
+            }
+        }
+    }
     if (p != NULL)
         midi_output_device_current = config_known(midi_out_device_get_from_internal_name(p), STRING_UNSUPPORTED_MIDI_OUT, p);
     else

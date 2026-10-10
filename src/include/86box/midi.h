@@ -118,12 +118,6 @@ extern const device_t opl4_midi_device;
 #    ifdef USE_FLUIDSYNTH
 extern const device_t fluidsynth_device;
 #    endif /* USE_FLUIDSYNTH */
-#    ifdef USE_MUNT
-extern const device_t mt32_old_device;
-extern const device_t mt32_new_device;
-extern const device_t cm32l_device;
-extern const device_t cm32ln_device;
-#    endif /* USE_MUNT */
 #    ifdef USE_SOUNDCANVAS
 extern const device_t soundcanvas_device;
 #    endif /* USE_SOUNDCANVAS */

@@ -35,10 +35,6 @@ if(NOT DEFINED OPENAL OR OPENAL)
     list(APPEND VCPKG_MANIFEST_FEATURES "openal")
 endif()
 
-if(MUNT_EXTERNAL)
-    list(APPEND VCPKG_MANIFEST_FEATURES "munt")
-endif()
-
 project(86Box
     VERSION 7.0
     DESCRIPTION "Emulator of x86-based systems"
@@ -124,7 +120,6 @@ option(DYNAREC      "Dynamic recompiler"                                        
 option(OPENAL       "OpenAL"                                                     ON)
 option(RTMIDI       "RtMidi"                                                     ON)
 option(FLUIDSYNTH   "FluidSynth"                                                 ON)
-option(MUNT         "MUNT"                                                       ON)
 option(SOUNDCANVAS  "Roland Sound Canvas (88emu)"                                ON)
 option(VNC          "VNC renderer"                                               OFF)
 option(MINITRACE    "Enable Chrome tracing using the modified minitrace library" OFF)
