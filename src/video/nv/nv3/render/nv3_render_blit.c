@@ -120,16 +120,30 @@ nv3_render_blit_image(uint32_t color, nv3_grobj_t grobj)
 }
 
 /* Bitmap from CPU (class 0x12): 32 monochrome pixels per method, COLOR0 for
-   0 bits and COLOR1 for 1 bits (a colour with zero alpha draws nothing) */
+   0 bits and COLOR1 for 1 bits (a colour with zero alpha draws nothing).
+   The data comes as SIZE_IN images side by side, as many as it takes to
+   cover SIZE_OUT's width; once they are all sent, the next word starts
+   over at POINT. The Windows 3.x driver draws text a glyph at a time this
+   way: SIZE_IN 8x16 set once, then POINT and SIZE_OUT per glyph, a glyph
+   wider than 8 pixels sent as two 8-pixel strips. The bits left in the
+   word that ends the bitmap are padding. */
 void
 nv3_render_bitmap(uint32_t data, nv3_grobj_t grobj)
 {
-    nv3_bitmap_t *bmp   = &nv3->pgraph.bitmap;
-    uint32_t      total = (uint32_t) bmp->size_in.x * bmp->size_in.y;
-    uint32_t      mono  = nv3_render_expand_mono(data, grobj);
+    nv3_bitmap_t *bmp    = &nv3->pgraph.bitmap;
+    uint32_t      strip  = (uint32_t) bmp->size_in.x * bmp->size_in.y;
+    uint32_t      strips = 1;
+    uint32_t      mono   = nv3_render_expand_mono(data, grobj);
 
-    if (!bmp->size_in.x)
+    if (!strip)
         return;
+    if (bmp->size.x > bmp->size_in.x)
+        strips = (bmp->size.x + bmp->size_in.x - 1) / bmp->size_in.x;
+
+    uint32_t total = strip * strips;
+
+    if (nv3->pgraph.image_pixel_count >= total)
+        nv3->pgraph.image_pixel_count = 0;
 
     for (int i = 0; i < 32; i++) {
         uint32_t n = nv3->pgraph.image_pixel_count;
@@ -137,8 +151,8 @@ nv3_render_bitmap(uint32_t data, nv3_grobj_t grobj)
             return;
         nv3->pgraph.image_pixel_count++;
 
-        uint32_t rx = n % bmp->size_in.x;
-        uint32_t ry = n / bmp->size_in.x;
+        uint32_t rx = (n / strip) * bmp->size_in.x + (n % strip) % bmp->size_in.x;
+        uint32_t ry = (n % strip) / bmp->size_in.x;
         if (rx >= bmp->size.x || ry >= bmp->size.y)
             continue;
 

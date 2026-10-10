@@ -45,6 +45,8 @@ void nv3_class_012_method(uint32_t param, uint32_t method_id, nv3_ramin_context_
         case 0x0310:
             bmp->point.x = param & 0xFFFF;
             bmp->point.y = param >> 16;
+            /* a new point starts a new image */
+            nv3->pgraph.image_pixel_count = 0;
             break;
         case 0x0314:
             bmp->size.x = param & 0xFFFF;

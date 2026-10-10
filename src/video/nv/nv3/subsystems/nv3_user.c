@@ -36,10 +36,8 @@ uint32_t nv3_user_read(uint32_t address)
     //todo: print out the subchannel 
     uint16_t method_offset = (address & 0x1FFC);
 
-    uint8_t channel = (address - NV3_USER_START) / 0x10000;
-    uint8_t subchannel = ((address - NV3_USER_START)) / 0x2000 % NV3_DMA_SUBCHANNELS_PER_CHANNEL;
-
-    //nv_log_verbose_only("User Submission Area PIO Channel %d.%d method_offset=0x%04x\n", channel, subchannel, method_offset);
+    //nv_log_verbose_only("User Submission Area PIO Channel %d.%d method_offset=0x%04x\n",
+    //    (address - NV3_USER_START) / 0x10000, (address - NV3_USER_START) / 0x2000 % NV3_DMA_SUBCHANNELS_PER_CHANNEL, method_offset);
 
     // 0x10 is free CACHE1 object
     // TODO: THERE ARE OTHER STUFF!

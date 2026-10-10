@@ -50,8 +50,7 @@ uint8_t nv3_ramin_read8(uint32_t addr, void* priv)
 
     addr &= (NV3_LFB_MAPPING_SIZE - 1) & (nv3->nvbase.svga.vram_max - 1);
 
-    // why does this not work in one line
-    uint32_t ramin_addr = (addr ^ nv3->nvbase.svga.vram_max - 0x10);
+    uint32_t ramin_addr = (addr ^ (nv3->nvbase.svga.vram_max - 0x10));
     uint8_t val = nv3->nvbase.svga.vram[ramin_addr];
     
     nv_log_verbose_only("Read word from PRAMIN 0x%08x <- 0x%08x (raw address=0x%08x)\n", ramin_addr, val, addr);
@@ -66,9 +65,8 @@ uint16_t nv3_ramin_read16(uint32_t addr, void* priv)
 
     addr &= (NV3_LFB_MAPPING_SIZE - 1) & (nv3->nvbase.svga.vram_max - 1);
 
-    // why does this not work in one line
     uint16_t* vram_16bit = (uint16_t*)nv3->nvbase.svga.vram;
-    uint32_t ramin_addr = (addr ^ nv3->nvbase.svga.vram_max - 0x10) >> 1;
+    uint32_t ramin_addr = (addr ^ (nv3->nvbase.svga.vram_max - 0x10)) >> 1;
 
     uint16_t val = vram_16bit[ramin_addr];
 
@@ -84,9 +82,8 @@ uint32_t nv3_ramin_read32(uint32_t addr, void* priv)
 
     addr &= (NV3_LFB_MAPPING_SIZE - 1) & (nv3->nvbase.svga.vram_max - 1);
 
-    // why does this not work in one line
     uint32_t* vram_32bit = (uint32_t*)nv3->nvbase.svga.vram;
-    uint32_t ramin_addr = (addr ^ nv3->nvbase.svga.vram_max - 0x10) >> 2;
+    uint32_t ramin_addr = (addr ^ (nv3->nvbase.svga.vram_max - 0x10)) >> 2;
 
     uint32_t val = vram_32bit[ramin_addr];
     nv_log_verbose_only("Read dword from PRAMIN 0x%08x <- 0x%08x (raw address=0x%08x)\n", ramin_addr, val, addr);
@@ -103,7 +100,7 @@ void nv3_ramin_write8(uint32_t addr, uint8_t val, void* priv)
 
     addr &= (NV3_LFB_MAPPING_SIZE - 1) & (nv3->nvbase.svga.vram_max - 1);
 
-    uint32_t ramin_addr = (addr ^ nv3->nvbase.svga.vram_max - 0x10);
+    uint32_t ramin_addr = (addr ^ (nv3->nvbase.svga.vram_max - 0x10));
     nv3_watch(ramin_addr, val, 108);
     nv3->nvbase.svga.vram[ramin_addr] = val;
 
@@ -117,11 +114,10 @@ void nv3_ramin_write16(uint32_t addr, uint16_t val, void* priv)
 
     addr &= (NV3_LFB_MAPPING_SIZE - 1) & (nv3->nvbase.svga.vram_max - 1);
 
-    // why does this not work in one line
     svga_t* svga = &nv3->nvbase.svga;
     uint16_t* vram_16bit = (uint16_t*)svga->vram;
 
-    uint32_t ramin_addr = (addr ^ nv3->nvbase.svga.vram_max - 0x10) >> 1;
+    uint32_t ramin_addr = (addr ^ (nv3->nvbase.svga.vram_max - 0x10)) >> 1;
     nv3_watch(ramin_addr << 1, val, 116);
     vram_16bit[ramin_addr] = val;
 
@@ -135,11 +131,10 @@ void nv3_ramin_write32(uint32_t addr, uint32_t val, void* priv)
 
     addr &= (NV3_LFB_MAPPING_SIZE - 1) & (nv3->nvbase.svga.vram_max - 1);
 
-    // why does this not work in one line
     svga_t* svga = &nv3->nvbase.svga;
     uint32_t* vram_32bit = (uint32_t*)svga->vram;
 
-    uint32_t ramin_addr = (addr ^ nv3->nvbase.svga.vram_max - 0x10) >> 2;
+    uint32_t ramin_addr = (addr ^ (nv3->nvbase.svga.vram_max - 0x10)) >> 2;
     nv3_watch(ramin_addr << 2, val, 132);
     vram_32bit[ramin_addr] = val;
 
