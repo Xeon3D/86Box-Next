@@ -602,6 +602,14 @@ void nv3_recalc_timings(svga_t* svga)
        CR2D = bit 8 of htotal (0), display end (1), blank start (2), sync start (3). */
     svga->memaddr_latch += (svga->crtc[NV3_CRTC_REGISTER_RPC0] & 0x1F) << 16;
     svga->rowoffset     += (svga->crtc[NV3_CRTC_REGISTER_RPC0] & 0xE0) << 3;
+    /* PRM 1.4 (CR25, CR1A) and NV3RM's mode set (MODESET.C): CR25 bit 5 = row offset bit 11;
+       CR1A bit 7/6 = hsync/vsync disabled (DPMS standby/suspend/off), bit 0 = VGA address wrap
+       (the CRTC fetches from the first 256 KB only; set by the BIOS for the VGA modes) */
+    if (ext_vert & 0x20)
+        svga->rowoffset += 0x800;
+    svga->dpms              = !!(svga->crtc[NV3_CRTC_REGISTER_RPC1] & 0xC0);
+    svga->vram_display_mask = ((pixel_mode == NV3_CRTC_REGISTER_PIXELMODE_VGA) && (svga->crtc[NV3_CRTC_REGISTER_RPC1] & 0x01))
+                            ? (svga->vram_mask & 0x3FFFF) : svga->vram_mask;
 
     if (ext_vert & 0x01)
         svga->vtotal += 0x400;

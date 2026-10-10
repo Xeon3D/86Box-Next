@@ -35,12 +35,16 @@ void nv3_pramdac_init(void)
 {
     nv_log("Initialising PRAMDAC\n");
 
-    // defaults, these come from vbios in reality
-    // driver defaults are nonsensical(?), or the algorithm is wrong
-    // munged this to 100mhz for now
-    nv3->pramdac.memory_clock_m = nv3->pramdac.pixel_clock_m = 0x07;
-    nv3->pramdac.memory_clock_n = nv3->pramdac.pixel_clock_n = 0xc8;
-    nv3->pramdac.memory_clock_p = nv3->pramdac.pixel_clock_p = 0x0c;
+    /* Until the BIOS programs them: MPLL at the 100 MHz NVIDIA's BIOS POST script sets
+       (NVINIT.INC: 0x1A30B with the 13.5 MHz crystal, 0x1C40E with 14.318 MHz), VPLL near
+       the VGA 25.175 MHz. (The old default had P = 12: a 94 kHz memory clock.) */
+    if (nv3_pstraps_crystal_hz() > 14000000.0) {
+        nv3_pramdac_set_core_clock_register(0x1C40E);
+        nv3_pramdac_set_pixel_clock_register(0x0331D);   /* 14.318 x 51 / 29 = 25.18 MHz */
+    } else {
+        nv3_pramdac_set_core_clock_register(0x1A30B);    /* 13.5 x 163 / (11 x 2) = 100.0 MHz */
+        nv3_pramdac_set_pixel_clock_register(0x1290B);   /* 13.5 x 41 / (11 x 2) = 25.16 MHz */
+    }
 
     nv3_pramdac_set_pixel_clock();
     nv3_pramdac_set_core_clock();
@@ -290,8 +294,8 @@ void nv3_pramdac_write(uint32_t address, uint32_t value)
             nv3->pramdac.vequ_start = value;
             break;
         case NV3_PRAMDAC_VTOTAL:
-            //nv3->pramdac.vtotal = value;
-            nv3->nvbase.svga.vtotal = value;
+            /* the TV timing generator's (0x680700-0x68073C, used with CR28 TV mode), not the CRTC's */
+            nv3->pramdac.vtotal = value & 0x7FF;
             break;
         case NV3_PRAMDAC_HSYNC_WIDTH:
             nv3->pramdac.hsync_width = value;
