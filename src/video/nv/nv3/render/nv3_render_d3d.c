@@ -61,7 +61,7 @@ typedef struct nv3_d3d_vertex_s {
 } nv3_d3d_vertex_t;
 
 static struct {
-    uint32_t tex_offset, tex_format, filter, fog_color, config, alpha;
+    uint32_t tex_offset, tex_format, filter, fog_color;
 
     /* the vertex being sent */
     uint32_t         fog_tri;
@@ -77,7 +77,6 @@ static struct {
     /* class 0x18 */
     int32_t  zpoint_x, zpoint_y;
     uint32_t zpoint_color;
-    uint32_t zpoint_config, zpoint_alpha;
 } nv3_d3d;
 
 /* Comparison and write-enable functions (nvhw nv03_pgraph_d3d_cmp/wren) */
@@ -260,8 +259,8 @@ nv3_d3d_sample(nv3_grobj_t grobj, float u, float v, int level)
         offset += (1u << (max_log - l)) * (1u << (max_log - l)) * 2;
 
     int32_t size  = 1 << (max_log - level);
-    int     wu    = NV3_D3D_CONFIG_WRAP_U(nv3_d3d.config);
-    int     wv    = NV3_D3D_CONFIG_WRAP_V(nv3_d3d.config);
+    int     wu    = NV3_D3D_CONFIG_WRAP_U(nv3->pgraph.d3d_config);
+    int     wv    = NV3_D3D_CONFIG_WRAP_V(nv3->pgraph.d3d_config);
     float   fu    = u * size;
     float   fv    = v * size;
 
@@ -269,8 +268,8 @@ nv3_d3d_sample(nv3_grobj_t grobj, float u, float v, int level)
        FOH tri(u/du)); ZOH_MS, "the Microsoft offset", moves the origin to the texel centre. NV3DD32
        picks ZOH for point-sampled textures and, for FOH, takes 0.4375 texel off u and v itself
        (D3dTex.c fUVAdjust, FOHMODE = upper left) -- so no half-texel shift here. */
-    if (NV3_D3D_CONFIG_INTERP(nv3_d3d.config) != 2) {
-        if (NV3_D3D_CONFIG_INTERP(nv3_d3d.config) == 0) {
+    if (NV3_D3D_CONFIG_INTERP(nv3->pgraph.d3d_config) != 2) {
+        if (NV3_D3D_CONFIG_INTERP(nv3->pgraph.d3d_config) == 0) {
             fu += 0.5f;
             fv += 0.5f;
         }
@@ -473,7 +472,7 @@ nv3_d3d_triangle(nv3_grobj_t grobj, const nv3_d3d_vertex_t *a_in, const nv3_d3d_
     nv3_d3d_vertex_t        va = *a_in, vb = *b_in, vc = *c_in;
     const nv3_d3d_vertex_t *a = &va, *b = &vb, *c = &vc;
     const nv3_d3d_vertex_t *v[3] = { a, b, c };
-    uint32_t                config = nv3_d3d.config;
+    uint32_t                config = nv3->pgraph.d3d_config;
 
     if (NV3_D3D_CONFIG_WRAP_U(config) == 0)
         nv3_d3d_cylinder(&va.u, &vb.u, &vc.u);
@@ -627,7 +626,7 @@ nv3_d3d_triangle(nv3_grobj_t grobj, const nv3_d3d_vertex_t *a_in, const nv3_d3d_
             } else
                 zeta = nv3_d3d_zeta(a->z * wd[0] + b->z * wd[1] + c->z * wd[2]);
 
-            nv3_d3d_fragment(grobj, config, nv3_d3d.alpha, x, y, color, test_alpha, zeta);
+            nv3_d3d_fragment(grobj, config, nv3->pgraph.d3d_alpha, x, y, color, test_alpha, zeta);
         }
     }
 }
@@ -660,12 +659,13 @@ nv3_class_017_method(uint32_t param, uint32_t method_id, nv3_ramin_context_t con
         case 0x0310:
             nv3_d3d.fog_color = param;
             return;
+        /* CONTROL0/1 live in PGRAPH's CONTROL_OUT and ALPHACNTRL, shared with class 0x18 and
+           saved/restored by the resman on channel switches */
         case 0x0314:
-            nv3_d3d.config = param;
             nv3->pgraph.d3d_config = param;
             return;
         case 0x0318:
-            nv3_d3d.alpha = param;
+            nv3->pgraph.d3d_alpha = param & 0xFFF;
             return;
         default:
             break;
@@ -712,7 +712,7 @@ nv3_class_017_method(uint32_t param, uint32_t method_id, nv3_ramin_context_t con
                             nv3_d3d_trace_left--;
                             always_log("nv3: d3d tri (%.1f,%.1f z%.3f w%.3f c%08x) (%.1f,%.1f) (%.1f,%.1f) cfg %08x filt %08x alpha %03x tex %08x/%08x ctx %08x "
                                        "surf %06x/%d %06x/%d %06x/%d z %06x/%d fog %02x %02x %02x/%08x | frags %u clipped %u written %u%c",
-                                       a->x, a->y, a->z, a->rhw, a->color, b->x, b->y, c->x, c->y, nv3_d3d.config, nv3_d3d.filter, nv3_d3d.alpha,
+                                       a->x, a->y, a->z, a->rhw, a->color, b->x, b->y, c->x, c->y, nv3->pgraph.d3d_config, nv3_d3d.filter, nv3->pgraph.d3d_alpha,
                                        nv3_d3d.tex_offset, nv3_d3d.tex_format, grobj.grobj_0,
                                        nv3->pgraph.boffset[0], nv3->pgraph.bpitch[0], nv3->pgraph.boffset[1], nv3->pgraph.bpitch[1],
                                        nv3->pgraph.boffset[2], nv3->pgraph.bpitch[2], nv3->pgraph.boffset[3], nv3->pgraph.bpitch[3],
@@ -742,10 +742,10 @@ nv3_class_018_method(uint32_t param, uint32_t method_id, nv3_ramin_context_t con
 {
     switch (method_id) {
         case 0x0304:
-            nv3_d3d.zpoint_config = param;
+            nv3->pgraph.d3d_config = param;
             return;
         case 0x0308:
-            nv3_d3d.zpoint_alpha = param;
+            nv3->pgraph.d3d_alpha = param & 0xFFF;
             return;
         case 0x07FC:
             nv3_d3d.zpoint_x = (int16_t) (param & 0xFFFF);
@@ -763,7 +763,7 @@ nv3_class_018_method(uint32_t param, uint32_t method_id, nv3_ramin_context_t con
             nv3_color_expanded_t c   = nv3_render_expand_color(nv3_d3d.zpoint_color, grobj);
             uint32_t             rgb = (((uint32_t) c.a) << 24) | ((uint32_t) (c.r >> 2) << 16) | ((uint32_t) (c.g >> 2) << 8) | (c.b >> 2);
 
-            nv3_d3d_fragment(grobj, nv3_d3d.zpoint_config, nv3_d3d.zpoint_alpha, nv3_d3d.zpoint_x, nv3_d3d.zpoint_y, rgb, rgb >> 24, param >> 16);
+            nv3_d3d_fragment(grobj, nv3->pgraph.d3d_config, nv3->pgraph.d3d_alpha, nv3_d3d.zpoint_x, nv3_d3d.zpoint_y, rgb, rgb >> 24, param >> 16);
             nv3_d3d.zpoint_x++;
         }
         return;

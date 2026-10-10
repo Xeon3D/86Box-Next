@@ -177,6 +177,9 @@ uint32_t nv3_pgraph_read(uint32_t address)
         case NV3_PGRAPH_D3D_CONFIG:
             ret = nv3->pgraph.d3d_config;
             break;
+        case NV3_PGRAPH_ALPHACNTRL:
+            ret = nv3->pgraph.d3d_alpha;
+            break;
         // DMA
         case NV3_PGRAPH_DMA:
             ret = nv3->pgraph.dma_settings;
@@ -222,6 +225,14 @@ uint32_t nv3_pgraph_read(uint32_t address)
             break;
         case NV3_PGRAPH_TRAPPED_INSTANCE:
             ret = nv3->pgraph.trapped_instance;
+            break;
+        /* The rest -- among them what NV3RM's channel switch (GRCTXT.C grUnloadCurrentPatch /
+           grLoadPatch) saves and restores: SOURCE_COLOR, MONO_COLOR0, MISC24_0/1, PASSTHRU, the
+           D3D_* vertex registers, XY_LOGIC_MISC*, X/Y_MISC, ABS_ICLIP, CLIPX/Y, ABS_UCLIPA, the
+           ABS_X/Y and ZFOG RAMs, EXCEPTIONS -- read back what was written */
+        default:
+            if (address <= NV3_PGRAPH_REGISTER_END)
+                ret = nv3->pgraph.regs[(address & 0x1FFF) >> 2];
             break;
     }
 
@@ -380,6 +391,9 @@ void nv3_pgraph_write(uint32_t address, uint32_t value)
         case NV3_PGRAPH_D3D_CONFIG:
             nv3->pgraph.d3d_config = value;
             break;
+        case NV3_PGRAPH_ALPHACNTRL:
+            nv3->pgraph.d3d_alpha = value & 0xFFF;
+            break;
         // DMA
         case NV3_PGRAPH_DMA:
             nv3->pgraph.dma_settings = value & 0xFFFF;
@@ -432,6 +446,10 @@ void nv3_pgraph_write(uint32_t address, uint32_t value)
             break;
         case NV3_PGRAPH_TRAPPED_INSTANCE:
             nv3->pgraph.trapped_instance = value;
+            break;
+        default:
+            if (address <= NV3_PGRAPH_REGISTER_END)
+                nv3->pgraph.regs[(address & 0x1FFF) >> 2] = value;
             break;
     }
 

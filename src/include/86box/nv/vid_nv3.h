@@ -710,6 +710,7 @@ extern const device_config_t nv3t_config[];                             // Confi
 #define NV3_PGRAPH_SURF_PITCH(i)                        (0x400650 + ((i) << 2))
 #define NV3_PGRAPH_SURF_FORMAT                          0x4006A8    // BPIXEL: a nibble per surface
 #define NV3_PGRAPH_D3D_CONFIG                           0x400644
+#define NV3_PGRAPH_ALPHACNTRL                           0x4006C8    // D3D CONTROL1: alpha key 7:0, compare 11:8
 #define NV3_PGRAPH_BETA                                 0x400640    // Beta factor (30:23 fractional, 22:0 before fraction)
 #define NV3_PGRAPH_DMA                                  0x400680
 #define NV3_PGRAPH_INSTANCE                             0x400688    // CTX_SWITCH_I: instance whose DMA pointers are loaded
@@ -1252,7 +1253,9 @@ typedef struct nv3_pgraph_s
     uint32_t plane_mask;                                    // does nothing on NV3
     uint32_t chroma_key;                                    // A1R10G10B10, alpha = bit 30
     uint32_t beta_factor;                                   // 30:23
-    uint32_t d3d_config;                                    // D3D_CONFIG (0x400644)
+    uint32_t d3d_config;                                    // CONTROL_OUT (0x400644): the D3D CONTROL0 of classes 0x17/0x18
+    uint32_t d3d_alpha;                                     // ALPHACNTRL (0x4006C8): their CONTROL1 (alpha key and compare)
+    uint32_t regs[0x2000 >> 2];                             // the registers below with no state of their own: their storage
     uint32_t dma_settings;                                  // CTX_SWITCH_B (0x400680): DMA object instance (15:0), M2MF input
     uint32_t ctx_switch_c;                                  // CTX_SWITCH_C (0x40068C): M2MF output DMA instance (15:0), bit 16
     uint8_t rop;                                            // Current GDI Ternary Render Operation
