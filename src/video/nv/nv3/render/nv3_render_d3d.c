@@ -37,13 +37,15 @@
 
 uint32_t nv3_dma_map_pages(uint32_t inst, uint32_t offset, uint32_t *addr, uint32_t pages, uint32_t *lin);
 
-/* D3D_CONFIG bits */
-#define NV3_D3D_CONFIG_INTERP(c)      ((c) & 3)
-#define NV3_D3D_CONFIG_WRAP_U(c)      (((c) >> 4) & 3)
+/* D3D CONTROL0 (method 0x314) fields, per NVIDIA's NV_D3D0_CONTROL0_* layout (RIVA 128 Programming
+   Reference Manual, ch. 10, class NV_RENDER_D3D0_TRIANGLE_ZETA) */
+#define NV3_D3D_CONFIG_INTERP(c)      ((c) & 3)          /* 0 ZOH, 1 ZOH_MS, 2 FOH */
+#define NV3_D3D_CONFIG_WRAP_U(c)      (((c) >> 4) & 3)   /* 0 cylindrical, 1 wrap, 2 mirror, 3 clamp */
 #define NV3_D3D_CONFIG_WRAP_V(c)      (((c) >> 6) & 3)
-#define NV3_D3D_CONFIG_SRC_COLOR(c)   (((c) >> 8) & 0xF)
-#define NV3_D3D_CONFIG_CULL(c)        (((c) >> 12) & 7)
-#define NV3_D3D_CONFIG_ZPERSP(c)      (((c) >> 15) & 1)
+#define NV3_D3D_CONFIG_ARGB(c)        (((c) >> 8) & 1)   /* 0 X8R8G8B8 (vertex alpha ignored), 1 A8R8G8B8 */
+#define NV3_D3D_CONFIG_SRC_COLOR(c)   (((c) >> 10) & 3)  /* 0 normal, 1 colour inverse, 2 alpha inverse, 3 alpha one */
+#define NV3_D3D_CONFIG_CULL(c)        (((c) >> 12) & 3)  /* 1 none, 2/3 one winding each */
+#define NV3_D3D_CONFIG_ZLINEAR(c)     (((c) >> 15) & 1)  /* 0 screen z, 1 linear (1/m) */
 #define NV3_D3D_CONFIG_ZFUNC(c)       (((c) >> 16) & 0xF)
 #define NV3_D3D_CONFIG_ZWRITE(c)      (((c) >> 20) & 7)
 #define NV3_D3D_CONFIG_CWRITE(c)      (((c) >> 24) & 7)
@@ -176,7 +178,7 @@ nv3_d3d_swizzle(uint32_t s, uint32_t t)
     return idx;
 }
 
-/* A texel as A8R8G8B8 (alpha 0 for a colour-keyed texel) */
+/* A texel as A8R8G8B8 */
 static uint32_t
 nv3_d3d_texel(nv3_grobj_t grobj, uint32_t level_offset, uint32_t size, int32_t s, int32_t t)
 {
@@ -184,8 +186,6 @@ nv3_d3d_texel(nv3_grobj_t grobj, uint32_t level_offset, uint32_t size, int32_t s
     uint16_t p   = nv3_d3d_read_tex16(grobj, level_offset + nv3_d3d_swizzle((uint32_t) s, (uint32_t) t) * 2);
     uint32_t a, r, g, b;
 
-    if (((nv3_d3d.tex_format >> 16) & 0xF) && p == (nv3_d3d.tex_format & 0xFFFF))
-        return 0;
 
     switch (fmt) {
         case 0: /* A1R5G5B5 */
@@ -216,6 +216,10 @@ nv3_d3d_texel(nv3_grobj_t grobj, uint32_t level_offset, uint32_t size, int32_t s
             b = (b << 3) | (b >> 2);
             break;
     }
+    /* colour key: only the alpha goes to zero (PRM TextureFormat); filtering still mixes in the
+       key colour, which is why NV3DD32 rewrites keyed texels in its textures (colour key fringe fix) */
+    if (((nv3_d3d.tex_format >> 16) & 0xF) && p == (nv3_d3d.tex_format & 0xFFFF))
+        a = 0;
     return (a << 24) | (r << 16) | (g << 8) | b;
 }
 
@@ -233,7 +237,7 @@ nv3_d3d_wrap(int32_t c, int32_t size, int mode)
         }
         case 3: /* clamp */
             return (c < 0) ? 0 : ((c >= size) ? size - 1 : c);
-        default: /* wrap, cylindrical */
+        default: /* wrap; cylindrical (already moved across the seam per triangle) */
             return c & (size - 1);
     }
 }
@@ -261,16 +265,21 @@ nv3_d3d_sample(nv3_grobj_t grobj, float u, float v, int level)
     float   fu    = u * size;
     float   fv    = v * size;
 
+    /* The kernels are centred on each texel's origin, its upper-left corner (PRM: ZOH rect(u/du),
+       FOH tri(u/du)); ZOH_MS, "the Microsoft offset", moves the origin to the texel centre. NV3DD32
+       picks ZOH for point-sampled textures and, for FOH, takes 0.4375 texel off u and v itself
+       (D3dTex.c fUVAdjust, FOHMODE = upper left) -- so no half-texel shift here. */
     if (NV3_D3D_CONFIG_INTERP(nv3_d3d.config) != 2) {
-        /* zero order hold: nearest texel */
+        if (NV3_D3D_CONFIG_INTERP(nv3_d3d.config) == 0) {
+            fu += 0.5f;
+            fv += 0.5f;
+        }
         int32_t s = nv3_d3d_wrap((int32_t) floorf(fu), size, wu);
         int32_t t = nv3_d3d_wrap((int32_t) floorf(fv), size, wv);
         return nv3_d3d_texel(grobj, offset, size, s, t);
     }
 
-    /* first order hold: bilinear between the four nearest texel centres */
-    fu -= 0.5f;
-    fv -= 0.5f;
+    /* first order hold: bilinear between the four texels around (fu, fv) */
     int32_t  s0 = (int32_t) floorf(fu);
     int32_t  t0 = (int32_t) floorf(fv);
     uint32_t wx = (uint32_t) ((fu - s0) * 256.0f);
@@ -378,9 +387,14 @@ nv3_d3d_blend(uint32_t config, uint32_t src, uint16_t dst, int32_t x, int32_t y)
 uint32_t        nv3_d3d_trace_left;
 static uint32_t nv3_d3d_frag_in, nv3_d3d_frag_clip, nv3_d3d_frag_written;
 
-/* One fragment: alpha and Z tests, write enables, blend, write */
+/* One fragment: alpha and Z tests, write enables, blend, write. `test_alpha` is what the alpha
+   test (CONTROL1) compares: the combined texture x vertex alpha, before SRCCOLOR (PRM). The
+   "ALPHA" write conditions check the alpha that reaches the blender (in `color`) for non-zero at
+   the blender's 4-bit precision, and a failed alpha test writes neither colour nor zeta (envytools
+   hwtest pgraph_rop.cc, class 0x18). NV3DD32 relies on the former: it says colour keys only work
+   with a blend mode that does not force the alpha to 1 (D3drendr.c). */
 static void
-nv3_d3d_fragment(nv3_grobj_t grobj, uint32_t config, uint32_t alpha_ctl, int32_t x, int32_t y, uint32_t color, uint32_t zeta)
+nv3_d3d_fragment(nv3_grobj_t grobj, uint32_t config, uint32_t alpha_ctl, int32_t x, int32_t y, uint32_t color, uint32_t test_alpha, uint32_t zeta)
 {
     uint32_t ctx = grobj.grobj_0;
 
@@ -390,12 +404,15 @@ nv3_d3d_fragment(nv3_grobj_t grobj, uint32_t config, uint32_t alpha_ctl, int32_t
         return;
     }
 
+    if (!nv3_d3d_cmp((alpha_ctl >> 8) & 0xF, test_alpha, alpha_ctl & 0xFF))
+        return;
+
     bool     zeta_en  = (ctx >> NV3_PGRAPH_CTX_SWITCH_Z_WRITE) & 1;
     uint32_t zaddr    = (nv3->pgraph.boffset[3] + (uint32_t) y * nv3->pgraph.bpitch[3] + (uint32_t) x * 2) & nv3->nvbase.svga.vram_mask & ~1;
     uint32_t zcur     = zeta_en ? *(uint16_t *) &nv3->nvbase.svga.vram[zaddr] : 0;
     bool     ztest    = !zeta_en || nv3_d3d_cmp(NV3_D3D_CONFIG_ZFUNC(config), zeta, zcur);
-    bool     atest    = nv3_d3d_cmp((alpha_ctl >> 8) & 0xF, color >> 24, alpha_ctl & 0xFF);
-    if (nv3_d3d_wren(NV3_D3D_CONFIG_CWRITE(config), ztest, atest)) {
+    bool     anz      = (color >> 28) != 0;
+    if (nv3_d3d_wren(NV3_D3D_CONFIG_CWRITE(config), ztest, anz)) {
         for (uint32_t j = 0; j < 3; j++) { /* surface 3 is the zeta buffer */
             if (!((ctx >> (NV3_PGRAPH_CTX_SWITCH_DST_BUFFER0_ENABLED + j)) & 1))
                 continue;
@@ -406,7 +423,7 @@ nv3_d3d_fragment(nv3_grobj_t grobj, uint32_t config, uint32_t alpha_ctl, int32_t
             nv3->nvbase.svga.changedvram[addr >> 12] = changeframecount;
         }
     }
-    if (zeta_en && nv3_d3d_wren(NV3_D3D_CONFIG_ZWRITE(config), ztest, atest)) {
+    if (zeta_en && nv3_d3d_wren(NV3_D3D_CONFIG_ZWRITE(config), ztest, anz)) {
         *(uint16_t *) &nv3->nvbase.svga.vram[zaddr] = zeta;
         nv3->nvbase.svga.changedvram[zaddr >> 12]    = changeframecount;
     }
@@ -437,11 +454,31 @@ nv3_d3d_mul(uint32_t a, uint32_t b)
     return res;
 }
 
+/* Cylindrical wrapping (PRM, Control0 WRAP_U/V): when the triangle's coordinates cross the
+   texture seam, 1.0 is added to the vertices on the low side so it takes the short way round */
 static void
-nv3_d3d_triangle(nv3_grobj_t grobj, const nv3_d3d_vertex_t *a, const nv3_d3d_vertex_t *b, const nv3_d3d_vertex_t *c)
+nv3_d3d_cylinder(float *c0, float *c1, float *c2)
 {
+    float *c[3] = { c0, c1, c2 };
+
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            if (*c[j] - *c[i] > 0.5f)
+                *c[i] += 1.0f;
+}
+
+static void
+nv3_d3d_triangle(nv3_grobj_t grobj, const nv3_d3d_vertex_t *a_in, const nv3_d3d_vertex_t *b_in, const nv3_d3d_vertex_t *c_in)
+{
+    nv3_d3d_vertex_t        va = *a_in, vb = *b_in, vc = *c_in;
+    const nv3_d3d_vertex_t *a = &va, *b = &vb, *c = &vc;
     const nv3_d3d_vertex_t *v[3] = { a, b, c };
     uint32_t                config = nv3_d3d.config;
+
+    if (NV3_D3D_CONFIG_WRAP_U(config) == 0)
+        nv3_d3d_cylinder(&va.u, &vb.u, &vc.u);
+    if (NV3_D3D_CONFIG_WRAP_V(config) == 0)
+        nv3_d3d_cylinder(&va.v, &vb.v, &vc.v);
     float                   area   = (b->x - a->x) * (c->y - a->y) - (b->y - a->y) * (c->x - a->x);
     double                  darea  = ((double) b->x - a->x) * ((double) c->y - a->y) - ((double) b->y - a->y) * ((double) c->x - a->x);
     int                     cull   = NV3_D3D_CONFIG_CULL(config);
@@ -487,6 +524,7 @@ nv3_d3d_triangle(nv3_grobj_t grobj, const nv3_d3d_vertex_t *a, const nv3_d3d_ver
         nv3_d3d_dump_texture(grobj);
     }
     uint32_t src_color = NV3_D3D_CONFIG_SRC_COLOR(config);
+    bool     argb      = NV3_D3D_CONFIG_ARGB(config);
     uint32_t fog_rgb   = nv3_d3d.fog_color & 0xFFFFFF;
 
     for (int y = y0; y <= y1; y++) {
@@ -543,28 +581,28 @@ nv3_d3d_triangle(nv3_grobj_t grobj, const nv3_d3d_vertex_t *a, const nv3_d3d_ver
                         level = (int) (0.5f * log2f(rho));
                 }
                 uint32_t texel = nv3_d3d_sample(grobj, u, tv, level);
+                color = nv3_d3d_mul(texel, argb ? color : (color | 0xFF000000));
+            } else if (!argb)
+                color |= 0xFF000000;
 
-                switch (src_color) {
-                    case 2: /* colour inverse */
-                        texel ^= 0x00FFFFFF;
-                        break;
-                    case 3: /* alpha inverse */
-                        texel ^= 0xFF000000;
-                        break;
-                    case 6: /* alpha one */
-                        texel |= 0xFF000000;
-                        break;
-                    default:
-                        break;
-                }
-                uint32_t lit = nv3_d3d_mul(texel, color);
-                /* D3D_CONFIG bits 11:10 = 3 (what NV3DD32.DLL sends for MODULATE): the alpha is the
-                   texture's, not texture x vertex -- with blending off the driver still programs
-                   src x source alpha / dst x 0, so 3DMark 99's opaque geometry (vertex alpha 0,
-                   R5G6B5 textures) must come out with alpha 1 */
-                if (((config >> 10) & 3) == 3)
-                    lit = (lit & 0x00FFFFFF) | (texel & 0xFF000000);
-                color = lit;
+            /* the source: texture x vertex colour; the alpha is the texture's times the vertex's
+               only with COLOR_FORMAT A8R8G8B8 (X8R8G8B8 ignores the vertex alpha). That is what the
+               alpha test sees; SRCCOLOR then modifies what goes to the blender. With blending off
+               NV3DD32 programs ALPHA_ONE, src x srcalpha, dst x 0 (NV3DBLND.H NV_ALPHA1_SRCA_ZERO_SRCC):
+               3DMark 99's opaque geometry has vertex alpha 0. */
+            uint32_t test_alpha = color >> 24;
+            switch (src_color) {
+                case 1: /* colour inverse */
+                    color = ~color;
+                    break;
+                case 2: /* alpha inverse */
+                    color ^= 0xFF000000;
+                    break;
+                case 3: /* alpha one */
+                    color |= 0xFF000000;
+                    break;
+                default:
+                    break;
             }
 
             /* fog: the vertex fog byte is the amount of fog colour (0 = none). NV3DD32.DLL sends 0 with
@@ -581,14 +619,15 @@ nv3_d3d_triangle(nv3_grobj_t grobj, const nv3_d3d_vertex_t *a, const nv3_d3d_ver
             }
 
             uint32_t zeta;
-            if (NV3_D3D_CONFIG_ZPERSP(config)) {
-                /* w buffer: rhw, near = large, so stored complemented like z (unverified) */
+            if (NV3_D3D_CONFIG_ZLINEAR(config)) {
+                /* linear zeta: 1/m interpolated in world space (PRM: m = F/Z, so 1/m = Z/F, 0 at the
+                   eye, 1 at the far plane); m is linear in screen space. NV3DD32 never sets it. */
                 double q = a->rhw * wd[0] + b->rhw * wd[1] + c->rhw * wd[2];
-                zeta     = 0xFFFF - ((q >= 1.0) ? 0xFFFF : ((q > 0.0) ? (uint32_t) (q * 65535.0) : 0));
+                zeta     = (q > 0.0) ? nv3_d3d_zeta(1.0 / q) : 0xFFFF;
             } else
                 zeta = nv3_d3d_zeta(a->z * wd[0] + b->z * wd[1] + c->z * wd[2]);
 
-            nv3_d3d_fragment(grobj, config, nv3_d3d.alpha, x, y, color, zeta);
+            nv3_d3d_fragment(grobj, config, nv3_d3d.alpha, x, y, color, test_alpha, zeta);
         }
     }
 }
@@ -724,7 +763,7 @@ nv3_class_018_method(uint32_t param, uint32_t method_id, nv3_ramin_context_t con
             nv3_color_expanded_t c   = nv3_render_expand_color(nv3_d3d.zpoint_color, grobj);
             uint32_t             rgb = (((uint32_t) c.a) << 24) | ((uint32_t) (c.r >> 2) << 16) | ((uint32_t) (c.g >> 2) << 8) | (c.b >> 2);
 
-            nv3_d3d_fragment(grobj, nv3_d3d.zpoint_config, nv3_d3d.zpoint_alpha, nv3_d3d.zpoint_x, nv3_d3d.zpoint_y, rgb, param >> 16);
+            nv3_d3d_fragment(grobj, nv3_d3d.zpoint_config, nv3_d3d.zpoint_alpha, nv3_d3d.zpoint_x, nv3_d3d.zpoint_y, rgb, rgb >> 24, param >> 16);
             nv3_d3d.zpoint_x++;
         }
         return;
