@@ -62,6 +62,17 @@ extern "C" {
 
 #include "emu88_host.h"
 
+/* QMouseEvent::position() is Qt 6 only; Qt 5 has localPos(). */
+static QPointF
+mouse_pos(const QMouseEvent *event)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return event->position();
+#else
+    return event->localPos();
+#endif
+}
+
 static void
 init_resources()
 {
@@ -814,7 +825,7 @@ SoundCanvasPanel::mousePressEvent(QMouseEvent *event)
 {
     if (event->button() != Qt::LeftButton)
         return;
-    const QPointF pos = event->position();
+    const QPointF pos = mouse_pos(event);
     if (toWidget(volume_knob).adjusted(-4, -4, 4, 4).contains(pos))
         dragKnob = 1;
     else if (panel == EMU88H_PANEL_SC8850 && toWidget(value_knob).contains(pos))
@@ -836,9 +847,10 @@ SoundCanvasPanel::mouseMoveEvent(QMouseEvent *event)
 {
     if (!dragKnob)
         return;
-    const double scale = std::min(width() / PANEL_W, height() / PANEL_H);
-    const double dy    = (dragOrigin.y() - event->position().y()) + (event->position().x() - dragOrigin.x());
-    dragOrigin         = event->position();
+    const QPointF pos   = mouse_pos(event);
+    const double  scale = std::min(width() / PANEL_W, height() / PANEL_H);
+    const double  dy    = (dragOrigin.y() - pos.y()) + (pos.x() - dragOrigin.x());
+    dragOrigin          = pos;
     if (std::abs(dy) > 0.0)
         dragMoved = true;
     if (dragKnob == 1) {
@@ -886,7 +898,7 @@ SoundCanvasPanel::mouseReleaseEvent(QMouseEvent *event)
 void
 SoundCanvasPanel::mouseDoubleClickEvent(QMouseEvent *event)
 {
-    if (toWidget(volume_knob).adjusted(-4, -4, 4, 4).contains(event->position()))
+    if (toWidget(volume_knob).adjusted(-4, -4, 4, 4).contains(mouse_pos(event)))
         setGain(100, true);
     else
         mousePressEvent(event);
