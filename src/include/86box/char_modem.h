@@ -74,6 +74,10 @@ typedef struct char_modem_model_t {
     int         voice;      /* a voice modem: Rockwell's #CLS=8 set, V.253's
                                +FCLASS=8, and the handset beside it.  0: data
                                and fax only, voice commands are ERROR       */
+    const char *pnp_id;     /* 86Box-Next: the serial PnP ID ("SUP2311"), sent
+                               when the host enumerates the port and on ATI9;
+                               NULL: none                                   */
+    const char *pnp_name;   /* ...and the PnP string's product description  */
 } char_modem_model_t;
 
 /* A modem another device carries on a UART of its own (serial_init_detached())

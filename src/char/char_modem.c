@@ -173,6 +173,8 @@ enum { /* 86Box-Next: the voice audio's format on the serial port */
    it in and what the cabinet's own logs show (CONNECT 48000/LAPM, every night
    for a decade). */
 #define MODEM_SETTLE_MS  100  /* CONNECT drained to DCD and data mode     */
+#define MODEM_PNP_MIN_MS 50   /* 86Box-Next: DTR on, RTS off, at least this
+                                 long before RTS rises: a PnP enumeration */
 
 /* And the rest of a real call is not instant either: dial tone, the digits,
    the far end ringing, then a V.34 / V.90 handshake -- ten to twenty seconds
@@ -242,7 +244,9 @@ static const modem_model_t modem_models[] = {
             [4] = "Diamond Multimedia SupraExpress 56e PRO",
             [6] = "RCVDL56ACF/SP Rev 1.100"                  /* the chipset  */
         },
-        .voice      = 1
+        .voice      = 1,
+        /* 86Box-Next: Diamond's SUPIV92.INF, "SupraExpress 56e PRO" */
+        .pnp_id     = "SUP2311", .pnp_name = "SupraExpress 56e PRO"
     },
     [MODEM_MODEL_ELSA] = {
         .name       = "ELSA MicroLink 56k",
@@ -343,6 +347,9 @@ typedef struct {
     uint32_t deadline; /* plat_get_ticks() value the current wait ends at  */
     int      said_connect; /* ANSWERING: the CONNECT line has been queued  */
     int      dtr;
+    int      rts;          /* 86Box-Next: for the serial PnP enumeration   */
+    int      pnp_armed;    /* DTR rose with RTS off: RTS rising enumerates */
+    uint32_t pnp_dtr_at;   /* ...and when                                  */
 
     /* +++ escape detection. */
     uint32_t last_data;
@@ -2423,6 +2430,31 @@ modem_arg(const char **p)
     return val;
 }
 
+/* 86Box-Next: the serial PnP ID string (Microsoft's Plug and Play External
+   COM Device Specification 1.00), 7-bit form: '(', the revision (1.00, as
+   two 6-bit halves), the EISA ID, then '\'-separated serial number (none),
+   class, compatible IDs (none) and description, the checksum -- the sum of
+   every character from '(' to ')' but itself, as two hex digits -- and ')'.
+   Windows' serenum and Linux's probes check it. */
+static int
+modem_pnp_string(const modem_t *dev, char *buf, size_t size)
+{
+    unsigned sum = 0;
+    int      n;
+
+    if (dev->model->pnp_id == NULL)
+        return 0;
+    n = snprintf(buf, size, "(%c%c%s\\\\MODEM\\\\%s", 0x01, 0x24, dev->model->pnp_id,
+                 dev->model->pnp_name ? dev->model->pnp_name : "");
+    if ((n < 0) || ((size_t) (n + 4) > size))
+        return 0;
+    for (int i = 0; i < n; i++)
+        sum += (uint8_t) buf[i];
+    sum += ')';
+    n += snprintf(buf + n, size - n, "%02X)", sum & 0xff);
+    return n;
+}
+
 /* The `ATIn` responses.  Every one of these is load-bearing: this is how the
    cabinet decides which of thirty modems it is looking at, so a stray substring
    would make it report the wrong one.  See the model table above. */
@@ -2441,7 +2473,9 @@ modem_info(modem_t *dev, int n)
     else if (n == dev->model->country_at) {
         snprintf(buf, sizeof(buf), "Country Code: %02X", dev->country);
         modem_out_line(dev, buf);
-    } else if (dev->model->info[n] != NULL)
+    } else if ((n == 9) && (dev->model->info[9] == NULL) && modem_pnp_string(dev, buf, sizeof(buf)))
+        modem_out_line(dev, buf); /* 86Box-Next: Rockwell's ATI9 is the PnP ID */
+    else if (dev->model->info[n] != NULL)
         modem_out_line(dev, dev->model->info[n]);
 }
 
@@ -3316,8 +3350,32 @@ modem_control(uint32_t flags, void *priv)
 {
     modem_t  *dev  = (modem_t *) priv;
     const int dtr  = !!(flags & CHAR_COM_DTR);
+    const int rts  = !!(flags & CHAR_COM_RTS);
     const int drop = dev->dtr && !dtr;
 
+    /* 86Box-Next: serial PnP enumeration.  The host raises DTR with RTS off,
+       waits (200 ms the first time, for modems), then raises RTS and reads
+       for 240 ms.  A modem idle in command mode answers that with its PnP
+       ID, whatever the port's speed.  A DTE opening the port raises both
+       together, or within a moment of each other, and gets nothing. */
+    if (dtr && !dev->dtr) {
+        dev->pnp_armed  = !rts;
+        dev->pnp_dtr_at = plat_get_ticks();
+    } else if (!dtr)
+        dev->pnp_armed = 0;
+    if (dtr && rts && !dev->rts && dev->pnp_armed) {
+        char      buf[96];
+        const int n = modem_pnp_string(dev, buf, sizeof(buf));
+
+        dev->pnp_armed = 0;
+        if ((n > 0) && (dev->state == MODEM_ST_IDLE) && !dev->online &&
+            ((plat_get_ticks() - dev->pnp_dtr_at) >= MODEM_PNP_MIN_MS)) {
+            char_modem_log(dev->log, "serial PnP: sending %s\n", dev->model->pnp_id);
+            for (int i = 0; i < n; i++)
+                modem_out_byte(dev, (uint8_t) buf[i]);
+        }
+    }
+    dev->rts = rts;
     dev->dtr = dtr;
 
     if (!drop)

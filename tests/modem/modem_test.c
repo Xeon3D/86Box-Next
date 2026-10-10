@@ -957,6 +957,72 @@ run_transport(const device_t *device)
     fake_line = 0;
 }
 
+/* 86Box-Next: the serial PnP ID, as Windows' serenum asks for it (DTR on, RTS
+   off, 200 ms, RTS on) and as Linux's probe does (ATI9), checked the way
+   Linux's serial_probe parses it: '(' ... ')', the checksum the sum of every
+   other character, as two hex digits before the ')'. */
+static int
+pnp_valid(const char *s, const char *want_id)
+{
+    const char *open  = strchr(s, '(');
+    const char *close = open ? strchr(open, ')') : NULL;
+    unsigned    sum   = 0;
+    char        hex[3];
+
+    if ((open == NULL) || (close == NULL) || ((close - open) < 12))
+        return 0;
+    if ((open[1] != 0x01) || (open[2] != 0x24) || strncmp(open + 3, want_id, 7))
+        return 0;
+    for (const char *p = open; p <= close; p++)
+        if ((p < (close - 2)) || (p == close))
+            sum += (uint8_t) *p;
+    snprintf(hex, sizeof(hex), "%02X", sum & 0xff);
+    return !strncmp(close - 2, hex, 2);
+}
+
+static void
+run_serial_pnp(void)
+{
+    char buf[4096];
+
+    printf("\n== serial PnP ==\n");
+    dev = char_modem_supra_com_device.init(&char_modem_supra_com_device);
+
+    test_port.chardev.control(0, dev);
+    fake_ticks += 200;
+    test_port.chardev.control(CHAR_COM_DTR, dev);
+    fake_ticks += 200;
+    test_port.chardev.control(CHAR_COM_DTR | CHAR_COM_RTS, dev);
+    drain(buf, sizeof(buf));
+    expect("DTR, 200 ms, RTS: the PnP ID", pnp_valid(buf, "SUP2311") ? "valid" : buf, "valid");
+    expect("...with its class and name", buf, "\\\\MODEM\\\\SupraExpress 56e PRO");
+
+    test_port.chardev.control(0, dev);
+    fake_ticks += 200;
+    test_port.chardev.control(CHAR_COM_DTR | CHAR_COM_RTS, dev);
+    drain(buf, sizeof(buf));
+    expect("DTR and RTS together: nothing", buf[0] ? "something" : "nothing", "nothing");
+
+    test_port.chardev.control(0, dev);
+    test_port.chardev.control(CHAR_COM_DTR, dev);
+    test_port.chardev.control(CHAR_COM_DTR | CHAR_COM_RTS, dev);
+    drain(buf, sizeof(buf));
+    expect("DTR then RTS at once: nothing", buf[0] ? "something" : "nothing", "nothing");
+
+    expect("AT still answers", at("AT"), "OK");
+    expect("ATI9 is the PnP ID", pnp_valid(at("ATI9"), "SUP2311") ? "valid" : "invalid", "valid");
+    char_modem_supra_com_device.close(dev);
+
+    dev = char_modem_hayes_com_device.init(&char_modem_hayes_com_device);
+    test_port.chardev.control(0, dev);
+    test_port.chardev.control(CHAR_COM_DTR, dev);
+    fake_ticks += 200;
+    test_port.chardev.control(CHAR_COM_DTR | CHAR_COM_RTS, dev);
+    drain(buf, sizeof(buf));
+    expect("a modem without a PnP ID says nothing", buf[0] ? "something" : "nothing", "nothing");
+    char_modem_hayes_com_device.close(dev);
+}
+
 /* Two modems at once, each with its own call. */
 static void
 run_two(void)
@@ -1318,6 +1384,7 @@ main(void)
     run_carried();
     run_transport(&char_modem_supra_com_device);
     run_two();
+    run_serial_pnp();
     run_isp();
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "all checks passed",
