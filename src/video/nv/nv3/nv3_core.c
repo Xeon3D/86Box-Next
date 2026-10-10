@@ -401,8 +401,18 @@ uint8_t nv3_pci_read(int32_t func, int32_t addr, UNUSED(int32_t len), void* priv
             ret = nv3->nvbase.bar1_lfb_base >> 24; //8bit value
             break;
 
+        /* Expansion ROM BAR (NV_CONFIG_PCI_NV_12): ROM_DECODE bit 0, ROM_BASE 31:22 -- a 4 MB
+           window, so a BIOS sizing it with all ones reads back FFC00001. Bits 21:1 read 0: AMI
+           BIOSes size the ROM from this and found none when 0x31/0x32 read back FF (1 short,
+           3 long beeps); Award BIOSes don't size it */
         case NV3_PCI_CFG_ENABLE_VBIOS:
             ret = nv3->nvbase.pci_config.vbios_enabled;
+            break;
+        case NV3_PCI_CFG_ENABLE_VBIOS + 1:
+            ret = 0x00;
+            break;
+        case NV3_PCI_CFG_VBIOS_BASE_L:
+            ret = nv3->nvbase.pci_config.pci_regs[NV3_PCI_CFG_VBIOS_BASE_L] & 0xC0;
             break;
         
         case NV3_AGP_CAPABILITIES_POINTER:
@@ -536,7 +546,7 @@ void nv3_pci_write(int32_t func, int32_t addr, UNUSED(int32_t len), uint8_t val,
                     uint32_t old_addr = nv3->nvbase.vbios.mapping.base;
                     // 9bit register
                     uint32_t new_addr = nv3->nvbase.pci_config.pci_regs[NV3_PCI_CFG_VBIOS_BASE_H] << 24 |
-                    nv3->nvbase.pci_config.pci_regs[NV3_PCI_CFG_VBIOS_BASE_L] << 16;
+                    (nv3->nvbase.pci_config.pci_regs[NV3_PCI_CFG_VBIOS_BASE_L] & 0xC0) << 16;
 
                     // move it
                     mem_mapping_set_addr(&nv3->nvbase.vbios.mapping, new_addr, 0x8000);
