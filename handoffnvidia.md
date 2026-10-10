@@ -176,3 +176,13 @@ Open:
   not NV3; a cold start (stop/start the emulator) is fine.
 - 2026-10-09: Release 2.1 published (tag release-2.1 = 01c2ab5f9: the RIVA 128 ZX, the AGP entries, the
   Windows 2000 fixes); zip in RELEASES-ARCHIVE, staged in every rig.
+- 2026-10-10: worked through the archive handoff (C:/Users/xeon4/Documents/Claude/nvdocs/handoff/nv3-nv3t.md)
+  with NVIDIA's PRM and 3.12 source (notes file, "Confirmed from NVIDIA's own sources"). Commits:
+  D3D CONTROL0 per NV_D3D0_CONTROL0_* (colour format, SRCCOLOR, alpha test gating writes, ZOH
+  origins, FOH without the half-texel shift, cylindrical wrap, linear zeta); PVIDEO field widths,
+  BLUR, chroma, field offset, CSC offsets; PGRAPH registers read back (context switch) and
+  CONTROL0/1 held in CONTROL_OUT/ALPHACNTRL; strap overwrite (was testing bit 0), PBUS PCI alias
+  (VBE LFB address, AGP RQ), AGP cap NEXT_PTR fall-through, RMA VRAM read mask. Tested: Win98
+  nv3_pci dxdiag D3D7/8, 3DMark 99 Race + filtering, OVLTEST; nv3t_pci (STB BIOS) desktop + D3D.
+  Private rigs: F:/Claude/86Box-Next/work-nv3h (nv3_pci, CD = ovl.iso) and work-nv3z (nv3t_pci).
+  Not done: FILTER sizeadj, CRTC extras (CR1B/CR20/CR39...), PRAMDAC extras, AGP-board testing.
