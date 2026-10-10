@@ -31,7 +31,6 @@ MainWindow *main_window = nullptr;
 
 static QString sb_text;
 static QString sb_buguitext;
-static QString sb_mt32lcdtext;
 
 extern "C" {
 
@@ -246,15 +245,7 @@ ui_msgbox(int flags, char *message)
 void
 ui_sb_update_text()
 {
-    emit main_window->statusBarMessage(!sb_mt32lcdtext.isEmpty() ? sb_mt32lcdtext : sb_text.isEmpty() ? sb_buguitext
-                                                                                                      : sb_text);
-}
-
-void
-ui_sb_mt32lcd(char *str)
-{
-    sb_mt32lcdtext = QString(str);
-    ui_sb_update_text();
+    emit main_window->statusBarMessage(sb_text.isEmpty() ? sb_buguitext : sb_text);
 }
 
 void

@@ -29,6 +29,8 @@ private slots:
 private:
     Ui::PreferencesEmulator *ui;
 
+    class QCheckBox         *hideSoundCanvas = nullptr; /* 86Box-Next */
+
     SettingsCompleter       *scLanguage;
 
     friend class MainWindow;

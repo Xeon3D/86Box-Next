@@ -11,6 +11,7 @@ class Preferences;
 class PreferencesEmulator;
 class PreferencesInput;
 class PreferencesKeyBindings;
+class PreferencesStatusBar;
 
 class Preferences : public QDialog {
     Q_OBJECT
@@ -58,6 +59,7 @@ private:
     PreferencesEmulator        *emulator;
     PreferencesInput           *input;
     PreferencesKeyBindings     *key_bindings;
+    PreferencesStatusBar       *status_bar; /* 86Box-Next */
 };
 
 #endif // QT_PREFERENCES_HPP

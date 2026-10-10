@@ -72,6 +72,7 @@
 #include <86box/isarom.h>
 #include <86box/isartc.h>
 #include <86box/io_board.h>
+#include <86box/modem_card.h>
 #include <86box/usb_next.h>
 #include <86box/pcmcia.h>
 #include <86box/lpt.h>
@@ -205,6 +206,8 @@ int      confirm_reset                          = 1;              /* (G) enable 
 int      confirm_exit                           = 1;              /* (G) enable exit confirmation */
 int      confirm_save                           = 1;              /* (G) enable save confirmation */
 int      chd_precache_level                     = 0;              /* (G) CHD precache level */
+int      soundcanvas_hide_panel                 = 0;              /* (G) 86Box-Next: don't open the Sound Canvas panel when its board starts */
+char     status_icon_order[256]                 = { 0 };          /* (G) 86Box-Next: status bar icon groups, in order */
 int      enable_discord                         = 0;              /* (C) enable Discord integration */
 int      pit_mode                               = -1;             /* (C) force setting PIT mode */
 int      fm_driver                              = 0;              /* (C) select FM sound driver */
@@ -1893,6 +1896,9 @@ pc_reset_hard_init(void)
 
     /* 86Box-Next: the arcade I/O board, if one is fitted. */
     io_board_reset();
+
+    /* 86Box-Next: the internal modem card, if one is fitted. */
+    modem_card_reset();
 
     /* 86Box-Next: the USB controller card, if one is fitted. */
     usb_card_reset();

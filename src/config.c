@@ -57,6 +57,7 @@
 #include <86box/isarom.h>
 #include <86box/isartc.h>
 #include <86box/io_board.h>
+#include <86box/modem_card.h>
 #include <86box/usb_next.h>
 #include <86box/pcmcia.h>
 #include <86box/lpt.h>
@@ -159,6 +160,11 @@ load_global_emulator(void)
     vmm_disabled = ini_section_get_int(cat, "vmm_disabled", 1);
 
     chd_precache_level = ini_section_get_int(cat, "chd_precache_level", 0);
+
+    soundcanvas_hide_panel = ini_section_get_int(cat, "soundcanvas_hide_panel", 0);
+
+    p = ini_section_get_string(cat, "status_icon_order", "");
+    snprintf(status_icon_order, sizeof(status_icon_order), "%s", p);
 
     p = ini_section_get_string(cat, "vmm_path", NULL);
     if (p != NULL) {
@@ -966,7 +972,28 @@ load_sound(void)
     else
         sound_card_current[3] = 0;
 
+    /* 86Box-Next: the MUNT MT-32 / CM-32L devices are gone; the Sound Canvas
+       runs the same boards on their own firmware. */
     p = ini_section_get_string(cat, "midi_device", NULL);
+    if (p != NULL) {
+        static const char *munt_models[][2] = {
+            { "mt32",     "mt32old" },
+            { "mt32_new", "mt32new" },
+            { "cm32l",    "cm32l"   },
+            { "cm32ln",   "cm32ln"  }
+        };
+
+        for (size_t i = 0; i < (sizeof(munt_models) / sizeof(munt_models[0])); i++) {
+            if (!strcmp(p, munt_models[i][0])) {
+                ini_section_t sc = ini_find_or_create_section(config, "Roland Sound Canvas");
+
+                ini_section_set_string(sc, "model", munt_models[i][1]);
+                ini_section_set_string(cat, "midi_device", "soundcanvas");
+                p = ini_section_get_string(cat, "midi_device", NULL);
+                break;
+            }
+        }
+    }
     if (p != NULL)
         midi_output_device_current = config_known(midi_out_device_get_from_internal_name(p), STRING_UNSUPPORTED_MIDI_OUT, p);
     else
@@ -1125,6 +1152,28 @@ load_network(void)
         nc = &net_cards_conf[c];
         sprintf(temp, "net_%02i_card", c + 1);
         p = ini_section_get_string(cat, temp, NULL);
+        if ((p != NULL) && !strcmp(p, "modem")) {
+            /* 86Box-Next: the network card that was a Hayes modem on a COM
+               port is gone; the COM port gets the Standard Hayes modem. */
+            char          sect[64];
+            char          key[32];
+            ini_section_t ports;
+            int           com;
+
+            snprintf(sect, sizeof(sect), "Standard Hayes-compliant Modem #%i", c + 1);
+            com = ini_section_get_int(ini_find_section(config, sect), "port", 0);
+            ini_section_delete_var(cat, temp);
+            p = NULL;
+            if ((com >= 0) && (com < (SERIAL_MAX - 1))) {
+                ports = ini_find_or_create_section(config, "Ports (COM & LPT)");
+                snprintf(key, sizeof(key), "serial%d_device", com + 1);
+                if (!strcmp(ini_section_get_string(ports, key, "none"), "none")) {
+                    ini_section_set_string(ports, key, "modem_hayes");
+                    snprintf(key, sizeof(key), "serial%d_enabled", com + 1);
+                    ini_section_set_int(ports, key, 1);
+                }
+            }
+        }
         if (p != NULL)
             nc->device_num = config_known(network_card_get_from_internal_name(p), STRING_UNSUPPORTED_NETWORK, p);
         else
@@ -2729,6 +2778,10 @@ load_other_peripherals(void)
     p             = ini_section_get_string(cat, "io_board", "none");
     io_board_type = io_board_get_from_internal_name(p);
 
+    /* 86Box-Next: the internal modem card, one per machine. */
+    p               = ini_section_get_string(cat, "modem_card", "none");
+    modem_card_type = modem_card_get_from_internal_name(p);
+
     /* 86Box-Next: the USB controller card, and what is plugged into it. */
     p             = ini_section_get_string(cat, "usb_card", "none");
     usb_card_type = usb_card_get_from_internal_name(p);
@@ -2987,6 +3040,7 @@ config_load(void)
         mem_size          = 64;
         isartc_type       = 0;
         io_board_type     = IO_BOARD_NONE;
+        modem_card_type   = MODEM_CARD_NONE;
         usb_card_type     = 0;
         for (i = 0; i < ISAROM_MAX; i++)
             isarom_type[i] = 0;
@@ -3118,6 +3172,16 @@ save_global_emulator(void)
         ini_section_set_int(cat, "chd_precache_level", chd_precache_level);
     else
         ini_section_delete_var(cat, "chd_precache_level");
+
+    if (soundcanvas_hide_panel)
+        ini_section_set_int(cat, "soundcanvas_hide_panel", soundcanvas_hide_panel);
+    else
+        ini_section_delete_var(cat, "soundcanvas_hide_panel");
+
+    if (status_icon_order[0])
+        ini_section_set_string(cat, "status_icon_order", status_icon_order);
+    else
+        ini_section_delete_var(cat, "status_icon_order");
 
     if (vmm_disabled != 1)
         ini_section_set_int(cat, "vmm_disabled", vmm_disabled);
@@ -4232,6 +4296,12 @@ save_other_peripherals(void)
     else
         ini_section_set_string(cat, "io_board",
                                io_board_get_internal_name(io_board_type));
+
+    if (modem_card_type == MODEM_CARD_NONE)
+        ini_section_delete_var(cat, "modem_card");
+    else
+        ini_section_set_string(cat, "modem_card",
+                               modem_card_get_internal_name(modem_card_type));
 
     if (usb_card_type == 0)
         ini_section_delete_var(cat, "usb_card");

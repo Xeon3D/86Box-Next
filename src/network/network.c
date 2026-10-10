@@ -99,8 +99,6 @@ static const NETWORK_CARD net_cards[] = {
     { &wd8003e_device             },
     { &wd8003eb_device            },
     { &wd8013ebt_device           },
-    /* COM */
-    { &modem_device               },
     /* LPT */
     { &plip_device                },
     { &pe3_device                 },
@@ -510,8 +508,8 @@ network_attach(void *card_drv, uint8_t *mac, NETRXCB rx, NETSETLINKSTATE set_lin
     }
 
     const char *nic_name = network_card_get_internal_name(net_cards_conf[net_card_current].device_num);
-    if ((!strcmp(nic_name, "modem") || !strcmp(nic_name, "plip")) && (net_type >= NET_TYPE_PCAP)) {
-        /* Force SLiRP here. Modem and PLIP only operate on non-Ethernet frames. */
+    if (!strcmp(nic_name, "plip") && (net_type >= NET_TYPE_PCAP)) {
+        /* Force SLiRP here. PLIP only operates on non-Ethernet frames. */
         net_type = NET_TYPE_SLIRP;
     }
 

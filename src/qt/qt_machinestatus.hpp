@@ -79,6 +79,13 @@ public:
     static void iterateTape(const std::function<void(int i)> &cb);
     static void iterateNIC(const std::function<void(int i)> &cb);
 
+    /* 86Box-Next: the status bar's icon groups, in the order chosen in Preferences > Emulator
+       (status_icon_order: their keys, comma-separated; groups left out follow in the default
+       order). */
+    static QStringList iconGroups();
+    static QStringList iconOrder();
+    static QString     iconGroupName(const QString &key);
+
     QString getMessage();
     void    clearActivity();
     void    setSoundMenu(QMenu *menu);
@@ -87,6 +94,7 @@ public:
     void    setUsbManager(class UsbManager *usb);     /* 86Box-Next */
     void    setModemMenu(class ModemMenu *menu);      /* 86Box-Next */
     void    setSoundCanvas(class SoundCanvasPanelManager *manager); /* 86Box-Next */
+    void    adoptMenus(const MachineStatus &from);  /* 86Box-Next: a replacement takes the old one's */
 public slots:
     void refresh(QStatusBar *sbar);
     void message(const QString &msg);

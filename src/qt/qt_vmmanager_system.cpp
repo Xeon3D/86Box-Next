@@ -930,7 +930,7 @@ VMManagerSystem::setupVars()
     }
     display_table[VMManager::Display::Name::MidiOut] = midiOutDev;
 
-    // midi_device = mt32 (output)
+    // midi_device (output)
     // mpu401_standalone = 1
     // midi_in_device (input)
 

@@ -68,8 +68,14 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   activity trace (USB menu / BOX86NEXT_USB_TRACE=1) to usb_trace.txt.
   Tests: `tests/usb/` (plain C, no framework). Upstream's `src/usb.c` is the
   southbridge stub and is untouched.
-- COM port modems (`src/char/char_modem.c`, PeepeeBox's): Diamond SupraExpress 56e PRO and
-  ELSA MicroLink 56k, chosen as a COM port's device in Settings > Ports. AT engine with ATI
+- COM port modems (`src/char/char_modem.c`, PeepeeBox's): Diamond SupraExpress 56e PRO,
+  ELSA MicroLink 56k and a Standard Hayes-compatible 56k Modem (`modem_hayes`: generic ATI
+  answers matching none of funworld's rows, data/fax, no voice), chosen as a COM port's device
+  in Settings > Ports. Upstream's network-card modem (`net_modem.c`) is removed; a config with it
+  gets `modem_hayes` on that COM port (`load_network()`). Serial Plug and Play (a model's `pnp_id` /
+  `pnp_name`; only the Supra: `SUP2311` "SupraExpress 56e PRO", Diamond's SUPIV92.INF): DTR rising with
+  RTS off, then RTS rising at least 50 ms later (Windows' serenum sequence) queues the PnP string
+  (7-bit, rev 1.00, `\MODEM\<name>`, checksum); `ATI9` answers it too. AT engine with ATI
   answers that funworld's modem table resolves to exactly one part; the line is dead or dials
   a TCP host (any number), with a real call's timing and sounds (`modem_sound.c`, a pool of
   speakers whose sound handlers are registered once per sound reset: `sound_has_handler()`).
@@ -97,6 +103,14 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   menu: "Telephone network (isp-server)", "Set phone number...", the number in the status line.
   (Line 2 was the built-in ISP for a day; the exchange still reaches the ISP on any unknown
   number.)
+- Internal modem card (`src/char/modem_card.c`, Settings > Other peripherals > Internal modem, one
+  per machine, `modem_card` in `[Other peripherals]`, ISA, hard reset; the `io_board.c` pattern):
+  Diamond SupraExpress 56i Sp (`supra56i`) -- the modem engine (`char_modem_attach()`, label
+  "Internal (ISA)", voice) on a detached 16550 decoded on the ISA bus, IRQ via `picint_common()` as
+  `serial_do_irq()` does; config `mode` 0 = ISA PnP card `SUP2171` (built-in ROM: IRQ 3/4/5/7/9-12/15,
+  3E8h/2E8h/3F8h/2F8h or 100h-3F8h; inactive until configured), 1-4 = jumpered COM1-COM4 address
+  with `irq`. Windows 9x: Diamond's SUPIV90.INF / MDMISUPV.INF (`*SUP2171`); Linux 8250_pnp knows
+  the ID. (Diamond's "56i PRO" is a PCI HCF soft modem, not this.)
 - Voice calls (models with `voice`: Supra and ELSA, not the PC Cards' data/fax modems): Rockwell's `#` voice set, as Windows 9x's
   Unimodem/V uses it (the Diamond INF: `#CLS=8`, `#VLS=0`, `#VBS=4`, `#VSR=7200`, `#VTX`/`#VRX`,
   `#VTS`) and vgetty's Rockwell driver. `AT#CLS=8` then ATD/ATA give VCON (`#VRN=0`: once
@@ -211,7 +225,9 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   `phone_test.c`: two real modems with real sockets ringing each other through the real exchange)
   and `tests/network/` (`net_slirp.c` behind a stub card).
 - Roland Sound Canvas MIDI out (`src/sound/midi_soundcanvas.c`, replacing upstream's CLAP-plugin
-  device and `src/sound/clap/`; sync-upstream.yml keeps both ours (KEEP_OURS / KEEP_DELETED),
+  device and `src/sound/clap/`, and MUNT's MT-32/CM-32L devices (removed with `src/sound/munt`,
+  the MUNT options; `load_sound()` moves `mt32`/`mt32_new`/`cm32l`/`cm32ln` to `soundcanvas`
+  with the same board); sync-upstream.yml keeps both ours (KEEP_OURS / KEEP_DELETED),
   upstream changes to the SOUNDCANVAS blocks of the CMake files or midi.h can still conflict):
   88emu from gearmulator (GPLv3, so builds with it are GPLv3), vendored in
   `src/sound/emu88/gearmulator/` (`VENDORED.md`: commits, MinGW patches, how to update), built
@@ -223,7 +239,9 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   (`emu88_lcd.cpp`, ported from 88emuPlayer). ROMs: `roms/soundcanvas` under every ROM path,
   recursive, identified by MD5+size. One device ("Roland Sound Canvas", internal name
   `soundcanvas`; config `model` = key, legacy numeric values map to SC-55/SC-55mkII,
-  `factory_reset`, `fast_boot`, `output_gain` = the panel's knob, `panel_x/y/width`).
+  `factory_reset`, `fast_boot`, `output_gain` = the panel's knob, `panel_x/y/width`, `panel_scale` =
+  the size the panel opens at, 25-200 % of the 612 x 187 dp skin, 0 = last size; set in the
+  Configure dialog, applied to an open panel at once, no board restart).
   The board outlives a device close for 3 s (hard resets re-create devices): the next init with
   the same options takes it back, so the synth keeps running through a PC reset.
   Qt (`src/qt/qt_soundcanvas.cpp`): Settings > Sound > MIDI Out > Configure opens
@@ -231,7 +249,10 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   file's MD5, the known dumps' in its tooltip); `SoundCanvasPanelManager` polls
   `soundcanvas_get_board()` and opens `SoundCanvasPanel` once per new board (no focus steal);
   the status bar's first icon, a piano (`midi.ico`, while MIDI out is the Sound Canvas, lit while
-  its board runs, `MachineStatus::setSoundCanvas()`), shows it again:
+  its board runs, `MachineStatus::setSoundCanvas()`), opens `SoundCanvasPanelManager::menu()`:
+  Show front panel, "Show the panel when the synth starts" (= Preferences > Emulator's "Don't
+  show the Roland Sound Canvas panel...", global `soundcanvas_hide_panel`), Configure... (the
+  same dialog, applied paused with `midi_config_changed()` as Settings' soft path does). The panel:
   88emuPlayer's artwork without the playlist (`src/qt/soundcanvas/*.png`, 2x, generated from
   88emu's assets; SVG faces pre-rendered to PNG -- the dynamic Qt has no Svg module), its
   controls and key bindings in the skin's 612 x 187 dp. Tests: `tests/soundcanvas/`
@@ -250,6 +271,16 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   closes its OPL with `device_close_priv()`); MIDI out/in and the standalone MPU-401 on ISA
   (`mpu401_standalone_hotplug()`; MCA stays hard). Port enable/disable and the ECP DMA jumper
   stay hard (the UARTs/ports are made at the hard reset).
+- Status bar icon order (Preferences > Status bar, `qt_preferencesstatusbar.cpp`: a list of the icon groups --
+  Sound Canvas, cassette, cartridges, floppy, CD-ROM, removable disk, MO, tape, network, hard
+  disks, PC Card, USB, modems, sound, dynarec -- drag or Move up/down, Default order): saved as
+  `status_icon_order` (comma-separated keys from `MachineStatus::iconGroups()`, blank = default;
+  unknown keys dropped, missing groups follow in default order) with the other emulator
+  preferences; `MachineStatus::refresh()` collects each group's widgets, then adds them in
+  `iconOrder()`; `Preferences::save()` saves that page before the emulator page, whose save
+  rebuilds the status bar. A new icon group needs a key there and a name in `iconGroupName()`.
+  Preferences OK replaces `MachineStatus`; `adoptMenus()` carries the PC Card/USB/modem/Sound
+  Canvas hooks over (they were lost before).
 - Upstream's CI workflows and Dependabot are disabled/removed in this repo; only
   `sync-upstream.yml` runs.
 - Build number in the title bar / About box: `.build-number` (git-ignored, repo root)
@@ -271,7 +302,9 @@ an exit without a Windows shutdown: Enter for both -- `MS-DOS`, `OS2 Warp 3`, ..
 each with the newest build. `tools/stage-rig.sh` replaces only the exe (plus DLLs for a
 dynamic build) in every rig folder holding an `86box.cfg` or an exe; a rig's
 `roms/` is only created when missing (86Box ROM set + MegaPPBox's `roms/megatouch`) and
-only refreshed with `--update-roms` -- leave the ROMs alone unless strictly necessary. **Never delete
+only refreshed with `--update-roms`; ROMs in neither set (the NVIDIA RIVA 128/128 ZX BIOSes in
+`video/nvidia/nv3/`) live in `F:\Claude\86Box-Next\ROMS-EXTRA` (roms/ layout, outside the repo) and are
+added to every rig that lacks them -- leave the ROMs alone unless strictly necessary. **Never delete
 anything else in the rigs** -- `86box.cfg`, `nvr/` and disk images are theirs.
 Restage after every change; it refuses while 86Box-Next is running.
 
@@ -285,3 +318,7 @@ Tests live in their own tree, `build-tests` (`-DBUILD_TESTING=ON -DQT=OFF -DSTAT
 GTest from `mingw-w64-ucrt-x86_64-gtest`): build a suite's target there, then
 `ctest --test-dir build-tests -R <Name>` (ours: `Isp|Modem|Network`). Keep build-static's
 BUILD_TESTING off: some upstream tests (pcjx, fdc_read_id) do not build, which breaks a full build.
+Qt 5 compatibility check only: `build-qt5` (dynamic, `-DUSE_QT6=OFF -DSTATIC_BUILD=OFF`, MSYS2
+`qt5-base` + `qt5-tools`). Never release or stage it: releases are Qt 6 only, and
+`tools/make-release.sh` refuses a build-static that is not `USE_QT6=ON`. Qt 6-only APIs
+(e.g. `QMouseEvent::position()`) need a `QT_VERSION_CHECK(6, 0, 0)` fallback.

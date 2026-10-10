@@ -24,8 +24,10 @@
 
 class QAction;
 class QCheckBox;
+class QComboBox;
 class QLabel;
 class QListWidget;
+class QMenu;
 class QPushButton;
 class QTimer;
 class QTreeWidget;
@@ -52,6 +54,7 @@ private:
     QLabel      *folder;
     QCheckBox   *factoryReset;
     QCheckBox   *fastBoot;
+    QComboBox   *panelScale;
     QPushButton *okButton;
 };
 
@@ -63,6 +66,9 @@ public:
     ~SoundCanvasPanel() override;
 
     emu88h *board() const { return board_; }
+
+    /* The size the panel opens at: the chosen scale of the skin, or the last size. */
+    void resizeToDefault();
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -129,6 +135,7 @@ public:
     bool    present() const { return current != nullptr; }
     QString toolTip() const;
     void    showPanel();
+    QMenu  *menu(); /* the piano icon's: the panel, its start-up option, Configure */
 
 signals:
     void changed(); /* a board started or went, or its power state changed */
@@ -136,7 +143,10 @@ signals:
 private:
     void poll();
 
+    void configure();
+
     QWidget                   *mainWindow;
+    QMenu                     *menu_ = nullptr;
     QPointer<SoundCanvasPanel> panel;
     emu88h                    *current     = nullptr; /* retained */
     bool                       pendingOpen = false;

@@ -182,23 +182,6 @@ if(FLUIDSYNTH)
     target_sources(snd PRIVATE midi_fluidsynth.c)
 endif()
 
-if(MUNT)
-    target_compile_definitions(snd PRIVATE USE_MUNT)
-    target_sources(snd PRIVATE midi_mt32.c)
-
-    option(MUNT_EXTERNAL "Link against the system-provided MUNT library" OFF)
-    mark_as_advanced(MUNT_EXTERNAL)
-
-    if(MUNT_EXTERNAL)
-        find_package(PkgConfig REQUIRED)
-        pkg_check_modules(MT32EMU REQUIRED IMPORTED_TARGET mt32emu)
-        target_link_libraries(86Box PkgConfig::MT32EMU)
-    else()
-        add_subdirectory(munt)
-        target_link_libraries(86Box mt32emu)
-    endif()
-endif()
-
 add_subdirectory(ayumi)
 target_link_libraries(86Box ayumi)
 

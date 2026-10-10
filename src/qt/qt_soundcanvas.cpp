@@ -16,6 +16,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QCloseEvent>
 #include <QContextMenuEvent>
 #include <QDesktopServices>
@@ -56,9 +57,21 @@ extern "C" {
 #include <86box/mem.h>
 #include <86box/path.h>
 #include <86box/rom.h>
+#include <86box/plat.h>
 }
 
 #include "emu88_host.h"
+
+/* QMouseEvent::position() is Qt 6 only; Qt 5 has localPos(). */
+static QPointF
+mouse_pos(const QMouseEvent *event)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return event->position();
+#else
+    return event->localPos();
+#endif
+}
 
 static void
 init_resources()
@@ -186,6 +199,13 @@ SoundCanvasConfigDialog::SoundCanvasConfigDialog(QWidget *parent)
     options->addWidget(factoryReset);
     options->addWidget(fastBoot);
     options->addStretch(1);
+    options->addWidget(new QLabel(tr("Panel window size:")));
+    panelScale = new QComboBox;
+    panelScale->setToolTip(tr("The size the front panel window opens at, as a scale of the unit's panel."));
+    panelScale->addItem(tr("Last size used"), 0);
+    for (int pct = 25; pct <= 200; pct += 25)
+        panelScale->addItem(tr("%1%").arg(pct), pct);
+    options->addWidget(panelScale);
     layout->addLayout(options);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
@@ -212,6 +232,7 @@ SoundCanvasConfigDialog::SoundCanvasConfigDialog(QWidget *parent)
 
     factoryReset->setChecked(config_int("factory_reset", 1));
     fastBoot->setChecked(config_int("fast_boot", 0));
+    panelScale->setCurrentIndex(std::max(panelScale->findData(config_int("panel_scale", 0)), 0));
 
     QApplication::setOverrideCursor(Qt::WaitCursor);
     soundcanvas_set_rom_dirs();
@@ -334,6 +355,18 @@ SoundCanvasConfigDialog::configure(QWidget *parent)
     if (config_int("fast_boot", 0) != (dialog.fastBoot->isChecked() ? 1 : 0)) {
         config_put_int("fast_boot", dialog.fastBoot->isChecked() ? 1 : 0);
         changed = true;
+    }
+
+    /* Only the panel's look: no restart of the board, applied to an open panel at once. */
+    const int scale = dialog.panelScale->currentData().toInt();
+    if (config_int("panel_scale", 0) != scale) {
+        config_put_int("panel_scale", scale);
+        config_save();
+        if (scale) {
+            for (QWidget *w : QApplication::topLevelWidgets())
+                if (auto *panel = qobject_cast<SoundCanvasPanel *>(w))
+                    panel->resizeToDefault();
+        }
     }
     return changed;
 }
@@ -499,9 +532,8 @@ SoundCanvasPanel::SoundCanvasPanel(emu88h *board, QWidget *parent)
             lcd[s] = QImage(w, h, QImage::Format_ARGB32);
     }
 
-    const int width = config_int("panel_width", 1040);
-    resize(width, qRound(width * PANEL_H / PANEL_W));
-    setMinimumSize(306, 94);
+    resizeToDefault();
+    setMinimumSize(qRound(PANEL_W / 4), qRound(PANEL_H / 4));
     const int x = config_int("panel_x", INT_MIN), y = config_int("panel_y", INT_MIN);
     if (x != INT_MIN && y != INT_MIN && QGuiApplication::screenAt(QPoint(x + 40, y + 20)))
         move(x, y);
@@ -793,7 +825,7 @@ SoundCanvasPanel::mousePressEvent(QMouseEvent *event)
 {
     if (event->button() != Qt::LeftButton)
         return;
-    const QPointF pos = event->position();
+    const QPointF pos = mouse_pos(event);
     if (toWidget(volume_knob).adjusted(-4, -4, 4, 4).contains(pos))
         dragKnob = 1;
     else if (panel == EMU88H_PANEL_SC8850 && toWidget(value_knob).contains(pos))
@@ -815,9 +847,10 @@ SoundCanvasPanel::mouseMoveEvent(QMouseEvent *event)
 {
     if (!dragKnob)
         return;
-    const double scale = std::min(width() / PANEL_W, height() / PANEL_H);
-    const double dy    = (dragOrigin.y() - event->position().y()) + (event->position().x() - dragOrigin.x());
-    dragOrigin         = event->position();
+    const QPointF pos   = mouse_pos(event);
+    const double  scale = std::min(width() / PANEL_W, height() / PANEL_H);
+    const double  dy    = (dragOrigin.y() - pos.y()) + (pos.x() - dragOrigin.x());
+    dragOrigin          = pos;
     if (std::abs(dy) > 0.0)
         dragMoved = true;
     if (dragKnob == 1) {
@@ -865,7 +898,7 @@ SoundCanvasPanel::mouseReleaseEvent(QMouseEvent *event)
 void
 SoundCanvasPanel::mouseDoubleClickEvent(QMouseEvent *event)
 {
-    if (toWidget(volume_knob).adjusted(-4, -4, 4, 4).contains(event->position()))
+    if (toWidget(volume_knob).adjusted(-4, -4, 4, 4).contains(mouse_pos(event)))
         setGain(100, true);
     else
         mousePressEvent(event);
@@ -997,7 +1030,11 @@ SoundCanvasPanel::contextMenuEvent(QContextMenuEvent *event)
         poll();
     });
     menu.addSeparator();
-    menu.addAction(tr("Default &size"), this, [this] { resize(1040, qRound(1040 * PANEL_H / PANEL_W)); });
+    menu.addAction(tr("Default &size"), this, [this] {
+        const int scale = config_int("panel_scale", 0);
+        const int width = scale ? qRound(PANEL_W * scale / 100.0) : 1040;
+        resize(width, qRound(width * PANEL_H / PANEL_W));
+    });
     QString keys;
     if (panel == EMU88H_PANEL_SC8850)
         keys = tr("Q power; E EDIT, D DRUM, X EFFECTS, Left/Right PART, V VARIATION, N INSTRUMENT, I INST MAP, "
@@ -1012,6 +1049,15 @@ SoundCanvasPanel::contextMenuEvent(QContextMenuEvent *event)
     auto *help = menu.addAction(tr("Keyboard shortcuts..."));
     connect(help, &QAction::triggered, this, [this, keys] { QToolTip::showText(QCursor::pos(), keys, this); });
     menu.exec(event->globalPos());
+}
+
+void
+SoundCanvasPanel::resizeToDefault()
+{
+    /* 100% is the skin's 612 x 187 dp, as 88emuPlayer draws it. */
+    const int scale = config_int("panel_scale", 0);
+    const int width = scale ? qRound(PANEL_W * scale / 100.0) : config_int("panel_width", 1040);
+    resize(width, qRound(width * PANEL_H / PANEL_W));
 }
 
 void
@@ -1065,6 +1111,43 @@ SoundCanvasPanelManager::showPanel()
     }
 }
 
+QMenu *
+SoundCanvasPanelManager::menu()
+{
+    if (!menu_) {
+        menu_       = new QMenu(mainWindow);
+        auto *show  = menu_->addAction(tr("Show &front panel"), this, &SoundCanvasPanelManager::showPanel);
+        auto *start = menu_->addAction(tr("Show the panel when the synth &starts"));
+        start->setCheckable(true);
+        connect(start, &QAction::toggled, this, [](bool on) {
+            soundcanvas_hide_panel = on ? 0 : 1;
+            config_save_global();
+        });
+        menu_->addSeparator();
+        menu_->addAction(tr("&Configure..."), this, &SoundCanvasPanelManager::configure);
+        connect(menu_, &QMenu::aboutToShow, this, [this, show, start] {
+            show->setEnabled(current != nullptr);
+            const QSignalBlocker block(start);
+            start->setChecked(!soundcanvas_hide_panel);
+        });
+    }
+    return menu_;
+}
+
+/* The same dialog as Settings > Sound > MIDI Out > Configure, applied as Settings applies a MIDI
+   out change: no reset, the device made again (the board survives it when its options stay). */
+void
+SoundCanvasPanelManager::configure()
+{
+    const int wasPaused = dopause;
+    plat_pause(1);
+    if (SoundCanvasConfigDialog::configure(mainWindow)) {
+        midi_config_changed();
+        config_save();
+    }
+    plat_pause(wasPaused);
+}
+
 QString
 SoundCanvasPanelManager::toolTip() const
 {
@@ -1084,7 +1167,7 @@ SoundCanvasPanelManager::toolTip() const
         default:
             break;
     }
-    return tr("Roland Sound Canvas: %1%2\nClick to show its front panel").arg(QString::fromUtf8(emu88h_model_name(emu88h_model(current))), state);
+    return tr("Roland Sound Canvas: %1%2\nClick for its front panel and options").arg(QString::fromUtf8(emu88h_model_name(emu88h_model(current))), state);
 }
 
 void
@@ -1112,6 +1195,11 @@ SoundCanvasPanelManager::poll()
     /* A board that just started shows its panel once; closing it is the user's call then. */
     if (pendingOpen && !panel) {
         pendingOpen = false;
+        if (soundcanvas_hide_panel) {
+            if (board)
+                emu88h_release(board);
+            return;
+        }
         emu88h_retain(current);
         panel = new SoundCanvasPanel(current, mainWindow);
         panel->show();

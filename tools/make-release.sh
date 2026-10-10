@@ -25,6 +25,9 @@ OUT=../Latest
 UCRT=/c/msys64/ucrt64
 
 [ -e "$ZIP" ] && { echo "$ZIP already exists" >&2; exit 1; }
+# Releases are Qt 6 only; build-qt5 exists just to keep the sources building with Qt 5.
+grep -q "^USE_QT6:BOOL=ON$" build-static/CMakeCache.txt 2>/dev/null ||
+    { echo "build-static is not a Qt 6 build (USE_QT6=ON): releases are Qt 6 only" >&2; exit 1; }
 [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "uncommitted changes: commit first" >&2; exit 1; }
 if tasklist //FI "IMAGENAME eq 86Box-Next.exe" 2>/dev/null | grep -qi "86Box-Next.exe" ||
    tasklist //FI "IMAGENAME eq isp-server.exe" 2>/dev/null | grep -qi "isp-server.exe"; then

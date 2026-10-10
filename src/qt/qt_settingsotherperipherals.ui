@@ -131,6 +131,37 @@
            </widget>
           </item>
           <item row="7">
+           <layout class="QHBoxLayout" name="horizontalLayoutModemCard">
+            <item>
+             <widget class="QLabel" name="labelModemCard">
+              <property name="toolTip">
+               <string>An internal modem on an ISA card: a COM port of its own, Plug and Play or jumpered to a COM port's address.</string>
+              </property>
+              <property name="text">
+               <string>Internal modem:</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QComboBox" name="comboBoxModemCard">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="MinimumExpanding" vsizetype="Fixed">
+                <horstretch>0</horstretch>
+                <verstretch>0</verstretch>
+               </sizepolicy>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="pushButtonConfigureModemCard">
+              <property name="text">
+               <string>Configure</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item row="8">
            <layout class="QHBoxLayout" name="horizontalLayoutUSB">
             <item>
              <widget class="QLabel" name="labelUSB">
@@ -151,7 +182,7 @@
             </item>
            </layout>
           </item>
-          <item row="8">
+          <item row="9">
            <widget class="QLabel" name="labelUSBHint">
             <property name="wordWrap">
              <bool>true</bool>
@@ -618,6 +649,8 @@
   <tabstop>pushButtonConfigureRTC</tabstop>
   <tabstop>comboBoxIOBoard</tabstop>
   <tabstop>pushButtonConfigureIOBoard</tabstop>
+  <tabstop>comboBoxModemCard</tabstop>
+  <tabstop>pushButtonConfigureModemCard</tabstop>
   <tabstop>checkBoxISABugger</tabstop>
   <tabstop>checkBoxPOSTCard</tabstop>
   <tabstop>checkBoxUnitTester</tabstop>

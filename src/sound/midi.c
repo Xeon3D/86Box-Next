@@ -82,12 +82,6 @@ static const MIDI_OUT_DEVICE midi_out_devices[] = {
 #ifdef USE_FLUIDSYNTH
     { &fluidsynth_device    },
 #endif /* USE_FLUIDSYNTH */
-#ifdef USE_MUNT
-    { &mt32_old_device      },
-    { &mt32_new_device      },
-    { &cm32l_device         },
-    { &cm32ln_device        },
-#endif /*USE_MUNT */
 #ifdef USE_OPL4ML
     { &opl4_midi_device     },
 #endif /* USE_OPL4ML */

@@ -123,7 +123,8 @@ ModemMenu::any()
         if (!com_ports[i].enabled)
             continue;
         const device_t *d = char_get_device(com_ports[i].device);
-        if ((d == &char_modem_supra_com_device) || (d == &char_modem_elsa_com_device))
+        if ((d == &char_modem_supra_com_device) || (d == &char_modem_elsa_com_device)
+            || (d == &char_modem_hayes_com_device))
             return true;
     }
     return carried();

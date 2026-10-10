@@ -176,6 +176,11 @@ Open:
   not NV3; a cold start (stop/start the emulator) is fine.
 - 2026-10-09: Release 2.1 published (tag release-2.1 = 01c2ab5f9: the RIVA 128 ZX, the AGP entries, the
   Windows 2000 fixes); zip in RELEASES-ARCHIVE, staged in every rig.
+- 2026-10-09: the Windows 2000 restart hang is fixed. It was not the KBC: Windows pulses KBC FE, the
+  BIOS then resets through CF9=06, and the old dynarec kept blocks compiled from the BIOS ROM after the
+  430VX PAM switched F000 to shadow RAM (upstream d74dd7728 + 88c268145 cherry-picked: 2cb81d96a,
+  9eaae7013). Then the NV3 had no .reset and kept PMC interrupts asserted into the next boot: nv3_reset()
+  (8fa104f58). Restart verified twice with nv3_pci, once with cl_gd5446_pci. Released as 2.1.1.
 - 2026-10-10: worked through the archive handoff (C:/Users/xeon4/Documents/Claude/nvdocs/handoff/nv3-nv3t.md)
   with NVIDIA's PRM and 3.12 source (notes file, "Confirmed from NVIDIA's own sources"). Commits:
   D3D CONTROL0 per NV_D3D0_CONTROL0_* (colour format, SRCCOLOR, alpha test gating writes, ZOH
