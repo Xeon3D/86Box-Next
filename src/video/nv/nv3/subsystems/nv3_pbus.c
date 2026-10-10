@@ -32,7 +32,9 @@
 // This basically works like a shifter, you write one byte at a time from [0x3d0...0x3d3] and it shifts it in to build a 32-bit MMIO address...
 // Putting this in pbus because imo it makes the most sense (related to memory access/memory interface)
 
-/* PBUS 0x1800-0x18FF aliases the PCI configuration space (NV_PBUS_PCI_NV_*). Through it the
+/* PBUS 0x1800-0x18FF aliases the PCI configuration space (NV_PBUS_PCI_NV_*), a dword per
+   access (the arbiter used to hand over one byte: the VBE code of every NV3 BIOS reads BAR1
+   there for the mode's PhysBasePtr, and got 0). Through it the
    resman also raises the AGP request depth, read-only in config space: NV3RM's MCINIT.C bumps
    NV_PBUS_PCI_NV_18 AGP_STATUS_RQ while it is <= 3 */
 #define NV3_PBUS_PCI_ALIAS 0x1800
@@ -112,6 +114,11 @@ uint8_t nv3_pbus_rma_read(uint16_t addr)
             break;       
         case 0x03:
             ret = NV3_RMA_SIGNATURE_LSB;
+            break;
+        /* CR38 = 3: the address reads back too -- the BIOS saves it (and the data) around
+           each of its own accesses and restores them (its RMA helpers at C000:34D5/34FC) */
+        case 0x04 ... 0x07:
+            ret = (nv3->pbus.rma.addr >> ((addr & 0x03) << 3)) & 0xFF;
             break;
         case 0x08 ... 0x0B:
             // reads must be dword aligned

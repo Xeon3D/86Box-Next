@@ -86,8 +86,6 @@ uint32_t nv3_mmio_arbitrate_read(uint32_t addr)
     // gigantic set of if statements to send the write to the right subsystem
     if (addr >= NV3_PMC_START && addr <= NV3_PMC_END)
         ret = nv3_pmc_read(addr);
-    else if (addr >= NV3_PBUS_PCI_START && addr <= NV3_PBUS_PCI_END)
-        ret = nv3_pci_read(0x00, addr & 0xFF, 1, NULL);
     else if (addr >= NV3_PBUS_START && addr <= NV3_PBUS_END)
         ret = nv3_pbus_read(addr);
     else if (addr >= NV3_PFIFO_START && addr <= NV3_PFIFO_END)
@@ -167,8 +165,6 @@ void nv3_mmio_arbitrate_write(uint32_t addr, uint32_t val)
     // gigantic set of if statements to send the write to the right subsystem
     if (addr >= NV3_PMC_START && addr <= NV3_PMC_END)
         nv3_pmc_write(addr, val);
-    else if (addr >= NV3_PBUS_PCI_START && addr <= NV3_PBUS_PCI_END)              // PCI mirrored at 0x1800 in MMIO
-        nv3_pci_write(0x00, addr & 0xFF, 1, val, NULL); // priv does not matter
     else if (addr >= NV3_PBUS_START && addr <= NV3_PBUS_END)
         nv3_pbus_write(addr, val);
     else if (addr >= NV3_PFIFO_START && addr <= NV3_PFIFO_END)
