@@ -27,6 +27,7 @@ extern "C" {
 #include <86box/isarom.h>
 #include <86box/isartc.h>
 #include <86box/io_board.h>
+#include <86box/modem_card.h>
 #include <86box/usb_next.h>
 #include <86box/unittester.h>
 #include <86box/softpower.h>
@@ -173,6 +174,21 @@ SettingsOtherPeripherals::onCurrentMachineChanged(int machineId)
     ui->pushButtonConfigureIOBoard->setEnabled((io_board_type != IO_BOARD_NONE) && io_board_has_config(io_board_type) && machineHasIsaOrSidecar);
     updateIOBoardHint();
 
+    // 86Box-Next: the internal modem, one ISA card per machine.
+    ui->comboBoxModemCard->clear();
+    int modemRow = 0;
+    for (int i = 0; i < MODEM_CARD_COUNT; i++) {
+        const device_t *dev = modem_card_get_device(i);
+        if ((i != MODEM_CARD_NONE) && !device_is_valid(dev, machineId))
+            continue;
+        ui->comboBoxModemCard->addItem((i == MODEM_CARD_NONE) ? tr("None") : DeviceConfig::DeviceName(dev, modem_card_get_internal_name(i), 0), i);
+        if (i == modem_card_type)
+            modemRow = ui->comboBoxModemCard->count() - 1;
+    }
+    ui->comboBoxModemCard->setCurrentIndex(modemRow);
+    ui->comboBoxModemCard->setEnabled(machineHasIsaOrSidecar);
+    ui->pushButtonConfigureModemCard->setEnabled((modem_card_type != MODEM_CARD_NONE) && modem_card_has_config(modem_card_type) && machineHasIsaOrSidecar);
+
     // USB controller card: a PCI card.
     ui->comboBoxUSB->clear();
     for (int i = 0; i < usb_card_count(); i++)
@@ -275,6 +291,8 @@ SettingsOtherPeripherals::changed()
     has_changed |= isartc_cfg_changed;
     has_changed |= (io_board_type          != ui->comboBoxIOBoard->currentData().toInt());
     has_changed |= io_board_cfg_changed;
+    has_changed |= (modem_card_type        != ui->comboBoxModemCard->currentData().toInt());
+    has_changed |= modem_card_cfg_changed;
     has_changed |= (usb_card_type          != ui->comboBoxUSB->currentData().toInt());
     has_changed |= (bugger_enabled         != (ui->checkBoxISABugger->isChecked() ? 1 : 0));
     has_changed |= (postcard_enabled       != (ui->checkBoxPOSTCard->isChecked() ? 1 : 0));
@@ -324,6 +342,7 @@ SettingsOtherPeripherals::save(int soft)
     /* Other peripherals category */
     isartc_type            = ui->comboBoxRTC->currentData().toInt();
     io_board_type          = hasIsaOrSidecarBus(machineId) ? ui->comboBoxIOBoard->currentData().toInt() : IO_BOARD_NONE;
+    modem_card_type        = hasIsaOrSidecarBus(machineId) ? ui->comboBoxModemCard->currentData().toInt() : MODEM_CARD_NONE;
     usb_card_type          = machine_has_bus(machineId, MACHINE_BUS_PCI) ? ui->comboBoxUSB->currentData().toInt() : 0;
     bugger_enabled         = ui->checkBoxISABugger->isChecked() ? 1 : 0;
     postcard_enabled       = ui->checkBoxPOSTCard->isChecked() ? 1 : 0;
@@ -449,6 +468,22 @@ void
 SettingsOtherPeripherals::on_pushButtonConfigureIOBoard_clicked()
 {
     io_board_cfg_changed |= DeviceConfig::ConfigureDevice(io_board_get_device(ui->comboBoxIOBoard->currentData().toInt()));
+}
+
+void
+SettingsOtherPeripherals::on_comboBoxModemCard_currentIndexChanged(int index)
+{
+    if (index < 0)
+        return;
+
+    const int card = ui->comboBoxModemCard->currentData().toInt();
+    ui->pushButtonConfigureModemCard->setEnabled((card != MODEM_CARD_NONE) && modem_card_has_config(card) && hasIsaOrSidecarBus(machineId));
+}
+
+void
+SettingsOtherPeripherals::on_pushButtonConfigureModemCard_clicked()
+{
+    modem_card_cfg_changed |= DeviceConfig::ConfigureDevice(modem_card_get_device(ui->comboBoxModemCard->currentData().toInt()));
 }
 
 /* Shared memory-expansion slot helpers: resolve the board device and its

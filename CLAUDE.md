@@ -72,7 +72,10 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   ELSA MicroLink 56k and a Standard Hayes-compatible 56k Modem (`modem_hayes`: generic ATI
   answers matching none of funworld's rows, data/fax, no voice), chosen as a COM port's device
   in Settings > Ports. Upstream's network-card modem (`net_modem.c`) is removed; a config with it
-  gets `modem_hayes` on that COM port (`load_network()`). AT engine with ATI
+  gets `modem_hayes` on that COM port (`load_network()`). Serial Plug and Play (a model's `pnp_id` /
+  `pnp_name`; only the Supra: `SUP2311` "SupraExpress 56e PRO", Diamond's SUPIV92.INF): DTR rising with
+  RTS off, then RTS rising at least 50 ms later (Windows' serenum sequence) queues the PnP string
+  (7-bit, rev 1.00, `\MODEM\<name>`, checksum); `ATI9` answers it too. AT engine with ATI
   answers that funworld's modem table resolves to exactly one part; the line is dead or dials
   a TCP host (any number), with a real call's timing and sounds (`modem_sound.c`, a pool of
   speakers whose sound handlers are registered once per sound reset: `sound_has_handler()`).
@@ -100,6 +103,14 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   menu: "Telephone network (isp-server)", "Set phone number...", the number in the status line.
   (Line 2 was the built-in ISP for a day; the exchange still reaches the ISP on any unknown
   number.)
+- Internal modem card (`src/char/modem_card.c`, Settings > Other peripherals > Internal modem, one
+  per machine, `modem_card` in `[Other peripherals]`, ISA, hard reset; the `io_board.c` pattern):
+  Diamond SupraExpress 56i Sp (`supra56i`) -- the modem engine (`char_modem_attach()`, label
+  "Internal (ISA)", voice) on a detached 16550 decoded on the ISA bus, IRQ via `picint_common()` as
+  `serial_do_irq()` does; config `mode` 0 = ISA PnP card `SUP2171` (built-in ROM: IRQ 3/4/5/7/9-12/15,
+  3E8h/2E8h/3F8h/2F8h or 100h-3F8h; inactive until configured), 1-4 = jumpered COM1-COM4 address
+  with `irq`. Windows 9x: Diamond's SUPIV90.INF / MDMISUPV.INF (`*SUP2171`); Linux 8250_pnp knows
+  the ID. (Diamond's "56i PRO" is a PCI HCF soft modem, not this.)
 - Voice calls (models with `voice`: Supra and ELSA, not the PC Cards' data/fax modems): Rockwell's `#` voice set, as Windows 9x's
   Unimodem/V uses it (the Diamond INF: `#CLS=8`, `#VLS=0`, `#VBS=4`, `#VSR=7200`, `#VTX`/`#VRX`,
   `#VTS`) and vgetty's Rockwell driver. `AT#CLS=8` then ATD/ATA give VCON (`#VRN=0`: once

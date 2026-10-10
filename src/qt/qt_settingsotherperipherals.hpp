@@ -30,6 +30,8 @@ private slots:
     void on_pushButtonConfigureRTC_clicked();
     void on_comboBoxIOBoard_currentIndexChanged(int index);
     void on_pushButtonConfigureIOBoard_clicked();
+    void on_comboBoxModemCard_currentIndexChanged(int index);
+    void on_pushButtonConfigureModemCard_clicked();
     void updateIOBoardHint();
     QString ioBoardDescription(int board);
     void updateUSBHint();
@@ -76,6 +78,7 @@ private:
     SettingsCompleter            *scRTC;
     SettingsPcmcia               *pcmcia;   /* the PCMCIA tab */
     int                           io_board_cfg_changed = 0;
+    int                           modem_card_cfg_changed = 0;
 
     SettingsCompleter            *scMemExpCard[4];
     SettingsCompleter            *scIsaRomCard[4];
