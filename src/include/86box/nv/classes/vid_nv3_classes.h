@@ -602,7 +602,7 @@ typedef struct nv3_object_class_00D
     uint32_t pitch_out;
     uint32_t scanline_length;                        // Stride?
     uint32_t num_scanlines;
-    uint8_t format;                                 // input increment 1 2 or 4, output increment 1 2 or 4 (represented by << 8)
+    uint32_t format;                                // input increment 1 2 or 4 (bits 2:0), output increment 1 2 or 4 (bits 10:8)
     uint32_t buffer_notify;                         // Notify the Buffedr
 } nv3_memory_to_memory_format_t;
 
