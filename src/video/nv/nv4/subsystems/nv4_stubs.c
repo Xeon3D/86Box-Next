@@ -8,7 +8,7 @@
  *
  *          NVIDIA RIVA TNT / TNT2 -- units not yet modeled.
  *
- *          PFIFO, PGRAPH, PVIDEO and PME as register files: what is
+ *          PGRAPH, PVIDEO and PME as register files: what is
  *          written reads back and nothing raises an interrupt. Each
  *          moves to its own file when it is modeled.
  *
@@ -32,43 +32,14 @@
 #include <86box/plat_unused.h>
 #include <86box/nv/vid_nv4.h>
 
-/* PFIFO */
-void
-nv4_pfifo_reset(nv4_t *nv4)
+/* PGRAPH: takes every method and does nothing with it yet */
+nv4_mthd_result_t
+nv4_pgraph_method(UNUSED(nv4_t *nv4), UNUSED(int chid), UNUSED(int subc), UNUSED(uint32_t mthd), UNUSED(uint32_t data))
 {
-    memset(nv4->pfifo_regs, 0, sizeof(nv4->pfifo_regs));
+    return NV4_MTHD_DONE;
 }
 
-uint32_t
-nv4_pfifo_read(nv4_t *nv4, uint32_t addr)
-{
-    return nv4->pfifo_regs[((addr - NV4_PFIFO_START) >> 2) & 0x7ff];
-}
 
-void
-nv4_pfifo_write(nv4_t *nv4, uint32_t addr, uint32_t val)
-{
-    nv4->pfifo_regs[((addr - NV4_PFIFO_START) >> 2) & 0x7ff] = val;
-}
-
-uint32_t
-nv4_pfifo_pending(UNUSED(nv4_t *nv4))
-{
-    return 0;
-}
-
-uint32_t
-nv4_user_read(UNUSED(nv4_t *nv4), UNUSED(uint32_t addr))
-{
-    return 0;
-}
-
-void
-nv4_user_write(UNUSED(nv4_t *nv4), UNUSED(uint32_t addr), UNUSED(uint32_t val))
-{
-}
-
-/* PGRAPH */
 void
 nv4_pgraph_reset(nv4_t *nv4)
 {

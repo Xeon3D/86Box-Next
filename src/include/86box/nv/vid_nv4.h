@@ -196,6 +196,83 @@ typedef enum nv4_chip_e {
 #define NV4_CR_LOCK_LOCK         0x99
 
 /* ------------------------------------------------------------------ */
+/* PFIFO.                                                              */
+/* ------------------------------------------------------------------ */
+#define NV4_CHANNELS    16
+#define NV4_SUBCHANNELS 8
+#define NV4_CACHE1_SIZE 32 /* entries; PIO channels see 124 bytes free */
+
+/* RAMHT engines */
+#define NV4_ENGINE_SW       0
+#define NV4_ENGINE_GRAPHICS 1
+#define NV4_ENGINE_DVD      2
+
+/* What an engine did with a method the puller handed it. */
+typedef enum nv4_mthd_result_e {
+    NV4_MTHD_DONE,  /* taken (executed, or trapped to the driver) */
+    NV4_MTHD_STALL  /* not taken: the engine is held; retry later */
+} nv4_mthd_result_t;
+
+typedef struct nv4_pfifo_s {
+    uint32_t delay_0;
+    uint32_t dma_timeslice;
+    uint32_t pio_timeslice;
+    uint32_t timeslice;
+    uint32_t next_channel;
+    uint32_t intr;
+    uint32_t intr_en;
+    uint32_t ramht;
+    uint32_t ramfc;
+    uint32_t ramro;
+    uint32_t caches;       /* REASSIGN */
+    uint32_t mode;         /* bit per channel: DMA */
+    uint32_t dma;          /* bit per channel: DMA work pending */
+    uint32_t size;
+    uint32_t runout_put;
+    uint32_t runout_get;
+
+    /* CACHE0: one entry, used by the driver to resend a method */
+    uint32_t c0_push0;
+    uint32_t c0_push1;
+    uint32_t c0_pull0;
+    uint32_t c0_pull1;
+    uint32_t c0_hash;
+    uint32_t c0_put;
+    uint32_t c0_get;
+    uint32_t c0_engine;
+    uint32_t c0_method;
+    uint32_t c0_data;
+
+    /* CACHE1 and its channel's DMA pusher */
+    uint32_t c1_push0;
+    uint32_t c1_push1;     /* CHID 3:0, MODE 8 */
+    uint32_t c1_dma_push;  /* ACCESS 0, STATE 4, BUFFER 8, STATUS 12 */
+    uint32_t c1_dma_fetch;
+    uint32_t c1_dma_put;
+    uint32_t c1_dma_get;
+    uint32_t c1_dma_dcount;
+    uint32_t c1_dma_jmp_shadow;
+    uint32_t c1_dma_rsvd_shadow;
+    uint32_t c1_dma_data_shadow;
+    uint32_t c1_dma_state; /* METHOD 12:2, SUBCH 15:13, COUNT 28:18, ERROR 31:30 */
+    uint32_t c1_dma_instance;
+    uint32_t c1_dma_ctl;
+    uint32_t c1_dma_limit;
+    uint32_t c1_dma_tlb_tag;
+    uint32_t c1_dma_tlb_pte;
+    uint32_t c1_pull0;     /* ACCESS 0, HASH failed 4, DEVICE software 8 */
+    uint32_t c1_pull1;     /* ENGINE 1:0 */
+    uint32_t c1_hash;
+    uint32_t c1_put;       /* entry index */
+    uint32_t c1_get;
+    uint32_t c1_engine;    /* 2 bits per subchannel, 4 apart */
+    uint32_t c1_method[NV4_CACHE1_SIZE];
+    uint32_t c1_data[NV4_CACHE1_SIZE];
+
+    int busy;              /* the run loop is active (no reentry) */
+} nv4_pfifo_t;
+
+/* ------------------------------------------------------------------ */
 /* Board options.                                                      */
 /* ------------------------------------------------------------------ */
 typedef struct nv4_board_s {
@@ -304,9 +381,10 @@ typedef struct nv4_s {
     void *i2c;
     void *ddc;
 
+    nv4_pfifo_t pfifo;
+
     /* Register files of the units not yet modeled: what the driver
        wrote reads back. */
-    uint32_t pfifo_regs[0x2000 / 4];
     uint32_t pgraph_regs[0x2000 / 4];
     uint32_t pvideo_regs[0x300 / 4];
     uint32_t pme_regs[0x1000 / 4];
@@ -385,13 +463,30 @@ extern void     nv4_ramin_write8(nv4_t *nv4, uint32_t off, uint8_t val);
 extern void     nv4_ramin_write16(nv4_t *nv4, uint32_t off, uint16_t val);
 extern void     nv4_ramin_write32(nv4_t *nv4, uint32_t off, uint32_t val);
 
-/* subsystems/nv4_pfifo.c, nv4_pgraph.c, nv4_pvideo.c, nv4_pme.c */
+/* subsystems/nv4_dma.c: DMA objects */
+#define NV4_DMA_OK    0
+#define NV4_DMA_FAULT 1 /* bad class, past the limit, or no page */
+extern int      nv4_dma_translate(nv4_t *nv4, uint32_t inst, uint32_t offset, int write, uint32_t *addr, int *target);
+extern int      nv4_dma_read32(nv4_t *nv4, uint32_t inst, uint32_t offset, uint32_t *val);
+extern int      nv4_dma_write32(nv4_t *nv4, uint32_t inst, uint32_t offset, uint32_t val);
+extern int      nv4_dma_read(nv4_t *nv4, uint32_t inst, uint32_t offset, uint8_t *buf, uint32_t len);
+extern int      nv4_dma_write(nv4_t *nv4, uint32_t inst, uint32_t offset, const uint8_t *buf, uint32_t len);
+extern uint32_t nv4_dma_class(nv4_t *nv4, uint32_t inst);
+extern uint32_t nv4_dma_limit(nv4_t *nv4, uint32_t inst);
+
+/* subsystems/nv4_pfifo.c */
 extern void     nv4_pfifo_reset(nv4_t *nv4);
 extern uint32_t nv4_pfifo_read(nv4_t *nv4, uint32_t addr);
 extern void     nv4_pfifo_write(nv4_t *nv4, uint32_t addr, uint32_t val);
 extern uint32_t nv4_pfifo_pending(nv4_t *nv4);
 extern uint32_t nv4_user_read(nv4_t *nv4, uint32_t addr);
 extern void     nv4_user_write(nv4_t *nv4, uint32_t addr, uint32_t val);
+extern void     nv4_pfifo_run(nv4_t *nv4);
+
+/* subsystems/nv4_pgraph.c: the puller's way in */
+extern nv4_mthd_result_t nv4_pgraph_method(nv4_t *nv4, int chid, int subc, uint32_t mthd, uint32_t data);
+
+/* subsystems/nv4_pgraph.c, nv4_pvideo.c, nv4_pme.c */
 extern void     nv4_pgraph_reset(nv4_t *nv4);
 extern uint32_t nv4_pgraph_read(nv4_t *nv4, uint32_t addr);
 extern void     nv4_pgraph_write(nv4_t *nv4, uint32_t addr, uint32_t val);
