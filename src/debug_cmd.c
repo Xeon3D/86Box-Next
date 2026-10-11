@@ -307,6 +307,10 @@ debug_cmd_run(char *line)
         /* interp 1|0: run every block through the interpreter (to tell dynarec bugs apart) */
         cpu_force_interpreter = atoi(arg) != 0;
         always_log("debug_cmd: interpreter %s\n", cpu_force_interpreter ? "forced" : "off");
+    } else if (!strcmp(line, "reset")) {
+        /* reset: hard reset, as the Action menu's (devices closed and made again) */
+        always_log("debug_cmd: hard reset\n");
+        pc_reset_hard();
     } else if (!strcmp(line, "log"))
         always_log("debug_cmd: %s\n", arg);
     else if (line[0])
