@@ -78,8 +78,9 @@ rivatimer_t* rivatimer_create(double period, void (*callback)(double real_time))
     }
     else // Otherwise add a new one to the list
     {
-        rivatimer_tail->next = calloc(1, sizeof(rivatimer_t));
-        rivatimer_tail = rivatimer_tail->next;
+        rivatimer_tail->next       = calloc(1, sizeof(rivatimer_t));
+        rivatimer_tail->next->prev = rivatimer_tail; // destroying the tail goes back through prev
+        rivatimer_tail             = rivatimer_tail->next;
         new_rivatimer = rivatimer_tail;
     }
     
@@ -149,11 +150,9 @@ void rivatimer_destroy(rivatimer_t* rivatimer_ptr)
     // Case: This is not the first or last rivatimer, so we don't need to set the head or tail
     else
     {
-        // Fix the break in the chain that this 
-        if (rivatimer_ptr->next)
-            rivatimer_ptr->prev->next = rivatimer_ptr->next;
-        if (rivatimer_ptr->prev)
-            rivatimer_ptr->next->prev = rivatimer_ptr->prev;
+        // Fix the break in the chain: a middle node has both neighbours
+        rivatimer_ptr->prev->next = rivatimer_ptr->next;
+        rivatimer_ptr->next->prev = rivatimer_ptr->prev;
     }
 
     free(rivatimer_ptr);
