@@ -192,6 +192,18 @@ add_library(vid OBJECT
     nv/nv3/subsystems/nv3_pvideo.c
     nv/nv3/subsystems/nv3_user.c
 
+    # NVidia RIVA TNT / TNT2
+    nv/nv4/nv4_core.c
+    nv/nv4/nv4_vga.c
+    nv/nv4/subsystems/nv4_pmc.c
+    nv/nv4/subsystems/nv4_pbus.c
+    nv/nv4/subsystems/nv4_ptimer.c
+    nv/nv4/subsystems/nv4_pfb.c
+    nv/nv4/subsystems/nv4_pramdac.c
+    nv/nv4/subsystems/nv4_pcrtc.c
+    nv/nv4/subsystems/nv4_pramin.c
+    nv/nv4/subsystems/nv4_stubs.c
+
     # NVidia RIVA 128 - Object Classes
     nv/nv3/classes/nv3_class_names.c
     nv/nv3/classes/nv3_class_shared_methods.c

@@ -189,6 +189,7 @@ video_cards[] = {
     { .device = &mystique_220_device,                           .flags = VIDEO_FLAG_TYPE_SECONDARY },
     { .device = &nv3_device_pci,                                .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &nv3t_device_pci,                               .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &nv4_erazor2_pci_device,                        .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &s3_86c928_pci_device,                          .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &s3_trio32_pci_device,                          .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &s3_trio3d2x_pci_device,                        .flags = VIDEO_FLAG_TYPE_NONE      },
@@ -221,6 +222,10 @@ video_cards[] = {
     { .device = &millennium_ii_agp_device,                      .flags = VIDEO_FLAG_TYPE_SECONDARY },
     { .device = &nv3_device_agp,                                .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &nv3t_device_agp,                               .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &nv4_erazor2_agp_device,                        .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &nv5_erazor3_device,                            .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &nv5_erazor3_lt_device,                         .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &nv5_erazor3_ultra_device,                      .flags = VIDEO_FLAG_TYPE_NONE      },
 #ifdef USE_G100
     { .device = &productiva_g100_device,                        .flags = VIDEO_FLAG_TYPE_SPECIAL   },
 #endif /*USE_G100 */
