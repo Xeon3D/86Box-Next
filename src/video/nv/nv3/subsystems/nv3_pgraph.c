@@ -11,8 +11,10 @@
  *
  *
  * Authors: Connor Hyde, <mario64crashed@gmail.com> I need a better email address ;^)
+ *          Marcos Alves, <xeon4d@gmail.com>
  *
  *          Copyright 2024-2025 starfrost
+ *          Copyright 2026 Marcos Alves
  */
 
 #include <stdlib.h>
@@ -226,8 +228,8 @@ uint32_t nv3_pgraph_read(uint32_t address)
         case NV3_PGRAPH_TRAPPED_INSTANCE:
             ret = nv3->pgraph.trapped_instance;
             break;
-        /* The rest -- among them what NV3RM's channel switch (GRCTXT.C grUnloadCurrentPatch /
-           grLoadPatch) saves and restores: SOURCE_COLOR, MONO_COLOR0, MISC24_0/1, PASSTHRU, the
+        /* The rest -- among them what the resman's channel switch saves and restores:
+           SOURCE_COLOR, MONO_COLOR0, MISC24_0/1, PASSTHRU, the
            D3D_* vertex registers, XY_LOGIC_MISC*, X/Y_MISC, ABS_ICLIP, CLIPX/Y, ABS_UCLIPA, the
            ABS_X/Y and ZFOG RAMs, EXCEPTIONS -- read back what was written */
         default:

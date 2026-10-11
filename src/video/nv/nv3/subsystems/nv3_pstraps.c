@@ -12,8 +12,10 @@
  *
  *
  * Authors: Connor Hyde, <mario64crashed@gmail.com> I need a better email address ;^)
+ *          Marcos Alves, <xeon4d@gmail.com>
  *
  *          Copyright 2024-2025 starfrost
+ *          Copyright 2026 Marcos Alves
  */
 
 #include <stdlib.h>
@@ -86,9 +88,8 @@ uint32_t nv3_pstraps_read(UNUSED(uint32_t address))
 void nv3_pstraps_write(UNUSED(uint32_t address), uint32_t val) 
 {
     /* Rev C (RIVA 128 ZX) straps are writable: a write with STRAP_OVERWRITE (bit 11) set replaces
-       them -- the ZX BIOS rewrites the RAM type/width it sized this way (nv3sgram.asm: "Bit 11 set
-       for Overwrite"). The bit is the written value's, not the old one's (nv3_ref.h: reset 0).
-       Earlier revisions' straps are read-only (their NV_REF.INC marks the fields R-). */
+       them -- the ZX BIOS rewrites the RAM type/width it sized this way. The bit is the written
+       value's, not the old one's (it resets to 0). Earlier revisions' straps are read-only. */
     if (nv3->nvbase.gpu_revision != NV3_PCI_CFG_REVISION_C00) {
         nv_warning("Tried to write to the straps (val=%08x) on a rev A/B card\n", val);
         return;

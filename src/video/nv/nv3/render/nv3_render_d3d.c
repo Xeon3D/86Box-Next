@@ -15,8 +15,10 @@
 *          triangle setup and texturing are this file's own.
 *
 * Authors: Connor Hyde, <mario64crashed@gmail.com>
+ *          Marcos Alves, <xeon4d@gmail.com>
 *
 *          Copyright 2024-2026 Connor Hyde
+ *          Copyright 2026 Marcos Alves
 */
 
 #include <math.h>
@@ -38,8 +40,7 @@
 
 uint32_t nv3_dma_map_pages(uint32_t inst, uint32_t offset, uint32_t *addr, uint32_t pages, uint32_t *lin);
 
-/* D3D CONTROL0 (method 0x314) fields, per NVIDIA's NV_D3D0_CONTROL0_* layout (RIVA 128 Programming
-   Reference Manual, ch. 10, class NV_RENDER_D3D0_TRIANGLE_ZETA) */
+/* D3D CONTROL0 (method 0x314) fields of class 0x17, the D3D triangle with zeta buffer */
 #define NV3_D3D_CONFIG_INTERP(c)      ((c) & 3)          /* 0 ZOH, 1 ZOH_MS, 2 FOH */
 #define NV3_D3D_CONFIG_WRAP_U(c)      (((c) >> 4) & 3)   /* 0 cylindrical, 1 wrap, 2 mirror, 3 clamp */
 #define NV3_D3D_CONFIG_WRAP_V(c)      (((c) >> 6) & 3)
@@ -194,7 +195,7 @@ nv3_d3d_texel(nv3_grobj_t grobj, uint32_t level_offset, UNUSED(uint32_t size), i
             b = (b << 3) | (b >> 2);
             break;
     }
-    /* colour key: only the alpha goes to zero (PRM TextureFormat); filtering still mixes in the
+    /* colour key: only the alpha goes to zero; filtering still mixes in the
        key colour, which is why NV3DD32 rewrites keyed texels in its textures (colour key fringe fix) */
     if (((nv3_d3d.tex_format >> 16) & 0xF) && p == (nv3_d3d.tex_format & 0xFFFF))
         a = 0;
@@ -243,10 +244,10 @@ nv3_d3d_sample(nv3_grobj_t grobj, float u, float v, int level)
     float   fu    = u * size;
     float   fv    = v * size;
 
-    /* The kernels are centred on each texel's origin, its upper-left corner (PRM: ZOH rect(u/du),
-       FOH tri(u/du)); ZOH_MS, "the Microsoft offset", moves the origin to the texel centre. NV3DD32
-       picks ZOH for point-sampled textures and, for FOH, takes 0.4375 texel off u and v itself
-       (D3dTex.c fUVAdjust, FOHMODE = upper left) -- so no half-texel shift here. */
+    /* The kernels are centred on each texel's origin, its upper-left corner (ZOH a box, FOH a
+       tent); ZOH_MS moves the origin to the texel centre. NV3DD32 picks ZOH for point-sampled
+       textures and, for FOH, takes 0.4375 texel off u and v itself -- so no half-texel shift
+       here. */
     if (NV3_D3D_CONFIG_INTERP(nv3->pgraph.d3d_config) != 2) {
         if (NV3_D3D_CONFIG_INTERP(nv3->pgraph.d3d_config) == 0) {
             fu += 0.5f;
@@ -366,11 +367,11 @@ uint32_t        nv3_d3d_trace_left;
 static uint32_t nv3_d3d_frag_in, nv3_d3d_frag_clip, nv3_d3d_frag_written;
 
 /* One fragment: alpha and Z tests, write enables, blend, write. `test_alpha` is what the alpha
-   test (CONTROL1) compares: the combined texture x vertex alpha, before SRCCOLOR (PRM). The
+   test (CONTROL1) compares: the combined texture x vertex alpha, before SRCCOLOR. The
    "ALPHA" write conditions check the alpha that reaches the blender (in `color`) for non-zero at
    the blender's 4-bit precision, and a failed alpha test writes neither colour nor zeta (envytools
    hwtest pgraph_rop.cc, class 0x18). NV3DD32 relies on the former: it says colour keys only work
-   with a blend mode that does not force the alpha to 1 (D3drendr.c). */
+   with a blend mode that does not force the alpha to 1. */
 static void
 nv3_d3d_fragment(nv3_grobj_t grobj, uint32_t config, uint32_t alpha_ctl, int32_t x, int32_t y, uint32_t color, uint32_t test_alpha, uint32_t zeta)
 {
@@ -432,7 +433,7 @@ nv3_d3d_mul(uint32_t a, uint32_t b)
     return res;
 }
 
-/* Cylindrical wrapping (PRM, Control0 WRAP_U/V): when the triangle's coordinates cross the
+/* Cylindrical wrapping (CONTROL0 WRAP_U/V): when the triangle's coordinates cross the
    texture seam, 1.0 is added to the vertices on the low side so it takes the short way round */
 static void
 nv3_d3d_cylinder(float *c0, float *c1, float *c2)
@@ -566,7 +567,7 @@ nv3_d3d_triangle(nv3_grobj_t grobj, const nv3_d3d_vertex_t *a_in, const nv3_d3d_
             /* the source: texture x vertex colour; the alpha is the texture's times the vertex's
                only with COLOR_FORMAT A8R8G8B8 (X8R8G8B8 ignores the vertex alpha). That is what the
                alpha test sees; SRCCOLOR then modifies what goes to the blender. With blending off
-               NV3DD32 programs ALPHA_ONE, src x srcalpha, dst x 0 (NV3DBLND.H NV_ALPHA1_SRCA_ZERO_SRCC):
+               NV3DD32 programs ALPHA_ONE, src x srcalpha, dst x 0:
                3DMark 99's opaque geometry has vertex alpha 0. */
             uint32_t test_alpha = color >> 24;
             switch (src_color) {
@@ -598,7 +599,7 @@ nv3_d3d_triangle(nv3_grobj_t grobj, const nv3_d3d_vertex_t *a_in, const nv3_d3d_
 
             uint32_t zeta;
             if (NV3_D3D_CONFIG_ZLINEAR(config)) {
-                /* linear zeta: 1/m interpolated in world space (PRM: m = F/Z, so 1/m = Z/F, 0 at the
+                /* linear zeta: 1/m interpolated in world space (m = F/Z, so 1/m = Z/F, 0 at the
                    eye, 1 at the far plane); m is linear in screen space. NV3DD32 never sets it. */
                 double q = a->rhw * wd[0] + b->rhw * wd[1] + c->rhw * wd[2];
                 zeta     = (q > 0.0) ? nv3_d3d_zeta(1.0 / q) : 0xFFFF;

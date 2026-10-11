@@ -181,25 +181,23 @@ no exports; DrvEnableDriver's DRVFN table at file 0x1D738 (33 entries).
   every other GUID gets DDERR_CURRENTLYNOTAVAIL (0x88760028).
 - It names an OpenGL ICD, nv3oglnt.dll / nvoglnt.dll, which Windows 2000 does not ship.
 
-## Confirmed from NVIDIA's own sources (2026-10-10)
-Sources: the RIVA 128 Programming Reference Manual (Alpha 9, 06/1997) and the 3.12 driver
-source drop (Dec 1998: resman, NV3DD32, BIOS, SDK). Used to learn behaviour only; nothing copied.
+## Register details (2026-10-10)
 - D3D CONTROL0 (0x314): 1:0 interpolator (ZOH, ZOH_MS, FOH), 5:4/7:6 wrap (cylindrical, wrap,
   mirror, clamp), 8 colour format (X8R8G8B8 ignores vertex alpha), 11:10 SRCCOLOR (normal,
   colour inverse, alpha inverse, alpha one), 13:12 culling, 15 linear zeta, then zeta compare/
-  write, colour write, ROP/beta/inputs. NV3DD32 (NV3DBLND.H, D3drendr.c): blending off =
+  write, colour write, ROP/beta/inputs. NV3DD32: blending off =
   ALPHA_ONE + src x srcalpha + dst x 0 with X8R8G8B8; colour key = COLOR_WRITE_ALPHA(_ZETA) and a
-  blend mode without ALPHA_ONE ("otherwise the color key won't work"); alpha test off =
+  blend mode without ALPHA_ONE; alpha test off =
   CONTROL1 compare TRUE (0x800). ZOH = texel origin upper-left, ZOH_MS = centre; FOH has its
   origin at the upper-left too and the driver subtracts 0.4375 texel from u/v (FOHMODE default).
   FILTER default 0x80EC0000: sizeadj S4.4 = -1.25, turbo 0x80 = off for point sampling. sizeadj
   is not applied (no reference for its scale).
 - CONTROL0/CONTROL1 are PGRAPH CONTROL_OUT (0x400644) and ALPHACNTRL (0x4006C8), shared by
   classes 0x17 and 0x18.
-- Channel switch (GRCTXT.C): the NV3 resman reads SOURCE_COLOR, MONO_COLOR0, CONTROL_OUT,
+- Channel switch: the NV3 resman reads SOURCE_COLOR, MONO_COLOR0, CONTROL_OUT,
   D3D_XY/UV/ZETA/RGB/FOG/M, PASSTHRU, MISC24_0/1 and writes them back; it zeroes ABS_X/Y RAM,
   ICLIP, XY_LOGIC_MISC*, X/Y_MISC, CLIPX/Y, ZFOG RAM and EXCEPTIONS.
-- PVIDEO (class63.c): init writes CONTROL_Y BLUR, CONTROL_X SMOOTHING|SHARPENING, OFFSET 0,
+- PVIDEO: the resman's init writes CONTROL_Y BLUR, CONTROL_X SMOOTHING|SHARPENING, OFFSET 0,
   OE_STATE CURRENT_BUFFER 1, SU_STATE both IN_USE, CSC 0x69/0x3E/0x89, CSC_ADJUST 0x10000; keys
   masked 0x7FFF at 16 bpp. NV3DD32's brightness adds d to red/blue CSC and subtracts it from green.
 - Straps: the STB V128ZX BIOS writes 0xDB3 to PEXTDEV_BOOT_0 unconditionally (file 0x3A77; AGP,

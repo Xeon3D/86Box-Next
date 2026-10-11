@@ -11,8 +11,10 @@
  *
  *
  * Authors: Connor Hyde, <mario64crashed@gmail.com> I need a better email address ;^)
+ *          Marcos Alves, <xeon4d@gmail.com>
  *
  *          Copyright 2024-2025 starfrost
+ *          Copyright 2026 Marcos Alves
  */
 
 #include <stdlib.h>
@@ -237,7 +239,7 @@ bool nv3_perform_dma_m2mf(nv3_grobj_t grobj)
 
     /* LINE_LENGTH_IN counts the bytes moved, not the span read: the Win9x DirectDraw driver's
        YV12 -> YUY2 conversion copies a 640-byte YUY2 row's 320 chroma bytes to the next row
-       with length 320, input and output increment 2 (NV3DD32 dvideo32.c) */
+       with length 320, input and output increment 2 */
     for (uint32_t line = 0; line < nv3->pgraph.m2mf.num_scanlines; line++) {
         uint32_t in  = offset_in;
         uint32_t out = offset_out;

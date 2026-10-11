@@ -16,8 +16,10 @@
  *          vid_nv3.h:      Defines a lot of shit
  *  
  * Authors: Connor Hyde <mario64crashed@gmail.com>
+ *          Marcos Alves, <xeon4d@gmail.com>
  *
  *          Copyright 2024-2026 Connor Hyde
+ *          Copyright 2026 Marcos Alves
  */
 
 #pragma once
@@ -1220,7 +1222,7 @@ typedef enum nv3_pgraph_bpixel_format_e
 
 /* Primitive state the classes build up over several methods (vertices, colours, the D3D vertex
    file and texture). On the chip it is PGRAPH register state (ABS_X/Y_RAM, ZFOG_RAM, D3D_*), which
-   the resman saves and reloads around every channel switch (GRCTXT.C), so each channel keeps
+   the resman saves and reloads around every channel switch, so each channel keeps
    its own: the emulator does the same with a copy per channel, swapped when CTX_USER's CHID
    changes (nv3_pgraph_write). */
 typedef struct nv3_d3d_vertex_s {

@@ -11,8 +11,10 @@
  *
  *
  * Authors: Connor Hyde, <mario64crashed@gmail.com> I need a better email address ;^)
+ *          Marcos Alves, <xeon4d@gmail.com>
  *
  *          Copyright 2024-2025 starfrost
+ *          Copyright 2026 Marcos Alves
  */
 
 #include <stdlib.h>
@@ -38,8 +40,8 @@ void nv3_ptimer_interrupt(uint32_t num)
 }
 
 /* Bring TIME up to date with guest time. The chip adds 32 * DENOMINATOR / NUMERATOR ns to TIME
-   (whose bits 4:0 always read 0) every memory clock, and NV3RM programs NUMERATOR/DENOMINATOR =
-   MCLK / 31.25 MHz (TMRINIT.C), so TIME counts nanoseconds. It runs on the emulated clock (tsc),
+   (whose bits 4:0 always read 0) every memory clock, and the resman programs NUMERATOR/DENOMINATOR =
+   MCLK / 31.25 MHz, so TIME counts nanoseconds. It runs on the emulated clock (tsc),
    so it stops while the emulator is paused and keeps pace with the guest when emulation is slow.
    (It used to run on host time in the wrong units -- some 30000 times too slow on Windows -- and
    compared ALARM against all 64 bits of TIME.) ALARM fires when TIME_0 passes it. */

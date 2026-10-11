@@ -9,8 +9,10 @@
  *          Fast, high-frequency, CPU-independent timer.
  *
  * Authors: Connor Hyde, <mario64crashed@gmail.com> I need a better email address ;^)
+ *          Marcos Alves, <xeon4d@gmail.com>
  *
  *          Copyright 2024-2025 starfrost
+ *          Copyright 2026 Marcos Alves
  */
 
 /* See vid_nv_rivatimer.h comments for rationale behind not using the regular timer system 

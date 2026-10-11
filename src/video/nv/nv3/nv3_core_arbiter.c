@@ -15,8 +15,10 @@
  *          
  *
  * Authors: Connor Hyde, <mario64crashed@gmail.com> I need a better email addr ;^)
+ *          Marcos Alves, <xeon4d@gmail.com>
  *
  *          Copyright 2024-2025 starfrost
+ *          Copyright 2026 Marcos Alves
  */
 
 // STANDARD NV3 includes

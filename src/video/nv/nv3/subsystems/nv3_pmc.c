@@ -11,8 +11,10 @@
  *
  *
  * Authors: Connor Hyde, <mario64crashed@gmail.com> I need a better email address ;^)
+ *          Marcos Alves, <xeon4d@gmail.com>
  *
  *          Copyright 2024-2025 starfrost
+ *          Copyright 2026 Marcos Alves
  */
 
 #include <stdlib.h>
@@ -56,7 +58,7 @@ uint32_t nv3_pmc_handle_interrupts(bool send_now)
 {
     // TODO:
     // PGRAPH DMA INTR_EN (there is no DMA engine yet)
-    // PRM Real-Mode Compatibility Interrupts
+    // Real-Mode Compatibility Interrupts
 
     uint32_t new_intr_value = 0x00;
 

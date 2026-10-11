@@ -13,8 +13,10 @@
  *          NV3-DRIVER-NOTES.md.
  *
  * Authors: Connor Hyde, <mario64crashed@gmail.com> I need a better email address ;^)
+ *          Marcos Alves, <xeon4d@gmail.com>
  *
  *          Copyright 2024-2025 starfrost
+ *          Copyright 2026 Marcos Alves
  */
 
 #include <stdlib.h>
@@ -31,8 +33,7 @@
 #include <86box/nv/vid_nv.h>
 #include <86box/nv/vid_nv3.h>
 
-/* 0x680200-0x6802FC, as indexes into pvideo.regs. Names and field widths per NVIDIA's NV_PVIDEO_*
-   (RIVA 128 Programming Reference Manual ch. 5) */
+/* 0x680200-0x6802FC, as indexes into pvideo.regs, with the registers' names and field widths */
 #define PV_SCALE   (0x00 >> 2) /* 0x200 STEP_SIZE: Y 27:16, X 11:0; ((src - 1) << 11) / (dst - 1) */
 #define PV_CTRL_Y  (0x04 >> 2) /* 0x204 CONTROL_Y: 0 BLUR (vertical filter, else line replication), 4 LINE */
 #define PV_CTRL_X  (0x08 >> 2) /* 0x208 CONTROL_X: 0 WEIGHT, 4 SHARPENING, 8 SMOOTHING */
@@ -99,7 +100,7 @@ nv3_pvideo_update(void)
     svga->overlay.yoff      = 0;
 }
 
-/* The colour conversion offsets have no reset value (nv3_ref.h); start from the PRM's defaults so
+/* The colour conversion offsets have no reset value; start from the resman's defaults so
    an overlay set up without them (no resman yet) still converts sensibly */
 void
 nv3_pvideo_init(void)
@@ -170,8 +171,8 @@ nv3_pvideo_clamp(int v)
 }
 
 /* The colour conversion. The CSC registers hold the constant terms, halved: with the coefficients
-   below, BT.601's constants come out as R -2 x 105, G +2 x 62, B -2 x 137 -- the defaults the PRM
-   gives and NV3RM writes (class63.c). NV3DD32's brightness control (DDDRV32.C ColourControl) adds an
+   below, BT.601's constants come out as R -2 x 105, G +2 x 62, B -2 x 137 -- the defaults the
+   resman writes. NV3DD32's brightness control adds an
    offset to red and blue and takes it from green, which darkens all three alike, as this does. The
    CSC_ADJUST coefficient flags are not documented and stay at 0. */
 static inline uint32_t

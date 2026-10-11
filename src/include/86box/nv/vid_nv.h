@@ -25,8 +25,10 @@
  *          - People who prevented me from giving up (various)              
  * 
  * Authors: Connor Hyde / starfrost <mario64crashed@gmail.com>
+ *          Marcos Alves, <xeon4d@gmail.com>
  *      
  *          Copyright 2024-2026 Connor Hyde
+ *          Copyright 2026 Marcos Alves
  */
 #ifdef EMU_DEVICE_H // what
 

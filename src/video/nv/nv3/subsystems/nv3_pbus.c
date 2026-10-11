@@ -11,8 +11,10 @@
  *
  *
  * Authors: Connor Hyde, <mario64crashed@gmail.com> I need a better email dataess ;^)
+ *          Marcos Alves, <xeon4d@gmail.com>
  *
  *          Copyright 2024-2025 starfrost
+ *          Copyright 2026 Marcos Alves
  */
 
 #include <stdlib.h>
@@ -35,7 +37,7 @@
 /* PBUS 0x1800-0x18FF aliases the PCI configuration space (NV_PBUS_PCI_NV_*), a dword per
    access (the arbiter used to hand over one byte: the VBE code of every NV3 BIOS reads BAR1
    there for the mode's PhysBasePtr, and got 0). Through it the
-   resman also raises the AGP request depth, read-only in config space: NV3RM's MCINIT.C bumps
+   resman also raises the AGP request depth, read-only in config space: it bumps
    NV_PBUS_PCI_NV_18 AGP_STATUS_RQ while it is <= 3 */
 #define NV3_PBUS_PCI_ALIAS 0x1800
 

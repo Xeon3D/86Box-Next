@@ -10,8 +10,10 @@
  *
  *
  * Authors: Connor Hyde, <mario64crashed@gmail.com> I need a better email address ;^)
+ *          Marcos Alves, <xeon4d@gmail.com>
  *
  *          Copyright 2024-2025 starfrost
+ *          Copyright 2026 Marcos Alves
  */
 #include <stdlib.h>
 #include <stdint.h>
@@ -641,7 +643,7 @@ void nv3_recalc_timings(svga_t* svga)
        CR2D = bit 8 of htotal (0), display end (1), blank start (2), sync start (3). */
     svga->memaddr_latch += (svga->crtc[NV3_CRTC_REGISTER_RPC0] & 0x1F) << 16;
     svga->rowoffset     += (svga->crtc[NV3_CRTC_REGISTER_RPC0] & 0xE0) << 3;
-    /* PRM 1.4 (CR25, CR1A) and NV3RM's mode set (MODESET.C): CR25 bit 5 = row offset bit 11;
+    /* CR25 and CR1A: CR25 bit 5 = row offset bit 11;
        CR1A bit 7/6 = hsync/vsync disabled (DPMS standby/suspend/off), bit 0 = VGA address wrap
        (the CRTC fetches from the first 256 KB only; set by the BIOS for the VGA modes) */
     if (ext_vert & 0x20)
@@ -719,9 +721,9 @@ void nv3_recalc_timings(svga_t* svga)
     }
 
     /* Direct colour modes go through the CLUT as a per-channel gamma ramp unless
-       PRAMDAC_GENERAL_CONTROL IDC_MODE selects index (nv3_ref.h: reset value gamma). NV3RM sets
-       index at 8 bpp and gamma at 16/32 bpp after loading the CLUT with an identity ramp
-       (vid_mode.c, dacmode.c dacLoadIdentityDAC), so apps' gamma ramps take effect. */
+       PRAMDAC_GENERAL_CONTROL IDC_MODE selects index (it resets to gamma). The resman sets
+       index at 8 bpp and gamma at 16/32 bpp after loading the CLUT with an identity ramp, so
+       apps' gamma ramps take effect. */
     {
         bool gamma = (pixel_mode >= NV3_CRTC_REGISTER_PIXELMODE_16BPP)
                   && !((nv3->pramdac.general_control >> NV3_PRAMDAC_GENERAL_CONTROL_IDC_MODE) & 1);

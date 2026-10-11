@@ -10,8 +10,10 @@
 *          monochrome bitmaps, points, lines and triangles.
 *
 * Authors: Connor Hyde, <mario64crashed@gmail.com>
+ *          Marcos Alves, <xeon4d@gmail.com>
 *
 *          Copyright 2024-2026 Connor Hyde
+ *          Copyright 2026 Marcos Alves
 */
 
 #include <stdlib.h>

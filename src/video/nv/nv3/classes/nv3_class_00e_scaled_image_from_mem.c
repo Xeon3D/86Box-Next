@@ -11,8 +11,10 @@
  *
  *
  * Authors: Connor Hyde, <mario64crashed@gmail.com> I need a better email address ;^)
+ *          Marcos Alves, <xeon4d@gmail.com>
  *
  *          Copyright 2024-2026 Connor Hyde
+ *          Copyright 2026 Marcos Alves
  */
 
 #include <stdlib.h>

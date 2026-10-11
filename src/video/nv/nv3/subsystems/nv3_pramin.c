@@ -10,8 +10,10 @@
  *          Has a giant hashtable of all the submitted DMA objects using a pseudo-C++ class system
  *
  * Authors: Connor Hyde, <mario64crashed@gmail.com> I need a better email address ;^)
+ *          Marcos Alves, <xeon4d@gmail.com>
  *
  *          Copyright 2024-2025 starfrost
+ *          Copyright 2026 Marcos Alves
  */
 
 #include <stdlib.h>
@@ -234,7 +236,7 @@ bool nv3_ramin_find_object(uint32_t name, uint32_t cache_num, uint8_t channel, u
 
     /* Not errors: PGRAPH uses only the class's low five bits (a software object's class is the
        resman's business), and the channel is the 7-bit CHID the entry was just matched on --
-       NV3RM uses up to 32 channels (NVRM.H NUM_FIFOS). Both used to be fatal(). */
+       the resman uses up to 32 channels. Both used to be fatal(). */
     if (obj_context_struct.class_id < NV3_PFIFO_FIRST_VALID_GRAPHICS_OBJECT_ID
         || obj_context_struct.class_id > NV3_PFIFO_LAST_VALID_GRAPHICS_OBJECT_ID)
         nv_warning("NV3: object %08x has class %02x outside 0x40-0x5F (PGRAPH sees %02x)\n", name, obj_context_struct.class_id,

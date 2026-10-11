@@ -11,8 +11,10 @@
  *
  *
  * Authors: Connor Hyde, <mario64crashed@gmail.com> I need a better email address ;^)
+ *          Marcos Alves, <xeon4d@gmail.com>
  *
  *          Copyright 2024-2025 starfrost
+ *          Copyright 2026 Marcos Alves
  */
 
 // nv3_pramdac.c: NV3 RAMDAC
@@ -36,8 +38,8 @@ void nv3_pramdac_init(void)
 {
     nv_log("Initialising PRAMDAC\n");
 
-    /* Until the BIOS programs them: MPLL at the 100 MHz NVIDIA's BIOS POST script sets
-       (NVINIT.INC: 0x1A30B with the 13.5 MHz crystal, 0x1C40E with 14.318 MHz), VPLL near
+    /* Until the BIOS programs them: MPLL at the 100 MHz the BIOS POST sets (0x1A30B with the
+       13.5 MHz crystal, 0x1C40E with 14.318 MHz), VPLL near
        the VGA 25.175 MHz. (The old default had P = 12: a 94 kHz memory clock.) */
     if (nv3_pstraps_crystal_hz() > 14000000.0) {
         nv3_pramdac_set_core_clock_register(0x1C40E);
