@@ -462,14 +462,14 @@ void nv3_pfifo_write(uint32_t address, uint32_t val)
         case NV3_PFIFO_CACHE0_PULL0:
             nv3->pfifo.cache0_settings.pull0 = val; // 8bits meaningful
             
-            if (nv3->pfifo.cache0_settings.pull0 & (1 >> NV3_PFIFO_CACHE0_PULL0_ENABLED))
+            if (nv3->pfifo.cache0_settings.pull0 & (1 << NV3_PFIFO_CACHE0_PULL0_ENABLED))
                 nv3_pfifo_cache0_pull();
 
             break;
         case NV3_PFIFO_CACHE1_PULL0:
             nv3->pfifo.cache1_settings.pull0 = val; // 8bits meaningful
             
-            if (nv3->pfifo.cache1_settings.pull0 & (1 >> NV3_PFIFO_CACHE1_PULL0_ENABLED))
+            if (nv3->pfifo.cache1_settings.pull0 & (1 << NV3_PFIFO_CACHE1_PULL0_ENABLED))
                 nv3_pfifo_cache1_pull();
 
             break;

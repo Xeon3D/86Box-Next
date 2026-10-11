@@ -1218,10 +1218,69 @@ typedef enum nv3_pgraph_bpixel_format_e
     bpixel_fmt_32bit = 3,
 } nv3_pgraph_bpixel_format;
 
+/* Primitive state the classes build up over several methods (vertices, colours, the D3D vertex
+   file and texture). On the chip it is PGRAPH register state (ABS_X/Y_RAM, ZFOG_RAM, D3D_*), which
+   the resman saves and reloads around every channel switch (GRCTXT.C), so each channel keeps
+   its own: the emulator does the same with a copy per channel, swapped when CTX_USER's CHID
+   changes (nv3_pgraph_write). */
+typedef struct nv3_d3d_vertex_s {
+    float    x, y, z, rhw, u, v;
+    uint32_t color; /* A8R8G8B8 */
+    uint8_t  fog;
+} nv3_d3d_vertex_t;
+
+typedef struct nv3_line_state_s {
+    uint32_t color;
+    uint32_t cpoly_color;
+    int32_t  x0, y0; /* LINE: first point of the pair */
+    int32_t  lx, ly; /* last vertex, where a polyline continues from */
+    int32_t  x32[3]; /* LINE32/POLYLINE32 coordinates gathered so far */
+} nv3_line_state_t;
+
+typedef struct nv3_d3d_state_s {
+    uint32_t tex_offset, tex_format, filter, fog_color;
+
+    /* the vertex being sent */
+    uint32_t         fog_tri;
+    nv3_d3d_vertex_t cur;
+    nv3_d3d_vertex_t vtx[16];
+
+    /* texture pages: valid while the texture state is unchanged */
+    bool     tex_mapped;
+    uint32_t tex_target;
+    uint32_t tex_lin;
+    uint32_t tex_pages[64];
+
+    /* class 0x18 */
+    int32_t  zpoint_x, zpoint_y;
+    uint32_t zpoint_color;
+} nv3_d3d_state_t;
+
+typedef struct nv3_prim_state_s {
+    /* class 0x08 point */
+    uint32_t point_color;
+    int32_t  point32_x;
+    uint32_t cpoint_color;
+    /* classes 0x09 line, 0x0A lin */
+    nv3_line_state_t line[2];
+    /* class 0x0B triangle */
+    uint32_t tri_color;
+    uint32_t tri_ccolor;
+    int32_t  tri_x[3], tri_y[3];   /* TRIANGLE / CTRIANGLE vertices */
+    int32_t  mesh_x[2], mesh_y[2]; /* the last two mesh vertices */
+    uint32_t mesh_count;
+    int32_t  tri32[5];
+    /* classes 0x17, 0x18 */
+    nv3_d3d_state_t d3d;
+} nv3_prim_state_t;
+
+#define NV3_PGRAPH_CHANNELS 128 /* CTX_USER CHID is 7 bits */
+
 // Graphics Subsystem
 typedef struct nv3_pgraph_s
 {
     uint32_t debug_0;
+    nv3_prim_state_t prim;  // the current channel's primitive state
     uint32_t debug_1;
     uint32_t debug_2;
     uint32_t debug_3;
@@ -1315,6 +1374,8 @@ typedef struct nv3_ptimer_s
     uint32_t clock_denominator;         // PTIMER (tick?) denominator
     uint64_t time;                      // time
     uint32_t alarm;                     // The value of time when there should be an alarm
+    uint64_t last_tsc;                  // guest time (tsc) TIME was last brought up to date at
+    double   frac_ns;                   // the part of a nanosecond not yet added to TIME
 } nv3_ptimer_t;
 
 // Object name is just a uint32_t identifier it doesn't need a struct
@@ -1427,6 +1488,7 @@ typedef struct nv3_s
     nv3_pvideo_t pvideo;            // Video overlay
     nv3_pme_t pme;                  // Mediaport - external MPEG decoder and video interface
     pc_timer_t dma_pusher_timer;    // the DMA pusher fetches asynchronously, a moment after it is started
+    nv3_prim_state_t prim_saved[NV3_PGRAPH_CHANNELS]; // the other channels' primitive state (see nv3_prim_state_t)
     //more here
 
 } nv3_t;
@@ -1509,7 +1571,7 @@ uint32_t    nv3_pstraps_read(uint32_t address);
 void        nv3_pstraps_write(uint32_t address, uint32_t value);
 
 // Reads from vbios are 8bit
-uint8_t     nv3_prom_read(uint32_t address);
+uint32_t    nv3_prom_read(uint32_t address);
 void        nv3_prom_write(uint32_t address, uint32_t value);
 uint32_t    nv3_pme_read(uint32_t address);
 void        nv3_pme_write(uint32_t address, uint32_t value);
@@ -1613,6 +1675,7 @@ void        nv3_pramdac_core_clock_poll(double real_time);
 
 // NV3 PTIMER
 void        nv3_ptimer_tick(double real_time);
+void        nv3_ptimer_update(void);       // bring TIME up to date with guest time
 
 // NV3 PVIDEO
 uint32_t    nv3_pvideo_read(uint32_t address);

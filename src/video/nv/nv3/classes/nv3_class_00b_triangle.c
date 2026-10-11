@@ -28,12 +28,15 @@
 #include <86box/nv/vid_nv.h>
 #include <86box/nv/vid_nv3.h>
 
-static uint32_t nv3_tri_color;
-static uint32_t nv3_tri_ccolor;
-static int32_t  nv3_tri_x[3], nv3_tri_y[3];     /* TRIANGLE / CTRIANGLE vertices */
-static int32_t  nv3_mesh_x[2], nv3_mesh_y[2];   /* the last two mesh vertices */
-static uint32_t nv3_mesh_count;
-static int32_t  nv3_tri32[5];
+/* per-channel primitive state (nv3_prim_state_t) */
+#define nv3_tri_color  (nv3->pgraph.prim.tri_color)
+#define nv3_tri_ccolor (nv3->pgraph.prim.tri_ccolor)
+#define nv3_tri_x      (nv3->pgraph.prim.tri_x)
+#define nv3_tri_y      (nv3->pgraph.prim.tri_y)
+#define nv3_mesh_x     (nv3->pgraph.prim.mesh_x)
+#define nv3_mesh_y     (nv3->pgraph.prim.mesh_y)
+#define nv3_mesh_count (nv3->pgraph.prim.mesh_count)
+#define nv3_tri32      (nv3->pgraph.prim.tri32)
 
 static void
 nv3_tri_mesh_add(int32_t x, int32_t y, uint32_t color, nv3_grobj_t grobj)

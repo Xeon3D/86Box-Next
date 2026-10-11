@@ -20,6 +20,8 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <86box/86box.h>
+#include <86box/plat_unused.h>
+#include <86box/timer.h>
 #include <86box/device.h>
 #include <86box/mem.h>
 #include <86box/pci.h>
@@ -35,35 +37,47 @@ void nv3_ptimer_interrupt(uint32_t num)
     nv3_pmc_handle_interrupts(true);
 }
 
-// Ticks the timer.
-void nv3_ptimer_tick(double real_time)
+/* Bring TIME up to date with guest time. The chip adds 32 * DENOMINATOR / NUMERATOR ns to TIME
+   (whose bits 4:0 always read 0) every memory clock, and NV3RM programs NUMERATOR/DENOMINATOR =
+   MCLK / 31.25 MHz (TMRINIT.C), so TIME counts nanoseconds. It runs on the emulated clock (tsc),
+   so it stops while the emulator is paused and keeps pace with the guest when emulation is slow.
+   (It used to run on host time in the wrong units -- some 30000 times too slow on Windows -- and
+   compared ALARM against all 64 bits of TIME.) ALARM fires when TIME_0 passes it. */
+void nv3_ptimer_update(void)
 {
-    // prevent a divide by zero
-    if (nv3->ptimer.clock_numerator == 0
-    || nv3->ptimer.clock_denominator == 0)
-        return; 
+    uint64_t now    = tsc;
+    uint64_t cycles = (now >= nv3->ptimer.last_tsc) ? (now - nv3->ptimer.last_tsc) : 0; /* tsc restarts on a hard reset */
 
-    // get the current time
+    nv3->ptimer.last_tsc = now;
 
-    // See Envytools. We need to use the frequency as a source. 
-    // We need to figure out how many cycles actually occurred because this counts up every cycle...
-    // However it seems that their formula is wrong. I can't be bothered to figure out what's going on and, based on documentation from NVIDIA,
-    // timer_0 is meant to roll over every 4 seconds. Multiplying by 10 basically does the job.
+    // Stopped until the driver programs the ratio
+    if (!nv3->ptimer.clock_numerator || !nv3->ptimer.clock_denominator || (cpuclock <= 0.0) || !cycles)
+        return;
 
-    // Convert to microseconds
-    double freq_base = (real_time / 1000000.0f) / ((double)1.0 / nv3->nvbase.memory_clock_frequency) * 10.0f;
-    double current_time = freq_base * ((double)nv3->ptimer.clock_numerator) / (double)nv3->ptimer.clock_denominator; // *10.0?
+    double ns = ((double) cycles / cpuclock) * nv3->nvbase.memory_clock_frequency * 32.0
+                    * (double) nv3->ptimer.clock_denominator / (double) nv3->ptimer.clock_numerator
+                + nv3->ptimer.frac_ns;
+    uint64_t add = (uint64_t) ns;
 
-    // truncate it 
-    nv3->ptimer.time += (uint64_t)current_time;
+    nv3->ptimer.frac_ns = ns - (double) add;
+    if (!add)
+        return;
 
-    // Check if the alarm has actually triggered..
-    // Only log on ptimer alarm. Otherwise, it's too much spam.
-    if (nv3->ptimer.time >= nv3->ptimer.alarm)
+    uint32_t old_low = (uint32_t) nv3->ptimer.time;
+    nv3->ptimer.time += add;
+
+    /* ALARM in (old, old + add], modulo 2^32 */
+    if ((add >= 0x100000000ULL) || ((uint32_t) (nv3->ptimer.alarm - old_low - 1) < (uint32_t) add))
     {
         nv_log_verbose_only("PTIMER alarm interrupt fired (if interrupts enabled) because we reached TIME value 0x%08x\n", nv3->ptimer.alarm);
         nv3_ptimer_interrupt(NV3_PTIMER_INTR_ALARM);
     }
+}
+
+// Ticks the timer (the memory clock poll): the alarm needs TIME kept moving even when nobody reads it
+void nv3_ptimer_tick(UNUSED(double real_time))
+{
+    nv3_ptimer_update();
 }
 
 uint32_t nv3_ptimer_read(uint32_t address) 
@@ -86,14 +100,14 @@ uint32_t nv3_ptimer_read(uint32_t address)
         case NV3_PTIMER_DENOMINATOR:
             ret = nv3->ptimer.clock_denominator ; //15:0
             break;
-        // 64-bit value
-        // High part
+        // 64-bit value: TIME_0 the low half (bits 31:5), TIME_1 the high half (bits 28:0)
         case NV3_PTIMER_TIME_0_NSEC:
-            ret = nv3->ptimer.time & 0xFFFFFFFF; //28:0
+            nv3_ptimer_update();
+            ret = (uint32_t) nv3->ptimer.time & 0xFFFFFFE0;
             break;
-        // Low part
         case NV3_PTIMER_TIME_1_NSEC:
-            ret = nv3->ptimer.time >> 32; // 31:5
+            nv3_ptimer_update();
+            ret = (uint32_t) (nv3->ptimer.time >> 32) & 0x1FFFFFFF;
             break;
         case NV3_PTIMER_ALARM_NSEC: 
             ret = nv3->ptimer.alarm; // 31:5
@@ -120,25 +134,25 @@ void nv3_ptimer_write(uint32_t address, uint32_t value)
         case NV3_PTIMER_INTR_EN:
             nv3->ptimer.intr_en = value & 0x1;
             break;
-        // nUMERATOR
+        // The ratio: time so far runs at the old one (0 in either stops the timer)
         case NV3_PTIMER_NUMERATOR:
+            nv3_ptimer_update();
             nv3->ptimer.clock_numerator = value & 0xFFFF; // 15:0
             break;
         case NV3_PTIMER_DENOMINATOR:
-            // prevent Div0
-            if (!value)
-                value = 1;
-
+            nv3_ptimer_update();
             nv3->ptimer.clock_denominator = value & 0xFFFF; //15:0
             break;
-        // 64-bit value
-        // High part
+        // 64-bit value: a write replaces its half (it used to be ORed in, so TIME could never go back)
         case NV3_PTIMER_TIME_0_NSEC:
-            nv3->ptimer.time |= (value) & 0xFFFFFFE0; //28:0
+            nv3_ptimer_update();
+            nv3->ptimer.time    = (nv3->ptimer.time & 0xFFFFFFFF00000000ULL) | (value & 0xFFFFFFE0);
+            nv3->ptimer.frac_ns = 0.0;
             break;
-        // Low part
         case NV3_PTIMER_TIME_1_NSEC:
-            nv3->ptimer.time |= ((uint64_t)(value & 0xFFFFFFE0) << 32); // 31:5
+            nv3_ptimer_update();
+            nv3->ptimer.time    = (nv3->ptimer.time & 0xFFFFFFFFULL) | ((uint64_t) (value & 0x1FFFFFFF) << 32);
+            nv3->ptimer.frac_ns = 0.0;
             break;
         case NV3_PTIMER_ALARM_NSEC: 
             nv3->ptimer.alarm = value & 0xFFFFFFE0; // 31:5

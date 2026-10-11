@@ -37,7 +37,8 @@ void nv3_class_007_method(uint32_t param, uint32_t method_id, nv3_ramin_context_
             break; 
         default:
             /* Check for any rectangle point or size method. */
-            if (method_id >= NV3_RECTANGLE_START && method_id <= NV3_RECTANGLE_END)
+            /* END is the first method past rectangle 15 (0x478/0x47C) */
+            if (method_id >= NV3_RECTANGLE_START && method_id < NV3_RECTANGLE_END)
             {
                 uint32_t index = (method_id - NV3_RECTANGLE_START) >> 3;
 

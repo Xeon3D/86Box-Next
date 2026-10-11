@@ -108,6 +108,9 @@ nv3_pvideo_init(void)
     PV(PV_CSC_G)   = 62;
     PV(PV_CSC_B)   = 137;
     PV(PV_CSC_ADJ) = 0x10000;
+    /* the SVGA core's overlay follows the (now clear) registers: after a PCI reset it would
+       otherwise keep drawing the old window over the BIOS screen */
+    nv3_pvideo_update();
 }
 
 uint32_t nv3_pvideo_read(uint32_t address)

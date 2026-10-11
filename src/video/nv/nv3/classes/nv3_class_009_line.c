@@ -29,15 +29,8 @@
 #include <86box/nv/vid_nv3.h>
 
 /* Line drawing state, one per class: [0] LINE (0x09), [1] LIN (0x0A) */
-typedef struct nv3_line_state_s {
-    uint32_t color;
-    uint32_t cpoly_color;
-    int32_t  x0, y0;        /* LINE: first point of the pair */
-    int32_t  lx, ly;        /* last vertex, where a polyline continues from */
-    int32_t  x32[3];        /* LINE32/POLYLINE32 coordinates gathered so far */
-} nv3_line_state_t;
-
-static nv3_line_state_t nv3_line_state[2];
+/* per-channel primitive state (nv3_prim_state_t): [0] LINE, [1] LIN */
+#define nv3_line_state (nv3->pgraph.prim.line)
 
 static void
 nv3_line_to(nv3_line_state_t *st, int32_t x, int32_t y, uint32_t color, nv3_grobj_t grobj, bool last_pixel)

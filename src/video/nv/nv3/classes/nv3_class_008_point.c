@@ -28,9 +28,10 @@
 #include <86box/nv/vid_nv.h>
 #include <86box/nv/vid_nv3.h>
 
-static uint32_t nv3_point_color;
-static int32_t  nv3_point32_x;
-static uint32_t nv3_cpoint_color;
+/* per-channel primitive state (nv3_prim_state_t) */
+#define nv3_point_color  (nv3->pgraph.prim.point_color)
+#define nv3_point32_x    (nv3->pgraph.prim.point32_x)
+#define nv3_cpoint_color (nv3->pgraph.prim.cpoint_color)
 
 void nv3_class_008_method(uint32_t param, uint32_t method_id, nv3_ramin_context_t context, nv3_grobj_t grobj)
 {

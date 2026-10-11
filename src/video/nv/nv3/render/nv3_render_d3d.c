@@ -55,30 +55,8 @@ uint32_t nv3_dma_map_pages(uint32_t inst, uint32_t offset, uint32_t *addr, uint3
 #define NV3_D3D_CONFIG_DST_ZERO(c)    (((c) >> 30) & 1)
 #define NV3_D3D_CONFIG_SRC_ZERO(c)    (((c) >> 31) & 1)
 
-typedef struct nv3_d3d_vertex_s {
-    float    x, y, z, rhw, u, v;
-    uint32_t color; /* A8R8G8B8 */
-    uint8_t  fog;
-} nv3_d3d_vertex_t;
-
-static struct {
-    uint32_t tex_offset, tex_format, filter, fog_color;
-
-    /* the vertex being sent */
-    uint32_t         fog_tri;
-    nv3_d3d_vertex_t cur;
-    nv3_d3d_vertex_t vtx[16];
-
-    /* texture pages: valid while the texture state is unchanged */
-    bool     tex_mapped;
-    uint32_t tex_target;
-    uint32_t tex_lin;
-    uint32_t tex_pages[64];
-
-    /* class 0x18 */
-    int32_t  zpoint_x, zpoint_y;
-    uint32_t zpoint_color;
-} nv3_d3d;
+/* per-channel primitive state (nv3_prim_state_t, nv3_d3d_state_t) */
+#define nv3_d3d (nv3->pgraph.prim.d3d)
 
 /* Comparison and write-enable functions (nvhw nv03_pgraph_d3d_cmp/wren) */
 static bool

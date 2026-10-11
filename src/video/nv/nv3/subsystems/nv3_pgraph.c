@@ -313,8 +313,20 @@ void nv3_pgraph_write(uint32_t address, uint32_t value)
             *(uint32_t*)&nv3->pgraph.context_control = value;
             break;
         case NV3_PGRAPH_CONTEXT_USER:
+        {
+            /* the resman loading another channel's context: its primitive state comes with it
+               (on the chip the resman saves and reloads those registers itself) */
+            uint32_t old_chid = (nv3->pgraph.context_user >> NV3_PGRAPH_CONTEXT_USER_CHANNEL) & 0x7F;
+            uint32_t new_chid = (value >> NV3_PGRAPH_CONTEXT_USER_CHANNEL) & 0x7F;
+
+            if (old_chid != new_chid) {
+                nv3->prim_saved[old_chid]          = nv3->pgraph.prim;
+                nv3->pgraph.prim                   = nv3->prim_saved[new_chid];
+                nv3->pgraph.prim.d3d.tex_mapped    = false; /* page lookups go through the channel's DMA objects */
+            }
             nv3->pgraph.context_user = value;
             break;
+        }
         // Clip (18-bit signed)
         case NV3_PGRAPH_ABS_UCLIP_XMIN:
             nv3->pgraph.uclip_min[0] = ((int32_t) (value << 14)) >> 14;
@@ -706,7 +718,10 @@ void nv3_pgraph_submit(uint32_t param, uint16_t method, uint8_t channel, uint8_t
                 nv3_class_01c_method(param, method, context, grobj);
                 break;             
             default:
-                fatal("NV3 (nv3_pgraph_submit): Attempted to execute method on invalid, or unimplemented, class ID %s", nv3_class_names[class_id]);
+                /* a class with no hardware here: hand the method to the driver as a software method,
+                   as the class handlers do with methods they don't know (this used to be fatal()) */
+                nv_warning("NV3: method %04x on unimplemented class %02x (%s)\n", method, class_id, nv3_class_names[class_id & 0x1F]);
+                nv3_pgraph_interrupt_invalid(NV3_PGRAPH_INTR_1_SOFTWARE_METHOD_PENDING);
                 return;
         }
     }

@@ -166,6 +166,28 @@ uint32_t nv3_mmio_read32(uint32_t addr, UNUSED(void* priv))
 
 }
 
+/* A byte or word write goes out as a dword: the other bytes are the register's current value,
+   except in the write-1-to-clear interrupt status registers, where writing back what reads as
+   pending would acknowledge interrupts the driver never touched -- there they are 0 */
+static uint32_t nv3_mmio_partial_base(uint32_t addr)
+{
+    switch (addr & 0xFFFFFC) {
+        case NV3_PMC_INTR:
+        case NV3_PBUS_INTR:
+        case NV3_PFIFO_INTR:
+        case NV3_PRM_INTR:
+        case NV3_PTIMER_INTR:
+        case NV3_PME_INTR:
+        case NV3_PGRAPH_INTR_0:
+        case NV3_PGRAPH_INTR_1:
+        case NV3_PGRAPH_DMA_INTR_0:
+        case NV3_PVIDEO_INTR:
+            return 0;
+        default:
+            return nv3_mmio_read32(addr, NULL);
+    }
+}
+
 // Write 8-bit MMIO
 void nv3_mmio_write8(uint32_t addr, uint8_t val, void* priv)
 {
@@ -185,7 +207,7 @@ void nv3_mmio_write8(uint32_t addr, uint8_t val, void* priv)
     }
     
     // overwrite first 8bits of a 32 bit value
-    uint32_t new_val = nv3_mmio_read32(addr, NULL);
+    uint32_t new_val = nv3_mmio_partial_base(addr);
 
     new_val &= ~(0xFFu << ((addr & 3) << 3));
     new_val |= ((uint32_t) val << ((addr & 3) << 3));
@@ -212,7 +234,7 @@ void nv3_mmio_write16(uint32_t addr, uint16_t val, void* priv)
     }
 
     // overwrite first 16bits of a 32 bit value
-    uint32_t new_val = nv3_mmio_read32(addr, NULL);
+    uint32_t new_val = nv3_mmio_partial_base(addr);
 
     new_val &= ~(0xFFFFu << ((addr & 3) << 3));
     new_val |= ((uint32_t) val << ((addr & 3) << 3));
@@ -443,8 +465,7 @@ uint8_t nv3_pci_read(int32_t func, int32_t addr, UNUSED(int32_t len), UNUSED(voi
             ret = 0x00;
             break;
             
-        case NV3_PCI_CFG_SUBSYSTEM_ID_MIRROR_START:
-        case NV3_PCI_CFG_SUBSYSTEM_ID_MIRROR_END:
+        case NV3_PCI_CFG_SUBSYSTEM_ID_MIRROR_START ... NV3_PCI_CFG_SUBSYSTEM_ID_MIRROR_END:
             ret = nv3->nvbase.pci_config.pci_regs[NV3_PCI_CFG_SUBSYSTEM_ID + (addr & 0x03)];
             break;
 
@@ -574,8 +595,7 @@ void nv3_pci_write(int32_t func, int32_t addr, UNUSED(int32_t len), uint8_t val,
             break;
 
         // these are mirrored to the subsystem id and also stored in the ROMBIOS
-        case NV3_PCI_CFG_SUBSYSTEM_ID_MIRROR_START:
-        case NV3_PCI_CFG_SUBSYSTEM_ID_MIRROR_END:
+        case NV3_PCI_CFG_SUBSYSTEM_ID_MIRROR_START ... NV3_PCI_CFG_SUBSYSTEM_ID_MIRROR_END:
             nv3->nvbase.pci_config.pci_regs[NV3_PCI_CFG_SUBSYSTEM_ID + (addr & 0x03)] = val;
             break;
 
@@ -1025,35 +1045,23 @@ void nv3_draw_cursor(svga_t* svga, int32_t drawline)
     svga->hwcursor_latch.addr += NV3_PRAMDAC_CURSOR_SIZE_X * 2;
 }
 
-// MMIO 0x110000->0x111FFF is mapped to a mirror of the VBIOS.
-// Note this area is 64kb and the vbios is only 32kb. See below..
-
-uint8_t nv3_prom_read(uint32_t address)
+/* A dword of the VBIOS through the PROM window (0x110000-0x11FFFF, 64 KB; the image is 32 KB):
+   the arbiter hands over the dword-aligned address and nv3_mmio_read8/16 pick the bytes out, so
+   all four come back (only one used to, and the offset was kept in a uint8_t: the first 256 bytes,
+   repeated). Past the end of the image the window reads 0xFF. */
+uint32_t nv3_prom_read(uint32_t address)
 {
-    // prom area is 64k, so...
-    // first see if we even have a rom of 64kb in size
-    uint32_t max_rom_size = NV3_PROM_END - NV3_PROM_START;
-    uint32_t real_rom_size = max_rom_size;
+    uint32_t offset = (address - NV3_PROM_START) & ~3u;
+    uint32_t size   = (uint32_t) nv3->nvbase.vbios.sz;
+    uint32_t ret    = 0;
 
-    // set it
-    if ((uint32_t) nv3->nvbase.vbios.sz < max_rom_size)
-        real_rom_size = nv3->nvbase.vbios.sz;
-
-    //get our real address
-    uint8_t rom_address = address & max_rom_size;
-
-    // Does this mirror on real hardware?
-    if (rom_address >= real_rom_size)
-    {
-        nv_log("PROM VBIOS Read to INVALID address 0x%05x, returning 0xFF", rom_address);
-        return 0xFF;
+    for (uint32_t i = 0; i < 4; i++) {
+        uint8_t val = 0xFF;
+        if (nv3->nvbase.vbios.rom && (offset + i < size))
+            val = nv3->nvbase.vbios.rom[offset + i];
+        ret |= (uint32_t) val << (i * 8);
     }
-    else
-    {
-        uint8_t val = nv3->nvbase.vbios.rom[rom_address];
-        nv_log("PROM VBIOS Read 0x%05x <- 0x%05x", val, rom_address);
-        return val;
-    }
+    return ret;
 }
 
 void nv3_prom_write(uint32_t address, uint32_t value)
@@ -1269,7 +1277,11 @@ static void nv3_debug_hook(const char *args)
                svga->crtc[0], svga->crtc[1], svga->crtc[2], svga->crtc[3], svga->crtc[4], svga->crtc[5], svga->crtc[6], svga->crtc[7],
                svga->crtc[0x25], svga->crtc[0x2d], svga->crtc[0x30], svga->crtc[0x31],
                svga->seqregs[1], svga->gdcreg[6], svga->attrregs[0x10], svga->miscout);
-    always_log("nv3: straps %03x pfb boot %08x\n", nv3->straps, nv3_pfb_read(NV3_PFB_BOOT));
+    always_log("nv3: straps %03x pfb boot %08x subsystem %02x%02x:%02x%02x ptimer %016llx num %u den %u\n", nv3->straps,
+               nv3_pfb_read(NV3_PFB_BOOT), nv3->nvbase.pci_config.pci_regs[NV3_PCI_CFG_SUBSYSTEM_ID + 1],
+               nv3->nvbase.pci_config.pci_regs[NV3_PCI_CFG_SUBSYSTEM_ID], nv3->nvbase.pci_config.pci_regs[NV3_PCI_CFG_SUBSYSTEM_ID + 3],
+               nv3->nvbase.pci_config.pci_regs[NV3_PCI_CFG_SUBSYSTEM_ID + 2], (unsigned long long) nv3->ptimer.time,
+               nv3->ptimer.clock_numerator, nv3->ptimer.clock_denominator);
     always_log("nv3: hdisp %d htotal %d hblankstart %d hblank_end %02x/%02x sub %d x_add %d left %d mon_overscan_x %d CR1A %02x CR03 %02x CR05 %02x\n",
                svga->hdisp, svga->htotal, svga->hblankstart, svga->hblank_end_val, svga->hblank_end_mask, svga->hblank_sub,
                svga->x_add, svga->left_overscan, svga->monitor->mon_overscan_x, svga->crtc[0x1a], svga->crtc[3], svga->crtc[5]);
@@ -1288,6 +1300,11 @@ static void nv3_debug_hook(const char *args)
                    (line > 0) ? pclk / line / 1000.0 : 0.0, (line > 0 && svga->vtotal) ? pclk / line / svga->vtotal : 0.0,
                    svga->clock);
     }
+    always_log("nv3: pvideo control %08x key %08x point %08x size %08x scale %08x start %06x/%06x pitch %x/%x | overlay ena %d %d,%d %dx%d bpp %d\n",
+               nv3->pvideo.regs[0x44 >> 2], nv3->pvideo.regs[0x40 >> 2], nv3->pvideo.regs[0x30 >> 2], nv3->pvideo.regs[0x34 >> 2],
+               nv3->pvideo.regs[0x00 >> 2], nv3->pvideo.regs[0x0C >> 2], nv3->pvideo.regs[0x10 >> 2], nv3->pvideo.regs[0x14 >> 2],
+               nv3->pvideo.regs[0x18 >> 2], svga->overlay.ena, svga->overlay.x, svga->overlay.y, svga->overlay.cur_xsize,
+               svga->overlay.cur_ysize, svga->bpp);
     for (int b = 0; b < NV3_PGRAPH_MAX_BUFFERS; b++)
         always_log("nv3: buffer %d offset %06x pitch %d bpixel %08x\n", b, nv3->pgraph.boffset[b], nv3->pgraph.bpitch[b], nv3->pgraph.bpixel[b]);
     always_log("nv3: dst canvas %08x-%08x uclip %d,%d-%d,%d cliprect ctrl %x | rop %02x beta %08x chroma %08x pattern shape %d rgb %08x/%08x a %02x/%02x bits %08x%08x | ctx %08x debug0 %08x\n",
@@ -1614,6 +1631,7 @@ static void nv3_reset(UNUSED(void* priv))
     memset(&nv3->ramfc, 0, sizeof(nv3->ramfc));
     memset(&nv3->pvideo, 0, sizeof(nv3->pvideo));
     memset(&nv3->pme, 0, sizeof(nv3->pme));
+    memset(nv3->prim_saved, 0, sizeof(nv3->prim_saved));
     nv3->nvbase.cio_read_bank = nv3->nvbase.cio_write_bank = 0;
 
     nv3_pstraps_init();
@@ -1621,6 +1639,7 @@ static void nv3_reset(UNUSED(void* priv))
     nv3_pfb_init();
     nv3_pramdac_init();
     nv3_pgraph_init();
+    nv3_pvideo_init();
 
     nv3_pmc_clear_interrupts();
 }
