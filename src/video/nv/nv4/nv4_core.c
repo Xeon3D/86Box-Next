@@ -771,6 +771,7 @@ nv4_reset(void *priv)
     memset(nv4->pci_regs, 0, sizeof(nv4->pci_regs));
     nv4->pci_regs[0x3c] = 0xff;
     nv4->pci_regs[0x54] = 0x01; /* VGA decode on */
+    nv4->pci_regs[PCI_REG_COMMAND] = PCI_COMMAND_IO | PCI_COMMAND_MEM;
     nv4->pbus_pci_nv20  = 0;
     nv4->pbus_pci_nv22  = 0x0023d6ce;
     nv4->pbus_pci_nv23  = 0x0f;

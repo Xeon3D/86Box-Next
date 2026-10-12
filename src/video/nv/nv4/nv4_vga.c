@@ -37,14 +37,23 @@
 #include <86box/vid_ddc.h>
 #include <86box/nv/vid_nv4.h>
 
-/* The legacy decode is on while PCI_NV_21 VGA is set. The PCI command
-   register's I/O and memory enables are not applied to it: the
-   emulator's system BIOSes bring the primary display up before they
-   enumerate PCI, as the other PCI display devices here assume. */
+/* The legacy decode is on while PCI_NV_21 VGA is set, the ports with
+   the PCI command register's I/O enable and the A0000 window with its
+   memory enable. The command register comes out of reset with both on
+   (as the RIVA 128's), since the emulator's system BIOSes bring the
+   primary display up before they enumerate PCI. Windows turns both off
+   on a display adapter it has no driver for; drawing on through the
+   window with the ports gone garbles the screen. */
 static int
 nv4_vga_io_enabled(const nv4_t *nv4)
 {
-    return nv4->pci_regs[0x54] & 0x01;
+    return (nv4->pci_regs[0x54] & 0x01) && (nv4->pci_regs[PCI_REG_COMMAND] & PCI_COMMAND_IO);
+}
+
+static int
+nv4_vga_mem_enabled(const nv4_t *nv4)
+{
+    return (nv4->pci_regs[0x54] & 0x01) && (nv4->pci_regs[PCI_REG_COMMAND] & PCI_COMMAND_MEM);
 }
 
 /* ------------------------------------------------------------------ */
@@ -137,13 +146,13 @@ nv4_vga_mem_writel(uint32_t addr, uint32_t val, void *priv)
 }
 
 /* The window follows GR06 as on any VGA, and goes away with the VGA
-   decode. */
+   or memory decode. */
 void
 nv4_vga_update_mapping(nv4_t *nv4)
 {
     svga_t *svga = &nv4->svga;
 
-    if (!nv4_vga_io_enabled(nv4)) {
+    if (!nv4_vga_mem_enabled(nv4)) {
         mem_mapping_disable(&svga->mapping);
         return;
     }
