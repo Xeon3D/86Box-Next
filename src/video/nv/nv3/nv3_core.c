@@ -336,13 +336,15 @@ uint8_t nv3_pci_read(int32_t func, int32_t addr, UNUSED(int32_t len), UNUSED(voi
 
         // device id
 
+        /* device id: the RIVA 128 ZX (revision C) is 0x0019 -- NVIDIA's manufacturing test calls
+           0x0018 with revision C an unknown chip */
         case NV3_PCI_CFG_DEVICE_ID:
-            ret = (NV_PCI_DEVICE_NV3 & 0xFF);
-            break;
-        
         case NV3_PCI_CFG_DEVICE_ID + 1:
-            ret = (NV_PCI_DEVICE_NV3 >> 8);
+        {
+            uint16_t id = (nv3->nvbase.gpu_revision == NV3_PCI_CFG_REVISION_C00) ? NV_PCI_DEVICE_NV3T : NV_PCI_DEVICE_NV3;
+            ret = (addr == NV3_PCI_CFG_DEVICE_ID) ? (id & 0xFF) : (id >> 8);
             break;
+        }
         
         // various capabilities enabled by default 
         // IO space         enabled
@@ -698,6 +700,12 @@ void nv3_recalc_timings(svga_t* svga)
        so the SVGA core draws the screen; PGRAPH and the linear framebuffer only mark
        what they change in changedvram. */
     svga->override = 0;
+
+    /* The extended modes scan VRAM out linearly, so CPU accesses through the banked A0000 window
+       in chain-4 must be linear too; only VGA mode 13h keeps the planar chain-4 layout its
+       doubleword scan-out reads. (Packed modes drawn through the window -- NVIDIA's mfgtest, VESA
+       DOS programs -- came out as 4-pixel slivers every 16 pixels.) */
+    svga->packed_chain4 = (pixel_mode != NV3_CRTC_REGISTER_PIXELMODE_VGA);
 
     switch (pixel_mode)
     {
@@ -1380,6 +1388,37 @@ static void nv3_debug_hook(const char *args)
         nv3_mmio_trace_hi   = strtoul(end, NULL, 16);
         if (!nv3_mmio_trace_hi)
             nv3_mmio_trace_hi = 0xFFFFFFFF;
+    }
+    /* "dev nv3 save <path>": VRAM to <path>, and the CRTC/sequencer/graphics/attribute registers,
+       miscout, DAC mask and the 256-entry palette (as 8-bit RGB from pallook) to <path>.regs */
+    const char *save_arg = args ? strstr(args, "save ") : NULL;
+    if (save_arg) {
+        char  path[512];
+        FILE *f;
+
+        snprintf(path, sizeof(path), "%s", save_arg + 5);
+        path[strcspn(path, "\r\n ")] = '\0';
+        if ((f = fopen(path, "wb"))) {
+            fwrite(svga->vram, 1, svga->vram_max, f);
+            fclose(f);
+        }
+        strncat(path, ".regs", sizeof(path) - strlen(path) - 1);
+        if ((f = fopen(path, "wb"))) {
+            fwrite(svga->crtc, 1, 0x40, f);
+            fwrite(svga->seqregs, 1, 0x20, f);
+            fwrite(svga->gdcreg, 1, 0x10, f);
+            fwrite(svga->attrregs, 1, 0x20, f);
+            fputc(svga->miscout, f);
+            fputc(svga->dac_mask, f);
+            for (int i = 0; i < 256; i++) {
+                uint32_t c = svga->pallook[i];
+                fputc((c >> 16) & 0xFF, f);
+                fputc((c >> 8) & 0xFF, f);
+                fputc(c & 0xFF, f);
+            }
+            fclose(f);
+        }
+        always_log("nv3: saved VRAM and registers to %s\n", path);
     }
     /* "dev nv3 cache1": every CACHE1 entry from GET to PUT */
     if (args && strstr(args, "cache1")) {
