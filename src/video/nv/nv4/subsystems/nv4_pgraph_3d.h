@@ -21,8 +21,8 @@
 struct nv4_gpu_s;
 
 #define B3D_STATES 64
-#define B3D_TRIS   4096
-#define B3D_SPANS  65536
+#define B3D_TRIS   16384
+#define B3D_SPANS  262144
 
 /* Attributes interpolated across a triangle */
 enum {
@@ -145,6 +145,10 @@ typedef struct nv4_3d_batch_s {
 extern struct nv4_gpu_s *nv4_gpu_init(nv4_t *nv4);
 extern int               nv4_gpu_shade(struct nv4_gpu_s *g, nv4_t *nv4, const nv4_3d_batch_t *b);
 extern void              nv4_gpu_close(struct nv4_gpu_s *g);
+/* The batch in flight: wait for it and copy its rows into VRAM; does
+   it touch bytes lo..hi? */
+extern void              nv4_gpu_wait(struct nv4_gpu_s *g, nv4_t *nv4);
+extern int               nv4_gpu_pending_overlaps(struct nv4_gpu_s *g, uint32_t lo, uint32_t hi);
 extern void              nv4_gpu_counts(struct nv4_gpu_s *g, uint64_t *batches, uint64_t *fallbacks);
 
 #endif

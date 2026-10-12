@@ -30,7 +30,14 @@
  *
  *          A batch is flushed before anything that must see its pixels:
  *          another class's method, a notifier, CPU access to the
- *          framebuffer, the FIFO running dry, a full batch.
+ *          framebuffer (linear or the VGA window), the start of vertical
+ *          blank (so a frame is on screen by the next one), a full
+ *          batch. With the GPU lane a flush only submits; nv4_3d_sync
+ *          also waits for the pixels, for whatever touches VRAM itself
+ *          (the framebuffer windows, the 2D classes), and vertical blank
+ *          waits when the batch draws into the displayed bytes. Not when the FIFO runs dry: the driver moves PUT every
+ *          few triangles, and small batches cost the GPU lane a dispatch
+ *          each.
  *
  *          With the "Render threads" option above 1 a flush shades on
  *          worker threads. Every worker walks the whole span list in
@@ -1174,6 +1181,8 @@ nv4_3d_shade_verify(nv4_t *nv4, nv4_3d_batch_t *b)
         nv4_3d_shade_serial(nv4, b);
         return;
     }
+    if (b->gpu)
+        nv4_gpu_wait(b->gpu, nv4);
     memcpy(b->vres, nv4->svga.vram, size);
     memcpy(nv4->svga.vram, b->vsnap, size);
     nv4_3d_shade_serial(nv4, b);
@@ -1235,8 +1244,12 @@ nv4_3d_flush(nv4_t *nv4)
             nv4_3d_shade_verify(nv4, b);
         else if (!nv4_3d_shade_parallel(nv4, b))
             nv4_3d_shade_serial(nv4, b);
-    } else
+    } else {
+        /* the CPU draws into VRAM: the GPU's batch in flight first */
+        if (b->gpu)
+            nv4_gpu_wait(b->gpu, nv4);
         nv4_3d_shade_serial(nv4, b);
+    }
     b->st_flushes++;
     b->st_spans += b->nspans;
     b->st_us += nv4_3d_now_us() - t0;
@@ -1248,6 +1261,27 @@ nv4_3d_flush(nv4_t *nv4)
     b->serial   = 0;
     for (int c = 0; c < NV4_CHANNELS; c++)
         nv4->d3d[c].state = -1;
+}
+
+/* Draw the batch and, when the GPU has one in flight, wait for its
+   pixels: for anything that reads or writes VRAM itself. */
+void
+nv4_3d_sync(nv4_t *nv4)
+{
+    nv4_3d_flush(nv4);
+    if (nv4->batch3d && nv4->batch3d->gpu)
+        nv4_gpu_wait(nv4->batch3d->gpu, nv4);
+}
+
+/* Vertical blank: the batch is drawn, and waited for only if it draws
+   into the scanned-out bytes lo..hi (a back buffer can stay in
+   flight). */
+void
+nv4_3d_vblank(nv4_t *nv4, uint32_t lo, uint32_t hi)
+{
+    nv4_3d_flush(nv4);
+    if (nv4->batch3d && nv4->batch3d->gpu && nv4_gpu_pending_overlaps(nv4->batch3d->gpu, lo, hi))
+        nv4_gpu_wait(nv4->batch3d->gpu, nv4);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1627,6 +1661,8 @@ void
 nv4_3d_reset(nv4_t *nv4)
 {
     if (nv4->batch3d) {
+        if (nv4->batch3d->gpu)
+            nv4_gpu_wait(nv4->batch3d->gpu, nv4);
         nv4->batch3d->nspans   = 0;
         nv4->batch3d->ntris    = 0;
         nv4->batch3d->nstates  = 0;

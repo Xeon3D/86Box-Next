@@ -247,7 +247,7 @@ nv4_pgraph_method(nv4_t *nv4, int chid, int subc, uint32_t mthd, uint32_t data)
     }
     /* a 3D batch is drawn before anything else touches memory */
     if ((cls != 0x54) && (cls != 0x55))
-        nv4_3d_flush(nv4);
+        nv4_3d_sync(nv4);
     r = nv4_pgraph_common_method(nv4, mthd, data);
     if (r < 0) {
         if ((cls == 0x54) || (cls == 0x55))

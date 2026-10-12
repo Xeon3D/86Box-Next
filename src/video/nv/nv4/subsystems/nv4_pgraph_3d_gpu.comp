@@ -17,10 +17,12 @@
  *          through f2i, which both sides define the same way for
  *          values out of range.
  *
- *          One workgroup owns one framebuffer row and walks that row's
- *          spans in submission order, with a barrier between spans, so
- *          overlapping triangles land in draw order. Bytes are written
- *          with atomics: neighbouring 16-bit pixels share a word.
+ *          A workgroup covers 64 pixels of one framebuffer row; each
+ *          invocation owns one pixel and walks the row's spans in
+ *          submission order, shading the ones that cover it, so
+ *          overlapping triangles land in draw order with no barriers.
+ *          Bytes are written with atomics: neighbouring 16-bit pixels
+ *          share a word.
  *
  *          Regenerate the SPIR-V header with
  *          scripts/regen-nv4-gpu-spv.sh after changing this file.
@@ -83,7 +85,7 @@ struct tri_t {
     float c[14], dx[14], dy[14];
 };
 
-layout(std430, binding = 0) coherent buffer Vram { uint vram[]; };
+layout(std430, binding = 0) buffer Vram { uint vram[]; };
 layout(std430, binding = 1) readonly buffer Texm { uint texm[]; };
 layout(std430, binding = 2) readonly buffer States { state_t st[]; };
 layout(std430, binding = 3) readonly buffer Tris { tri_t tris[]; };
@@ -108,19 +110,39 @@ vbyte(uint a)
     return (vram[a >> 2] >> ((a & 3u) * 8u)) & 0xffu;
 }
 
+/* n bytes at a, little-endian; one load when they share a word */
 uint
 vread(uint a, int n)
 {
     uint r = 0u;
 
+    a &= pc.vram_mask;
+    if ((n == 2) && ((a & 3u) != 3u))
+        return (vram[a >> 2] >> ((a & 3u) * 8u)) & 0xffffu;
+    if ((n == 4) && ((a & 3u) == 0u))
+        return vram[a >> 2];
     for (int i = 0; i < n; i++)
         r |= vbyte(a + uint(i)) << (8 * i);
     return r;
 }
 
+/* Other invocations write the other bytes of a word: merge with
+   atomics, or store a word this pixel owns whole. */
 void
 vwrite(uint a, int n, uint v)
 {
+    a &= pc.vram_mask;
+    if ((n == 2) && ((a & 3u) != 3u)) {
+        uint sh = (a & 3u) * 8u;
+
+        atomicAnd(vram[a >> 2], ~(0xffffu << sh));
+        atomicOr(vram[a >> 2], (v & 0xffffu) << sh);
+        return;
+    }
+    if ((n == 4) && ((a & 3u) == 0u)) {
+        vram[a >> 2] = v;
+        return;
+    }
     for (int i = 0; i < n; i++) {
         uint b  = (a + uint(i)) & pc.vram_mask;
         uint sh = (b & 3u) * 8u;
@@ -135,6 +157,12 @@ tread(uint a, int n)
 {
     uint r = 0u;
 
+    if (n == 1)
+        return (texm[a >> 2] >> ((a & 3u) * 8u)) & 0xffu;
+    if ((n == 2) && ((a & 3u) != 3u))
+        return (texm[a >> 2] >> ((a & 3u) * 8u)) & 0xffffu;
+    if ((n == 4) && ((a & 3u) == 0u))
+        return texm[a >> 2];
     for (int i = 0; i < n; i++) {
         uint b = a + uint(i);
 
@@ -172,18 +200,26 @@ rgba(uint c)
 
 /* ---- texturing ---- */
 uint
+part1by1(uint x)
+{
+    x &= 0x0000ffffu;
+    x = (x | (x << 8)) & 0x00ff00ffu;
+    x = (x | (x << 4)) & 0x0f0f0f0fu;
+    x = (x | (x << 2)) & 0x33333333u;
+    x = (x | (x << 1)) & 0x55555555u;
+    return x;
+}
+
+/* nv4_swizzle: u and v bits interleave, u first, while both have bits;
+   the larger dimension's remaining bits follow. u < 2^wl, v < 2^hl. */
+uint
 swizzle(uint u, uint v, int wl, int hl)
 {
-    uint r   = 0u;
-    int  bit = 0;
+    int  m  = min(wl, hl);
+    uint mk = (1u << m) - 1u;
+    uint hi = (wl > hl) ? (u >> m) : (v >> m);
 
-    for (int i = 0; (i < wl) || (i < hl); i++) {
-        if (i < wl)
-            r |= ((u >> i) & 1u) << bit++;
-        if (i < hl)
-            r |= ((v >> i) & 1u) << bit++;
-    }
-    return r;
+    return part1by1(u & mk) | (part1by1(v & mk) << 1) | (hi << (2 * m));
 }
 
 uint
@@ -345,10 +381,10 @@ log2_bits(float r)
     return e + m;
 }
 
+/* nv4_lod; iq is 1/q, worked out once per pixel */
 float
-lod_of(int au, int av, float q, float uq, float vq, int wl, int hl)
+lod_of(int au, int av, float q, float iq, float uq, float vq, int wl, int hl)
 {
-    precise float iq   = fdiv_cr(1.0, q);
     precise float iq2  = iq * iq;
     precise float dudx = (T.dx[au] * q - uq * T.dx[AT_Q]) * iq2 * float(1 << wl);
     precise float dvdx = (T.dx[av] * q - vq * T.dx[AT_Q]) * iq2 * float(1 << hl);
@@ -608,6 +644,21 @@ unpack_color(uint v)
     return c;
 }
 
+/* One texture stage; white when off. */
+ivec4
+tex_stage(int n, int au, int av, float q, float iq, float uq, float vq, inout bool killed)
+{
+    if (S.tex[n].on == 0)
+        return ivec4(255);
+    {
+        precise float u   = uq * iq;
+        precise float v   = vq * iq;
+        float         lod = lod_of(au, av, (S.persp != 0) ? q : 1.0, iq, uq, vq, S.tex[n].wlog, S.tex[n].hlog);
+
+        return rgba(sample_tex(n, u, v, lod, S.color_key, killed));
+    }
+}
+
 /* ---- one pixel: nv4_3d_span's loop body ---- */
 void
 shade(int x, int y)
@@ -647,21 +698,17 @@ shade(int x, int y)
     d    = ivec4(clamp255(f2i(at[AT_R])), clamp255(f2i(at[AT_G])), clamp255(f2i(at[AT_B])), clamp255(f2i(at[AT_A])));
     spec = ivec4(clamp255(f2i(at[AT_SR])), clamp255(f2i(at[AT_SG])), clamp255(f2i(at[AT_SB])), clamp255(f2i(at[AT_FOG])));
 
-    /* textures */
-    for (int n = 0; n < 2; n++) {
-        src[5 + n] = ivec4(255);
-        if (S.tex[n].on == 0)
-            continue;
-        {
-            int           au = (n != 0) ? AT_U1 : AT_U0;
-            int           av = (n != 0) ? AT_V1 : AT_V0;
-            precise float iq = (S.persp != 0) ? fdiv_cr(1.0, at[AT_Q]) : 1.0;
-            precise float u  = at[au] * iq;
-            precise float v  = at[av] * iq;
-            float         lod = lod_of(au, av, (S.persp != 0) ? at[AT_Q] : 1.0, at[au], at[av], S.tex[n].wlog, S.tex[n].hlog);
+    /* textures, one call per stage so every index is a constant */
+    {
+        /* 1/q, which the CPU works out per stage and again per LOD: the
+           same correctly rounded quotient every time, so once here
+           (1/1 is 1 without perspective) */
+        precise float iq = 1.0;
 
-            src[5 + n] = rgba(sample_tex(n, u, v, lod, S.color_key, killed));
-        }
+        if ((S.persp != 0) && ((S.tex[0].on != 0) || (S.tex[1].on != 0)))
+            iq = fdiv_cr(1.0, at[AT_Q]);
+        src[5] = tex_stage(0, AT_U0, AT_V0, at[AT_Q], iq, at[AT_U0], at[AT_V0], killed);
+        src[6] = tex_stage(1, AT_U1, AT_V1, at[AT_Q], iq, at[AT_U1], at[AT_V1], killed);
     }
     if (killed)
         return;
@@ -780,15 +827,15 @@ void
 main()
 {
     uvec2 row = rows[gl_WorkGroupID.x];
+    int   x   = int(gl_WorkGroupID.y) * 64 + int(gl_LocalInvocationID.x);
 
     for (uint k = 0u; k < row.y; k++) {
         ivec4 sp = spans[row.x + k];
 
+        if ((x < sp.y) || (x >= sp.z))
+            continue;
         g_ti = uint(sp.w);
         g_si = uint(tris[g_ti].state);
-        for (int x = sp.y + int(gl_LocalInvocationID.x); x < sp.z; x += 64)
-            shade(x, sp.x);
-        memoryBarrierBuffer();
-        barrier();
+        shade(x, sp.x);
     }
 }

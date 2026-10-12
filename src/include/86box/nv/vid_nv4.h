@@ -650,6 +650,8 @@ extern void nv4_pgraph_2d_reset_chan(nv4_gr_chan_t *ch);
 /* subsystems/nv4_pgraph_3d.c: the Direct3D classes */
 extern int  nv4_pgraph_3d_method(nv4_t *nv4, int chid, int cls, uint32_t mthd, uint32_t data);
 extern void nv4_3d_flush(nv4_t *nv4);
+extern void nv4_3d_sync(nv4_t *nv4);
+extern void nv4_3d_vblank(nv4_t *nv4, uint32_t lo, uint32_t hi);
 extern void nv4_3d_init(nv4_t *nv4);
 extern void nv4_3d_close(nv4_t *nv4);
 extern void nv4_3d_reset(nv4_t *nv4);

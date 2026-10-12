@@ -44,7 +44,7 @@
 #include <86box/nv/vid_nv4.h>
 
 /* CPU access to the framebuffer sees the 3D engine's pixels */
-#define NV4_3D_SYNC(nv4) nv4_3d_flush(nv4)
+#define NV4_3D_SYNC(nv4) nv4_3d_sync(nv4)
 
 #ifdef ENABLE_NV4_LOG
 int nv4_do_log = ENABLE_NV4_LOG;
@@ -178,8 +178,10 @@ nv4_mmio_byte_wide(uint32_t addr)
 static uint8_t
 nv4_mmio_read8_bytewide(nv4_t *nv4, uint32_t addr)
 {
-    if (addr >= NV4_PRMVGA_START && addr <= NV4_PRMVGA_END)
+    if (addr >= NV4_PRMVGA_START && addr <= NV4_PRMVGA_END) {
+        NV4_3D_SYNC(nv4);
         return svga_read(addr - NV4_PRMVGA_START + 0xa0000, &nv4->svga);
+    }
     if (addr >= NV4_PRMVIO_START && addr <= NV4_PRMVIO_END)
         return nv4_vga_in((addr & 0xffff) & 0x3ff, nv4);
     if (addr >= NV4_PRMCIO_START && addr <= NV4_PRMCIO_END)
@@ -194,9 +196,10 @@ nv4_mmio_read8_bytewide(nv4_t *nv4, uint32_t addr)
 static void
 nv4_mmio_write8_bytewide(nv4_t *nv4, uint32_t addr, uint8_t val)
 {
-    if (addr >= NV4_PRMVGA_START && addr <= NV4_PRMVGA_END)
+    if (addr >= NV4_PRMVGA_START && addr <= NV4_PRMVGA_END) {
+        NV4_3D_SYNC(nv4);
         svga_write(addr - NV4_PRMVGA_START + 0xa0000, val, &nv4->svga);
-    else if (addr >= NV4_PRMVIO_START && addr <= NV4_PRMVIO_END)
+    } else if (addr >= NV4_PRMVIO_START && addr <= NV4_PRMVIO_END)
         nv4_vga_out((addr & 0xffff) & 0x3ff, val, nv4);
     else if (addr >= NV4_PRMCIO_START && addr <= NV4_PRMCIO_END)
         nv4_vga_out((addr & 0xfff) & 0x3ff, val, nv4);

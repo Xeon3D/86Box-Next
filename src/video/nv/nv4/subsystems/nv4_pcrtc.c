@@ -112,6 +112,15 @@ nv4_vblank_start(svga_t *svga)
 {
     nv4_t *nv4 = (nv4_t *) svga->priv;
 
+    /* what the 3D engine has queued is on screen by the next frame
+       (waited for only when it draws into the displayed bytes) */
+    {
+        uint32_t lo   = svga->memaddr_latch << 2;
+        uint32_t span = svga->rowoffset << 3;
+        uint32_t len  = ((span > (uint32_t) svga->hdisp * 4) ? span : (uint32_t) svga->hdisp * 4) * svga->dispend;
+
+        nv4_3d_vblank(nv4, lo, lo + len);
+    }
     nv4->pcrtc_intr |= 1;
     nv4_pmc_update_irq(nv4);
 }

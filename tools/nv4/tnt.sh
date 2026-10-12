@@ -21,9 +21,9 @@ cmd)
     for i in $(seq 1 100); do [ -f "$CMDF" ] || break; sleep 0.1; done ;;
 shot)
     mkdir -p "$SHOTS"
-    "$0" cmd "shot $WW\$2.bmp"
+    bash "$0" cmd "shot $WW\\$2.bmp"
     sleep 0.5
-    py -c "from PIL import Image; Image.open(r'$WW\$2.bmp').save(r'$(cygpath -w "$SHOTS")\$2.png')" 2>/dev/null || echo "no PIL; bmp at $W/$2.bmp" ;;
+    py -c "from PIL import Image; Image.open(r'$WW\\$2.bmp').save(r'$(cygpath -w "$SHOTS")\\$2.png')" 2>/dev/null || echo "no PIL; bmp at $W/$2.bmp" ;;
 stop)
     powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='86Box-Next.exe'\" | Where-Object { \$_.CommandLine -like '*work-tnt*' } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force }" ;;
 esac

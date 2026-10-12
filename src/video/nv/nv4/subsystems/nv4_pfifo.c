@@ -548,8 +548,9 @@ nv4_pfifo_run(nv4_t *nv4)
         }
     } while (work);
 
-    /* the FIFO ran dry: draw what the 3D engine has queued */
-    nv4_3d_flush(nv4);
+    /* The 3D batch is not drawn when the FIFO runs dry: the driver
+       moves PUT every few triangles, and nothing can see the pixels
+       until a sync point (nv4_pgraph_3d.c) draws them. */
     p->busy = 0;
 }
 
