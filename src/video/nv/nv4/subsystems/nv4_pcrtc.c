@@ -167,6 +167,26 @@ nv4_recalctimings(svga_t *svga)
         svga->hblank_end_mask = 0x7f;
     }
 
+    /* Line compare has no bit 10 (CR25 extends the other vertical
+       values only), so the drivers' "no split" 0x3FF would restart the
+       scan-out at line 1024 and repeat the top of a taller screen: at its
+       maximum it never cuts one. */
+    if ((svga->split == 0x400) && (svga->dispend > 0x400))
+        svga->split = 0x7fffffff;
+
+    /* Horizontal blank end is compared from the character after blank
+       start, so an end equal to the start in the compared bits blanks a
+       whole 64 (or 128) characters; the SVGA core would match at once and
+       make a huge overscan. Give it the end with the 7-bit compare. */
+    {
+        uint32_t mask = (svga->hblank_end_val & ~0x3f) ? svga->hblank_end_mask : 0x3f;
+
+        if (((svga->hblankstart ^ svga->hblank_end_val) & mask) == 0) {
+            svga->hblank_end_val  = 0x80 | ((svga->hblankstart + mask + 1) & 0x7f);
+            svga->hblank_end_mask = 0x7f;
+        }
+    }
+
     /* Interlace: CR39 is the half-line point, 0xff disables it. */
     svga->interlace = (svga->crtc[NV4_CR_ILACE] != 0xff);
 
