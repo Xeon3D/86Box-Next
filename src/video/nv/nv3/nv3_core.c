@@ -925,22 +925,20 @@ void nv3_svga_write(uint16_t addr, uint8_t val, UNUSED(void* priv))
             nv3->nvbase.svga.crtc[crtcreg] = val;
             // ...now act on it
 
-            // Handle nvidia extended Bank0/Bank1 IDs
+            /* CR1D/CR1E, the page registers: pages sit on 32K boundaries of the CPU's address in
+               normal (planar), odd/even and chain-4 modes. In planar mode a CPU byte spans all
+               four planes, so that is 32K of plane address -- the SVGA core adds the bank before it
+               spreads the address over the planes. (It used to be 8K in planar modes, so VESA
+               planar modes past 64K per plane -- 1280x1024x16 -- wrapped onto themselves.) */
             switch (crtcreg)
             {
                 case NV3_CRTC_REGISTER_READ_BANK:
                     nv3->nvbase.cio_read_bank = val;
-                    if (nv3->nvbase.svga.chain4) // chain4 addressing (planar?)
-                        nv3->nvbase.svga.read_bank = nv3->nvbase.cio_read_bank << 15;
-                    else
-                        nv3->nvbase.svga.read_bank = nv3->nvbase.cio_read_bank << 13; // extended bank numbers
+                    nv3->nvbase.svga.read_bank = nv3->nvbase.cio_read_bank << 15;
                     break;
                 case NV3_CRTC_REGISTER_WRITE_BANK:
                     nv3->nvbase.cio_write_bank = val;
-                    if (nv3->nvbase.svga.chain4)
-                        nv3->nvbase.svga.write_bank = nv3->nvbase.cio_write_bank << 15;
-                    else
-                        nv3->nvbase.svga.write_bank = nv3->nvbase.cio_write_bank << 13;
+                    nv3->nvbase.svga.write_bank = nv3->nvbase.cio_write_bank << 15;
                     break;
                 case NV3_CRTC_REGISTER_RMA:
                     nv3->pbus.rma.mode = val & NV3_CRTC_REGISTER_RMA_MODE_MAX;
@@ -1288,6 +1286,57 @@ void nv3_update_mappings(void)
    number of methods each class has executed. */
 uint32_t nv3_debug_class_count[32];
 
+/* VRAM to <path>, and the CRTC/sequencer/graphics/attribute registers, miscout, DAC mask and the
+   256-entry palette (as 8-bit RGB from pallook) to <path>.regs */
+static void nv3_debug_save(const char *path_in)
+{
+    svga_t *svga = &nv3->nvbase.svga;
+    char    path[512];
+    FILE   *f;
+
+    snprintf(path, sizeof(path), "%s", path_in);
+    if ((f = fopen(path, "wb"))) {
+        fwrite(svga->vram, 1, svga->vram_max, f);
+        fclose(f);
+    }
+    strncat(path, ".regs", sizeof(path) - strlen(path) - 1);
+    if ((f = fopen(path, "wb"))) {
+        fwrite(svga->crtc, 1, 0x40, f);
+        fwrite(svga->seqregs, 1, 0x20, f);
+        fwrite(svga->gdcreg, 1, 0x10, f);
+        fwrite(svga->attrregs, 1, 0x20, f);
+        fputc(svga->miscout, f);
+        fputc(svga->dac_mask, f);
+        for (int i = 0; i < 256; i++) {
+            uint32_t c = svga->pallook[i];
+            fputc((c >> 16) & 0xFF, f);
+            fputc((c >> 8) & 0xFF, f);
+            fputc(c & 0xFF, f);
+        }
+        fclose(f);
+    }
+    always_log("nv3: saved VRAM and registers to %s\n", path);
+}
+
+/* "dev nv3 arm": a save once a given mode has been on screen for a while (called at vblank) */
+void (*nv3_debug_vblank_hook)(void);
+static int  nv3_arm_w, nv3_arm_h, nv3_arm_frames;
+static char nv3_arm_path[512];
+
+static void nv3_debug_arm_vblank(void)
+{
+    svga_t *svga = &nv3->nvbase.svga;
+
+    if ((svga->hdisp != nv3_arm_w) || (svga->dispend != nv3_arm_h)) {
+        nv3_arm_frames = 0;
+        return;
+    }
+    if (++nv3_arm_frames < 120)
+        return;
+    nv3_debug_vblank_hook = NULL;
+    nv3_debug_save(nv3_arm_path);
+}
+
 static void nv3_debug_hook(const char *args)
 {
     svga_t  *svga = &nv3->nvbase.svga;
@@ -1389,36 +1438,27 @@ static void nv3_debug_hook(const char *args)
         if (!nv3_mmio_trace_hi)
             nv3_mmio_trace_hi = 0xFFFFFFFF;
     }
-    /* "dev nv3 save <path>": VRAM to <path>, and the CRTC/sequencer/graphics/attribute registers,
-       miscout, DAC mask and the 256-entry palette (as 8-bit RGB from pallook) to <path>.regs */
+    /* "dev nv3 save <path>": VRAM and registers now (see nv3_debug_save) */
     const char *save_arg = args ? strstr(args, "save ") : NULL;
     if (save_arg) {
-        char  path[512];
-        FILE *f;
-
+        char path[512];
         snprintf(path, sizeof(path), "%s", save_arg + 5);
         path[strcspn(path, "\r\n ")] = '\0';
-        if ((f = fopen(path, "wb"))) {
-            fwrite(svga->vram, 1, svga->vram_max, f);
-            fclose(f);
-        }
-        strncat(path, ".regs", sizeof(path) - strlen(path) - 1);
-        if ((f = fopen(path, "wb"))) {
-            fwrite(svga->crtc, 1, 0x40, f);
-            fwrite(svga->seqregs, 1, 0x20, f);
-            fwrite(svga->gdcreg, 1, 0x10, f);
-            fwrite(svga->attrregs, 1, 0x20, f);
-            fputc(svga->miscout, f);
-            fputc(svga->dac_mask, f);
-            for (int i = 0; i < 256; i++) {
-                uint32_t c = svga->pallook[i];
-                fputc((c >> 16) & 0xFF, f);
-                fputc((c >> 8) & 0xFF, f);
-                fputc(c & 0xFF, f);
-            }
-            fclose(f);
-        }
-        always_log("nv3: saved VRAM and registers to %s\n", path);
+        nv3_debug_save(path);
+    }
+    /* "dev nv3 arm <w> <h> <path>": save once the display has been <w>x<h> for 120 frames */
+    const char *arm_arg = args ? strstr(args, "arm ") : NULL;
+    if (arm_arg) {
+        char *end;
+        nv3_arm_w = strtoul(arm_arg + 4, &end, 0);
+        nv3_arm_h = strtoul(end, &end, 0);
+        while (*end == ' ')
+            end++;
+        snprintf(nv3_arm_path, sizeof(nv3_arm_path), "%s", end);
+        nv3_arm_path[strcspn(nv3_arm_path, "\r\n ")] = '\0';
+        nv3_arm_frames      = 0;
+        nv3_debug_vblank_hook = nv3_debug_arm_vblank;
+        always_log("nv3: armed for %dx%d -> %s\n", nv3_arm_w, nv3_arm_h, nv3_arm_path);
     }
     /* "dev nv3 cache1": every CACHE1 entry from GET to PUT */
     if (args && strstr(args, "cache1")) {
