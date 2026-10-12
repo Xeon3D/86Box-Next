@@ -157,6 +157,7 @@ nv4_pgraph_do_notify(nv4_t *nv4)
     uint32_t notify = GR(NV4_PGRAPH_NOTIFY);
 
     GR(NV4_PGRAPH_NOTIFY) = notify & ~0x00110000u;
+    nv4_3d_flush(nv4);
     nv4_pgraph_notify_write(nv4, 0, 0);
     if (notify & (1u << 20)) /* WRITE_THEN_AWAKEN: the driver signals the waiter */
         nv4_pgraph_blowup(nv4, NV4_NSOURCE_NOTIFICATION);
@@ -244,9 +245,16 @@ nv4_pgraph_method(nv4_t *nv4, int chid, int subc, uint32_t mthd, uint32_t data)
         nv4->dbg_trace--;
         pclog("nv4 trace: ch %d sub %d class %02x mthd %04x data %08x\n", chid, subc, cls, mthd, data);
     }
-    r   = nv4_pgraph_common_method(nv4, mthd, data);
-    if (r < 0)
-        r = nv4_pgraph_2d_method(nv4, &nv4->gr_chan[chid], cls, mthd, data);
+    /* a 3D batch is drawn before anything else touches memory */
+    if ((cls != 0x54) && (cls != 0x55))
+        nv4_3d_flush(nv4);
+    r = nv4_pgraph_common_method(nv4, mthd, data);
+    if (r < 0) {
+        if ((cls == 0x54) || (cls == 0x55))
+            r = nv4_pgraph_3d_method(nv4, chid, cls, mthd, data);
+        else
+            r = nv4_pgraph_2d_method(nv4, &nv4->gr_chan[chid], cls, mthd, data);
+    }
 
     switch (r) {
         case NV4_GR_ILLEGAL:
@@ -272,6 +280,7 @@ nv4_pgraph_reset(nv4_t *nv4)
         memset(&nv4->gr_chan[i], 0, sizeof(nv4->gr_chan[i]));
         nv4_pgraph_2d_reset_chan(&nv4->gr_chan[i]);
     }
+    nv4_3d_reset(nv4);
     /* no channel until the driver loads one */
     GR(NV4_PGRAPH_CTX_USER) = 0x0f000000;
 }

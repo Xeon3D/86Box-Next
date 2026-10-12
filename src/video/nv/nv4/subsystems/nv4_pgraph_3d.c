@@ -1,0 +1,1453 @@
+/*
+ * 86Box    A hypervisor and IBM PC system emulator that specializes in
+ *          running old operating systems and software designed for IBM
+ *          PC systems and compatibles from 1981 through fairly recent
+ *          system designs based on the PCI bus.
+ *
+ *          This file is part of the 86Box distribution.
+ *
+ *          NVIDIA RIVA TNT / TNT2 -- PGRAPH Direct3D classes.
+ *
+ *          The DX5 textured triangle (0x54) and the DX6 multitexture
+ *          triangle (0x55): transformed and lit vertices, state, and
+ *          DrawPrimitive words naming two triangles by vertex index.
+ *
+ *          The work is split the way the Rage 128's is, so the per-pixel
+ *          part can later run on worker threads or a GPU kernel:
+ *
+ *            state    Methods set per-channel raw state. Before a triangle
+ *                     it is derived into a draw state: resolved surfaces,
+ *                     clip, texture levels and modes. Draw states are
+ *                     immutable once made; a triangle names the one it was
+ *                     submitted under.
+ *            setup    On the submitting thread: vertices snapped to the
+ *                     chip's 12.4 fixed point, culled, cut into one span
+ *                     per row with exact integer edge functions (top-left
+ *                     rule), attributes turned into plane equations.
+ *            shading  Per span, at flush: texture fetch, texture blend or
+ *                     combiners, specular, fog, alpha test, stencil, depth,
+ *                     framebuffer blend, dither, write masks.
+ *
+ *          A batch is flushed before anything that must see its pixels:
+ *          another class's method, a notifier, CPU access to the
+ *          framebuffer, the FIFO running dry, a full batch.
+ *
+ *          Method layouts follow envytools (hwtest pgraph_class_d3d56;
+ *          MIT) and the public nv32 class definitions; the per-pixel
+ *          arithmetic follows Direct3D's definitions of each operation,
+ *          as the chip's own is not documented.
+ *
+ * Authors: Marcos Alves, <xeon4d@gmail.com>
+ *
+ *          Copyright 2026 Marcos Alves
+ */
+#include <math.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <wchar.h>
+#include <86box/86box.h>
+#include <86box/device.h>
+#include <86box/mem.h>
+#include <86box/pci.h>
+#include <86box/rom.h>
+#include <86box/timer.h>
+#include <86box/video.h>
+#include <86box/vid_svga.h>
+#include <86box/nv/vid_nv4.h>
+
+#define GR(a) NV4_GR(nv4, a)
+
+#define B3D_STATES 64
+#define B3D_TRIS   4096
+#define B3D_SPANS  65536
+
+/* Attributes interpolated across a triangle */
+enum {
+    AT_Z,
+    AT_Q,       /* rhw, or 1 without perspective */
+    AT_U0,      /* u * q */
+    AT_V0,
+    AT_U1,
+    AT_V1,
+    AT_R,
+    AT_G,
+    AT_B,
+    AT_A,
+    AT_SR,
+    AT_SG,
+    AT_SB,
+    AT_FOG,
+    AT_COUNT
+};
+
+typedef struct {
+    int      on;
+    uint32_t dma;      /* DMA object instance */
+    uint32_t offset;   /* level 0 */
+    int      fmt;      /* texel format 1-7 */
+    int      bpp;
+    int      wlog, hlog;
+    int      levels;
+    uint32_t level_off[12];
+    int      wrap_u, wrap_v;
+    int      min, mag;
+    float    lod_bias;
+    int      center;   /* texel centers at +0.5 */
+    int      ckey;
+} nv4_3d_tex_t;
+
+typedef struct {
+    int      dx6;
+    uint32_t col_base, z_base;     /* absolute VRAM byte addresses */
+    uint32_t col_pitch, z_pitch;
+    uint32_t col_lim, z_lim;       /* last valid byte, absolute */
+    int      col_fmt, bpp;
+    int      z_on;                 /* a depth surface exists */
+    int32_t  cx0, cy0, cx1, cy1;
+    float    origin;               /* 0: D3D pixel centers, 0.5: corner */
+    nv4_3d_tex_t tex[2];
+    uint32_t color_key;
+    /* DX5 */
+    int      texblend;
+    /* DX6 */
+    uint32_t comb_a[2], comb_c[2], factor;
+    /* both */
+    int      flat, persp, spec, fog, ablend, sblend, dblend;
+    uint32_t fog_color;
+    int      atest, afunc, aref;
+    int      zen, zfunc, zwrite, zfloat;
+    int      cull, dither;
+    int      wr_a, wr_r, wr_g, wr_b;
+    int      sten, sfunc, sref, smask_r, smask_w, sop_fail, sop_zfail, sop_zpass, swrite;
+} nv4_3d_state_t;
+
+typedef struct {
+    int   state;
+    float x0, y0;            /* vertex 0, pixels */
+    float c[AT_COUNT], dx[AT_COUNT], dy[AT_COUNT];
+} nv4_3d_tri_t;
+
+typedef struct {
+    int16_t  y, x0, x1;      /* x1 exclusive */
+    uint16_t tri;
+} nv4_3d_span_t;
+
+typedef struct nv4_3d_batch_s {
+    nv4_3d_state_t states[B3D_STATES];
+    nv4_3d_tri_t   tris[B3D_TRIS];
+    nv4_3d_span_t  spans[B3D_SPANS];
+    int            nstates, ntris, nspans;
+} nv4_3d_batch_t;
+
+/* ------------------------------------------------------------------ */
+/* Small helpers.                                                      */
+/* ------------------------------------------------------------------ */
+static float
+f32(uint32_t v)
+{
+    union {
+        uint32_t u;
+        float    f;
+    } c = { v };
+
+    return c.f;
+}
+
+static int
+clamp255(int v)
+{
+    return (v < 0) ? 0 : ((v > 255) ? 255 : v);
+}
+
+static int
+mul8(int a, int b)
+{
+    int t = a * b + 0x80;
+
+    return (t + (t >> 8)) >> 8;
+}
+
+static int
+bpp_of(int sfmt)
+{
+    if (sfmt >= 2 && sfmt <= 6)
+        return 2;
+    if (sfmt >= 7 && sfmt <= 0xd)
+        return 4;
+    return (sfmt == 1) ? 1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Draw state.                                                         */
+/* ------------------------------------------------------------------ */
+static void
+nv4_3d_tex_setup(nv4_t *nv4, nv4_3d_tex_t *t, uint32_t fmt, uint32_t filt, uint32_t off, int dx6)
+{
+    static const int bpps[8] = { 0, 1, 2, 2, 2, 2, 4, 4 };
+    int              dmasel  = fmt & (dx6 ? 0xf : 0x3);
+    uint32_t         lo      = 0;
+
+    memset(t, 0, sizeof(*t));
+    t->fmt = (fmt >> 8) & 0xf;
+    if ((t->fmt < 1) || (t->fmt > 7))
+        return;
+    t->bpp    = bpps[t->fmt];
+    t->dma    = (dmasel == 2) ? (GR(NV4_PGRAPH_CTX_SWITCH3) >> 16) : (GR(NV4_PGRAPH_CTX_SWITCH3) & 0xffff);
+    t->offset = off;
+    t->wlog   = (fmt >> 16) & 0xf;
+    t->hlog   = (fmt >> 20) & 0xf;
+    t->levels = (fmt >> 12) & 0xf;
+    if (t->wlog > 11)
+        t->wlog = 11;
+    if (t->hlog > 11)
+        t->hlog = 11;
+    if (!t->levels)
+        t->levels = 1;
+    if (t->levels > 12)
+        t->levels = 12;
+    for (int l = 0; l < t->levels; l++) {
+        int wl = t->wlog - l;
+        int hl = t->hlog - l;
+
+        t->level_off[l] = lo;
+        lo += (uint32_t) t->bpp << (((wl > 0) ? wl : 0) + ((hl > 0) ? hl : 0));
+    }
+    t->wrap_u   = (fmt >> 24) & 7;
+    t->wrap_v   = (fmt >> 28) & 7;
+    t->center   = ((fmt >> 6) & 3) != 2;
+    t->ckey     = !dx6 && ((fmt >> 2) & 3) == 1;
+    t->min      = (filt >> 24) & 7;
+    t->mag      = (filt >> 28) & 7;
+    t->lod_bias = (float) (int8_t) (filt >> 16) / 8.0f;
+    t->on       = t->dma != 0;
+}
+
+/* Does the DX6 combiner setup read texture <n>? */
+static int
+nv4_3d_comb_uses(const nv4_3d_state_t *s, int n)
+{
+    for (int st = 0; st < 2; st++)
+        for (int a = 0; a < 4; a++) {
+            int sa = (s->comb_a[st] >> (a * 8 + 2)) & ((a == 3) ? 7 : 0x3f);
+            int sc = (s->comb_c[st] >> (a * 8 + 2)) & ((a == 3) ? 7 : 0x3f);
+
+            if ((sa == 5 + n) || (sc == 5 + n))
+                return 1;
+        }
+    return 0;
+}
+
+static int
+nv4_3d_make_state(nv4_t *nv4, nv4_3d_batch_t *b, int cls, const nv4_d3d_t *d)
+{
+    nv4_3d_state_t *s;
+    uint32_t        ctl = d->control[0];
+    uint32_t        bl  = d->blend;
+    uint32_t        lim;
+    int             zfmt;
+
+    if (b->nstates >= B3D_STATES)
+        nv4_3d_flush(nv4);
+    s = &b->states[b->nstates];
+    memset(s, 0, sizeof(*s));
+
+    s->dx6     = (cls == 0x55);
+    s->col_fmt = (GR(NV4_PGRAPH_BPIXEL) >> 8) & 0xf;
+    s->bpp     = bpp_of(s->col_fmt);
+    s->col_base  = GR(NV4_PGRAPH_BBASE + 2 * 4) + GR(NV4_PGRAPH_BOFFSET + 2 * 4);
+    s->col_pitch = GR(NV4_PGRAPH_BPITCH + 2 * 4) & 0xffff;
+    lim          = GR(NV4_PGRAPH_BLIMIT + 2 * 4);
+    if ((lim & 0x80000000) || !s->bpp)
+        return -1;
+    s->col_lim  = GR(NV4_PGRAPH_BBASE + 2 * 4) + (lim & 0x7fffffff);
+    s->z_base   = GR(NV4_PGRAPH_BBASE + 3 * 4) + GR(NV4_PGRAPH_BOFFSET + 3 * 4);
+    s->z_pitch  = GR(NV4_PGRAPH_BPITCH + 3 * 4) & 0xffff;
+    lim         = GR(NV4_PGRAPH_BLIMIT + 3 * 4);
+    s->z_on     = !(lim & 0x80000000) && s->z_pitch;
+    s->z_lim    = GR(NV4_PGRAPH_BBASE + 3 * 4) + (lim & 0x7fffffff);
+
+    s->cx0 = (int16_t) GR(NV4_PGRAPH_UCLIP_MIN);
+    s->cy0 = (int16_t) GR(NV4_PGRAPH_UCLIP_MIN + 4);
+    s->cx1 = (int32_t) (GR(NV4_PGRAPH_UCLIP_MAX) << 14) >> 14;
+    s->cy1 = (int32_t) (GR(NV4_PGRAPH_UCLIP_MAX + 4) << 14) >> 14;
+    if (s->cx0 < 0)
+        s->cx0 = 0;
+    if (s->cy0 < 0)
+        s->cy0 = 0;
+    if (s->col_pitch && (s->cx1 > (int32_t) (s->col_pitch / s->bpp)))
+        s->cx1 = s->col_pitch / s->bpp;
+    if (s->cx1 > 4096)
+        s->cx1 = 4096;
+    if (s->cy1 > 4096)
+        s->cy1 = 4096;
+
+    s->origin = ((ctl >> 13) & 1) ? 0.5f : 0.0f;
+    if (s->dx6) {
+        nv4_3d_tex_setup(nv4, &s->tex[0], d->format[0], d->filter[0], d->offset[0], 1);
+        nv4_3d_tex_setup(nv4, &s->tex[1], d->format[1], d->filter[1], d->offset[1], 1);
+        s->comb_a[0] = d->comb_alpha[0];
+        s->comb_a[1] = d->comb_alpha[1];
+        s->comb_c[0] = d->comb_color[0];
+        s->comb_c[1] = d->comb_color[1];
+        s->factor    = d->comb_factor;
+        if (!nv4_3d_comb_uses(s, 0))
+            s->tex[0].on = 0;
+        if (!nv4_3d_comb_uses(s, 1))
+            s->tex[1].on = 0;
+    } else {
+        nv4_3d_tex_setup(nv4, &s->tex[0], d->format[0], d->filter[0], d->offset[0], 0);
+        s->texblend = bl & 0xf;
+    }
+    s->color_key = d->color_key;
+
+    s->flat      = ((bl >> 6) & 3) == 1;
+    s->persp     = (bl >> 8) & 0xf;
+    s->spec      = (bl >> 12) & 0xf;
+    s->fog       = (bl >> 16) & 0xf;
+    s->ablend    = (bl >> 20) & 0xf;
+    s->sblend    = (bl >> 24) & 0xf;
+    s->dblend    = (bl >> 28) & 0xf;
+    s->fog_color = d->fog_color;
+
+    s->atest  = (ctl >> 12) & 1;
+    s->afunc  = (ctl >> 8) & 0xf;
+    s->aref   = ctl & 0xff;
+    s->zen    = ((ctl >> 14) & 3) && s->z_on;
+    s->zfunc  = (ctl >> 16) & 0xf;
+    zfmt      = (ctl >> 30) & 3;
+    s->zfloat = (zfmt == 2);
+    s->cull   = (ctl >> 20) & 3;
+    s->dither = (ctl >> 22) & 1;
+    if (s->dx6) {
+        s->zwrite = ((ctl >> 24) & 1) && s->z_on;
+        s->swrite = (ctl >> 25) & 1;
+        s->wr_a   = (ctl >> 26) & 1;
+        s->wr_r   = (ctl >> 27) & 1;
+        s->wr_g   = (ctl >> 28) & 1;
+        s->wr_b   = (ctl >> 29) & 1;
+        s->sten      = (d->control[1] & 0xf) && s->z_on && (s->bpp == 4);
+        s->sfunc     = (d->control[1] >> 4) & 0xf;
+        s->sref      = (d->control[1] >> 8) & 0xff;
+        s->smask_r   = (d->control[1] >> 16) & 0xff;
+        s->smask_w   = (d->control[1] >> 24) & 0xff;
+        s->sop_fail  = d->control[2] & 0xf;
+        s->sop_zfail = (d->control[2] >> 4) & 0xf;
+        s->sop_zpass = (d->control[2] >> 8) & 0xf;
+    } else {
+        s->zwrite = ((ctl >> 24) & 0x3f) && s->z_on;
+        s->wr_a = s->wr_r = s->wr_g = s->wr_b = 1;
+    }
+    return b->nstates++;
+}
+
+/* ------------------------------------------------------------------ */
+/* Texturing.                                                          */
+/* ------------------------------------------------------------------ */
+/* Swizzled texel offset: u and v bits interleave, u first, until the
+   smaller dimension runs out. */
+static uint32_t
+nv4_swizzle(uint32_t u, uint32_t v, int wl, int hl)
+{
+    uint32_t r   = 0;
+    int      bit = 0;
+
+    for (int i = 0; (i < wl) || (i < hl); i++) {
+        if (i < wl)
+            r |= ((u >> i) & 1) << bit++;
+        if (i < hl)
+            r |= ((v >> i) & 1) << bit++;
+    }
+    return r;
+}
+
+typedef struct {
+    uint32_t page;   /* DMA offset of the cached page, ~0: none */
+    uint32_t addr;   /* its address */
+    int      target; /* 0 VRAM, else bus */
+} nv4_3d_tcache_t;
+
+static uint32_t
+nv4_3d_tex_read(nv4_t *nv4, const nv4_3d_tex_t *t, nv4_3d_tcache_t *tc, uint32_t off, int bytes)
+{
+    uint32_t a;
+
+    if ((off & ~0xfffu) != tc->page) {
+        if (nv4_dma_translate(nv4, t->dma, off & ~0xfffu, 0, &tc->addr, &tc->target) != NV4_DMA_OK)
+            return 0;
+        tc->page = off & ~0xfffu;
+    }
+    a = tc->addr + (off & 0xfff);
+    if (!tc->target) {
+        uint8_t *v = nv4->svga.vram;
+        uint32_t m = nv4->vram_mask;
+
+        if (bytes == 1)
+            return v[a & m];
+        if (bytes == 2)
+            return v[a & m] | (v[(a + 1) & m] << 8);
+        return v[a & m] | (v[(a + 1) & m] << 8) | (v[(a + 2) & m] << 16) | ((uint32_t) v[(a + 3) & m] << 24);
+    }
+    if (bytes == 1)
+        return mem_readb_phys(a);
+    if (bytes == 2)
+        return mem_readw_phys(a);
+    return mem_readl_phys(a);
+}
+
+static uint32_t
+nv4_texel_argb(uint32_t v, int fmt)
+{
+    uint32_t r, g, b, a;
+
+    switch (fmt) {
+        case 1: /* Y8 / AY8 */
+            return (v << 24) | (v * 0x010101);
+        case 2: /* A1R5G5B5 */
+        case 3: /* X1R5G5B5 */
+            r = (v >> 10) & 0x1f;
+            g = (v >> 5) & 0x1f;
+            b = v & 0x1f;
+            a = (fmt == 3 || (v & 0x8000)) ? 0xff : 0;
+            return (a << 24) | ((r << 3 | r >> 2) << 16) | ((g << 3 | g >> 2) << 8) | (b << 3 | b >> 2);
+        case 4: /* A4R4G4B4 */
+            return ((v >> 12) * 0x11u << 24) | (((v >> 8) & 0xf) * 0x11 << 16) | (((v >> 4) & 0xf) * 0x11 << 8)
+                | ((v & 0xf) * 0x11);
+        case 5: /* R5G6B5 */
+            r = (v >> 11) & 0x1f;
+            g = (v >> 5) & 0x3f;
+            b = v & 0x1f;
+            return 0xff000000 | ((r << 3 | r >> 2) << 16) | ((g << 2 | g >> 4) << 8) | (b << 3 | b >> 2);
+        case 6:
+            return v;
+        default:
+            return v | 0xff000000;
+    }
+}
+
+static int
+nv4_wrap(int i, int n, int mode, int *border)
+{
+    switch (mode) {
+        case 2: /* mirror */
+            i &= 2 * n - 1;
+            return (i >= n) ? (2 * n - 1 - i) : i;
+        case 3: /* clamp */
+            return (i < 0) ? 0 : ((i >= n) ? n - 1 : i);
+        case 4: /* border */
+            if ((i < 0) || (i >= n))
+                *border = 1;
+            return (i < 0) ? 0 : ((i >= n) ? n - 1 : i);
+        default:
+            return i & (n - 1);
+    }
+}
+
+/* One texel of level <l>; returns 0 with *killed set for a color-keyed
+   texel. */
+static uint32_t
+nv4_texel(nv4_t *nv4, const nv4_3d_tex_t *t, nv4_3d_tcache_t *tc, int l, int iu, int iv, uint32_t key, int *killed)
+{
+    int      wl     = (t->wlog - l > 0) ? t->wlog - l : 0;
+    int      hl     = (t->hlog - l > 0) ? t->hlog - l : 0;
+    int      border = 0;
+    uint32_t raw;
+
+    iu  = nv4_wrap(iu, 1 << wl, t->wrap_u, &border);
+    iv  = nv4_wrap(iv, 1 << hl, t->wrap_v, &border);
+    if (border)
+        return 0;
+    raw = nv4_3d_tex_read(nv4, t, tc, t->offset + t->level_off[l] + nv4_swizzle(iu, iv, wl, hl) * t->bpp, t->bpp);
+    if (t->ckey && killed && (raw == (key & ((t->bpp == 4) ? 0xffffffff : ((t->bpp == 2) ? 0xffff : 0xff)))))
+        *killed = 1;
+    return nv4_texel_argb(raw, t->fmt);
+}
+
+static uint32_t
+nv4_lerp4(uint32_t a, uint32_t b, int f) /* f 0-256 */
+{
+    uint32_t r = 0;
+
+    for (int s = 0; s < 32; s += 8) {
+        int ca = (a >> s) & 0xff;
+        int cb = (b >> s) & 0xff;
+
+        r |= (uint32_t) ((ca * (256 - f) + cb * f) >> 8) << s;
+    }
+    return r;
+}
+
+static uint32_t
+nv4_sample_level(nv4_t *nv4, const nv4_3d_tex_t *t, nv4_3d_tcache_t *tc, int l, float u, float v, int linear,
+                 uint32_t key, int *killed)
+{
+    int   wl = (t->wlog - l > 0) ? t->wlog - l : 0;
+    int   hl = (t->hlog - l > 0) ? t->hlog - l : 0;
+    float fu = u * (float) (1 << wl);
+    float fv = v * (float) (1 << hl);
+
+    if (!linear)
+        return nv4_texel(nv4, t, tc, l, (int) floorf(fu), (int) floorf(fv), key, killed);
+    if (t->center) {
+        fu -= 0.5f;
+        fv -= 0.5f;
+    }
+    {
+        int      iu = (int) floorf(fu);
+        int      iv = (int) floorf(fv);
+        int      au = (int) ((fu - iu) * 256.0f);
+        int      av = (int) ((fv - iv) * 256.0f);
+        uint32_t t00 = nv4_texel(nv4, t, tc, l, iu, iv, key, killed);
+        uint32_t t10 = nv4_texel(nv4, t, tc, l, iu + 1, iv, key, NULL);
+        uint32_t t01 = nv4_texel(nv4, t, tc, l, iu, iv + 1, key, NULL);
+        uint32_t t11 = nv4_texel(nv4, t, tc, l, iu + 1, iv + 1, key, NULL);
+
+        return nv4_lerp4(nv4_lerp4(t00, t10, au), nv4_lerp4(t01, t11, au), av);
+    }
+}
+
+/* Samples at u,v with level of detail <lod> (log2 texels per pixel). */
+static uint32_t
+nv4_sample(nv4_t *nv4, const nv4_3d_tex_t *t, nv4_3d_tcache_t *tc, float u, float v, float lod, uint32_t key,
+           int *killed)
+{
+    int filt;
+
+    lod += t->lod_bias;
+    if (lod <= 0.0f || t->levels == 1)
+        return nv4_sample_level(nv4, t, tc, 0, u, v, (lod <= 0.0f ? t->mag : t->min) != 1 && (lod <= 0.0f ? t->mag : t->min) != 3, key, killed);
+
+    filt = t->min;
+    switch (filt) {
+        case 3: /* mip nearest */
+        case 5: /* linear, mip nearest */
+            {
+                int l = (int) (lod + 0.5f);
+
+                if (l >= t->levels)
+                    l = t->levels - 1;
+                return nv4_sample_level(nv4, t, tc, l, u, v, filt == 5, key, killed);
+            }
+        case 4: /* mip linear */
+        case 6: /* trilinear */
+            {
+                int l = (int) lod;
+                int f = (int) ((lod - l) * 256.0f);
+
+                if (l >= t->levels - 1)
+                    return nv4_sample_level(nv4, t, tc, t->levels - 1, u, v, filt == 6, key, killed);
+                return nv4_lerp4(nv4_sample_level(nv4, t, tc, l, u, v, filt == 6, key, killed),
+                                 nv4_sample_level(nv4, t, tc, l + 1, u, v, filt == 6, key, NULL), f);
+            }
+        default:
+            return nv4_sample_level(nv4, t, tc, 0, u, v, filt == 2, key, killed);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Combining.                                                          */
+/* ------------------------------------------------------------------ */
+typedef struct {
+    int r, g, b, a;
+} rgba_t;
+
+static rgba_t
+rgba(uint32_t c)
+{
+    rgba_t r = { (c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff, c >> 24 };
+
+    return r;
+}
+
+/* DX5 texture blend, as Direct3D defines it */
+static rgba_t
+nv4_texblend(int mode, rgba_t t, rgba_t d, int tex_alpha)
+{
+    rgba_t o = d;
+
+    switch (mode) {
+        case 1: /* decal */
+        case 7: /* copy */
+            o = t;
+            break;
+        case 2: /* modulate */
+            o.r = mul8(t.r, d.r);
+            o.g = mul8(t.g, d.g);
+            o.b = mul8(t.b, d.b);
+            o.a = tex_alpha ? t.a : d.a;
+            break;
+        case 3: /* decal alpha */
+            o.r = mul8(t.r, t.a) + mul8(d.r, 255 - t.a);
+            o.g = mul8(t.g, t.a) + mul8(d.g, 255 - t.a);
+            o.b = mul8(t.b, t.a) + mul8(d.b, 255 - t.a);
+            o.a = d.a;
+            break;
+        case 4: /* modulate alpha */
+            o.r = mul8(t.r, d.r);
+            o.g = mul8(t.g, d.g);
+            o.b = mul8(t.b, d.b);
+            o.a = mul8(t.a, d.a);
+            break;
+        case 5: /* decal mask */
+            if (t.a & 0x80) {
+                o.r = t.r;
+                o.g = t.g;
+                o.b = t.b;
+            }
+            break;
+        case 6: /* modulate mask */
+            if (t.a & 0x80) {
+                o.r = mul8(t.r, d.r);
+                o.g = mul8(t.g, d.g);
+                o.b = mul8(t.b, d.b);
+            }
+            break;
+        case 8: /* add */
+            o.r = clamp255(t.r + d.r);
+            o.g = clamp255(t.g + d.g);
+            o.b = clamp255(t.b + d.b);
+            break;
+        default:
+            break;
+    }
+    return o;
+}
+
+/* One DX6 combiner: four arguments, out = op(a0*a1, a2*a3). <alpha>:
+   the alpha combiner (one channel). */
+static void
+nv4_combine(uint32_t ctl, int alpha, const rgba_t *src, int *out)
+{
+    int prod[2][3];
+    int v[4][3];
+
+    for (int a = 0; a < 4; a++) {
+        int    sel = (ctl >> (a * 8 + 2)) & ((a == 3) ? 7 : 0x3f);
+        int    inv = (ctl >> (a * 8)) & 1;
+        int    rep = ((ctl >> (a * 8 + 1)) & 1) || alpha;
+        rgba_t s   = (sel >= 1 && sel <= 7) ? src[sel] : src[1];
+
+        v[a][0] = rep ? s.a : s.r;
+        v[a][1] = rep ? s.a : s.g;
+        v[a][2] = rep ? s.a : s.b;
+        if (inv)
+            for (int c = 0; c < 3; c++)
+                v[a][c] = 255 - v[a][c];
+    }
+    for (int c = 0; c < 3; c++) {
+        int sum;
+
+        prod[0][c] = mul8(v[0][c], v[1][c]);
+        prod[1][c] = mul8(v[2][c], v[3][c]);
+        sum        = prod[0][c] + prod[1][c];
+        switch (ctl >> 29) {
+            case 2:
+                sum *= 2;
+                break;
+            case 3:
+                sum *= 4;
+                break;
+            case 4:
+                sum -= 128;
+                break;
+            case 5: /* mux: the input's alpha picks a product */
+                sum = (src[4].a & 0x80) ? prod[1][c] : prod[0][c];
+                break;
+            case 6:
+                sum = 255 - sum;
+                break;
+            case 7:
+                sum = (sum - 128) * 2;
+                break;
+            default:
+                break;
+        }
+        out[c] = clamp255(sum);
+    }
+}
+
+static int
+nv4_cmp(int func, uint32_t a, uint32_t ref)
+{
+    switch (func) {
+        case 1:
+            return 0;
+        case 2:
+            return a < ref;
+        case 3:
+            return a == ref;
+        case 4:
+            return a <= ref;
+        case 5:
+            return a > ref;
+        case 6:
+            return a != ref;
+        case 7:
+            return a >= ref;
+        default:
+            return 1;
+    }
+}
+
+static int
+nv4_blend_factor(int f, int c, int sa, int da, int sc, int dc, int is_alpha)
+{
+    switch (f) {
+        case 1:
+            return 0;
+        case 3:
+            return sc;
+        case 4:
+            return 255 - sc;
+        case 5:
+            return sa;
+        case 6:
+            return 255 - sa;
+        case 7:
+            return da;
+        case 8:
+            return 255 - da;
+        case 9:
+            return dc;
+        case 10:
+            return 255 - dc;
+        case 11:
+            return is_alpha ? 255 : ((sa < 255 - da) ? sa : 255 - da);
+        default:
+            (void) c;
+            return 255;
+    }
+}
+
+static int
+nv4_stencil_op(int op, int s, int ref)
+{
+    switch (op) {
+        case 2:
+            return 0;
+        case 3:
+            return ref;
+        case 4:
+            return (s < 255) ? s + 1 : 255;
+        case 5:
+            return (s > 0) ? s - 1 : 0;
+        case 6:
+            return ~s & 0xff;
+        case 7:
+            return (s + 1) & 0xff;
+        case 8:
+            return (s - 1) & 0xff;
+        default:
+            return s;
+    }
+}
+
+static const int dither4[4][4] = {
+    { 0, 8, 2, 10 },
+    { 12, 4, 14, 6 },
+    { 3, 11, 1, 9 },
+    { 15, 7, 13, 5 }
+};
+
+static uint32_t
+nv4_pack_color(const nv4_3d_state_t *s, rgba_t c, int x, int y)
+{
+    if ((s->bpp == 2) && s->dither) {
+        int d = dither4[y & 3][x & 3] >> 1; /* 0-7 */
+
+        c.r = clamp255(c.r + d - 4);
+        c.g = clamp255(c.g + ((s->col_fmt == 5) ? (d >> 1) - 2 : d - 4));
+        c.b = clamp255(c.b + d - 4);
+    }
+    switch (s->col_fmt) {
+        case 2:
+        case 3:
+            return ((c.r >> 3) << 10) | ((c.g >> 3) << 5) | (c.b >> 3) | ((s->col_fmt == 3) ? 0x8000 : 0);
+        case 4:
+            return ((c.r >> 3) << 10) | ((c.g >> 3) << 5) | (c.b >> 3) | ((c.a & 0x80) << 8);
+        case 5:
+            return ((c.r >> 3) << 11) | ((c.g >> 2) << 5) | (c.b >> 3);
+        case 9:
+        case 0xa:
+            return ((uint32_t) (c.a >> 1) << 24) | (c.r << 16) | (c.g << 8) | c.b | ((s->col_fmt == 0xa) ? 0x80000000 : 0);
+        case 0xc:
+            return ((uint32_t) c.a << 24) | (c.r << 16) | (c.g << 8) | c.b;
+        case 0xb:
+            return 0xff000000 | (c.r << 16) | (c.g << 8) | c.b;
+        default:
+            return (c.r << 16) | (c.g << 8) | c.b;
+    }
+}
+
+static rgba_t
+nv4_unpack_color(const nv4_3d_state_t *s, uint32_t v)
+{
+    rgba_t c;
+
+    switch (s->col_fmt) {
+        case 2:
+        case 3:
+        case 4:
+            c.r = ((v >> 10) & 0x1f) * 0x21 >> 2;
+            c.g = ((v >> 5) & 0x1f) * 0x21 >> 2;
+            c.b = (v & 0x1f) * 0x21 >> 2;
+            c.a = (s->col_fmt == 4) ? ((v & 0x8000) ? 255 : 0) : 255;
+            break;
+        case 5:
+            c.r = ((v >> 11) & 0x1f) * 0x21 >> 2;
+            c.g = ((v >> 5) & 0x3f) * 0x41 >> 4;
+            c.b = (v & 0x1f) * 0x21 >> 2;
+            c.a = 255;
+            break;
+        default:
+            c   = rgba(v);
+            if (s->col_fmt == 9 || s->col_fmt == 0xa)
+                c.a = ((v >> 24) & 0x7f) << 1 | ((v >> 30) & 1);
+            else if (s->col_fmt != 0xc)
+                c.a = 255;
+            break;
+    }
+    return c;
+}
+
+/* ------------------------------------------------------------------ */
+/* Shading.                                                            */
+/* ------------------------------------------------------------------ */
+static float
+nv4_lod(const nv4_3d_tri_t *t, int au, int av, float q, float uq, float vq, int wl, int hl)
+{
+    float iq   = 1.0f / q;
+    float iq2  = iq * iq;
+    float dudx = (t->dx[au] * q - uq * t->dx[AT_Q]) * iq2 * (float) (1 << wl);
+    float dvdx = (t->dx[av] * q - vq * t->dx[AT_Q]) * iq2 * (float) (1 << hl);
+    float dudy = (t->dy[au] * q - uq * t->dy[AT_Q]) * iq2 * (float) (1 << wl);
+    float dvdy = (t->dy[av] * q - vq * t->dy[AT_Q]) * iq2 * (float) (1 << hl);
+    float rx   = dudx * dudx + dvdx * dvdx;
+    float ry   = dudy * dudy + dvdy * dvdy;
+    float r    = (rx > ry) ? rx : ry;
+
+    return (r > 0.0f) ? 0.5f * log2f(r) : -16.0f;
+}
+
+static void
+nv4_3d_span(nv4_t *nv4, const nv4_3d_batch_t *b, const nv4_3d_span_t *sp)
+{
+    const nv4_3d_tri_t   *t = &b->tris[sp->tri];
+    const nv4_3d_state_t *s = &b->states[t->state];
+    nv4_3d_tcache_t       tc[2] = { { ~0u, 0, 0 }, { ~0u, 0, 0 } };
+    uint8_t              *vram  = nv4->svga.vram;
+    uint32_t              vm    = nv4->vram_mask;
+    float                 py    = (float) sp->y + s->origin - t->y0;
+
+    for (int x = sp->x0; x < sp->x1; x++) {
+        float    px = (float) x + s->origin - t->x0;
+        float    at[AT_COUNT];
+        rgba_t   d, spec, out, src[8];
+        int      killed = 0;
+        uint32_t ca     = s->col_base + (uint32_t) sp->y * s->col_pitch + (uint32_t) x * s->bpp;
+        uint32_t za     = s->z_base + (uint32_t) sp->y * s->z_pitch + (uint32_t) x * s->bpp;
+        uint32_t zold   = 0, znew = 0;
+        uint32_t depth;
+        int      sten   = 0;
+
+        if (ca + s->bpp - 1 > s->col_lim)
+            continue;
+        for (int i = 0; i < AT_COUNT; i++)
+            at[i] = t->c[i] + t->dx[i] * px + t->dy[i] * py;
+        if (at[AT_Q] <= 0.0f)
+            at[AT_Q] = 1e-6f;
+
+        /* depth */
+        if (s->zfloat) {
+            float w = 1.0f - at[AT_Q];
+
+            w     = (w < 0.0f) ? 0.0f : ((w > 1.0f) ? 1.0f : w);
+            depth = (uint32_t) (w * ((s->bpp == 2) ? 65535.0f : 16777215.0f));
+        } else {
+            float z = at[AT_Z];
+
+            z     = (z < 0.0f) ? 0.0f : ((z > 1.0f) ? 1.0f : z);
+            depth = (uint32_t) (z * ((s->bpp == 2) ? 65535.0f : 16777215.0f));
+        }
+        if (s->z_on && (za + s->bpp - 1 <= s->z_lim)) {
+            if (s->bpp == 2)
+                zold = vram[za & vm] | (vram[(za + 1) & vm] << 8);
+            else
+                zold = vram[za & vm] | (vram[(za + 1) & vm] << 8) | (vram[(za + 2) & vm] << 16)
+                    | ((uint32_t) vram[(za + 3) & vm] << 24);
+        }
+        sten = (s->bpp == 4) ? (zold >> 24) : 0;
+
+        /* colors */
+        d.r    = clamp255((int) at[AT_R]);
+        d.g    = clamp255((int) at[AT_G]);
+        d.b    = clamp255((int) at[AT_B]);
+        d.a    = clamp255((int) at[AT_A]);
+        spec.r = clamp255((int) at[AT_SR]);
+        spec.g = clamp255((int) at[AT_SG]);
+        spec.b = clamp255((int) at[AT_SB]);
+        spec.a = clamp255((int) at[AT_FOG]);
+
+        /* textures */
+        for (int n = 0; n < 2; n++) {
+            const nv4_3d_tex_t *tx = &s->tex[n];
+            float               iq;
+
+            src[5 + n] = (rgba_t) { 255, 255, 255, 255 };
+            if (!tx->on)
+                continue;
+            iq = s->persp ? 1.0f / at[AT_Q] : 1.0f;
+            {
+                int   au  = n ? AT_U1 : AT_U0;
+                int   av  = n ? AT_V1 : AT_V0;
+                float u   = at[au] * iq;
+                float v   = at[av] * iq;
+                float lod = nv4_lod(t, au, av, s->persp ? at[AT_Q] : 1.0f, at[au], at[av], tx->wlog, tx->hlog);
+
+                src[5 + n] = rgba(nv4_sample(nv4, tx, &tc[n], u, v, lod, s->color_key, &killed));
+            }
+        }
+        if (killed)
+            continue;
+
+        if (s->dx6) {
+            int    co[3], ao[3];
+            rgba_t input = d;
+
+            src[1] = (rgba_t) { 0, 0, 0, 0 };
+            src[2] = rgba(s->factor);
+            src[3] = d;
+            src[7] = (rgba_t) { 0, 0, 0, 0 };
+            for (int st = 0; st < 2; st++) {
+                src[4] = input;
+                nv4_combine(s->comb_c[st], 0, src, co);
+                nv4_combine(s->comb_a[st], 1, src, ao);
+                input.r = co[0];
+                input.g = co[1];
+                input.b = co[2];
+                input.a = ao[0];
+            }
+            out = input;
+        } else if (s->tex[0].on)
+            out = nv4_texblend(s->texblend, src[5], d, s->tex[0].fmt == 2 || s->tex[0].fmt == 4 || s->tex[0].fmt == 6 || s->tex[0].fmt == 1);
+        else
+            out = d;
+
+        if (s->spec) {
+            out.r = clamp255(out.r + spec.r);
+            out.g = clamp255(out.g + spec.g);
+            out.b = clamp255(out.b + spec.b);
+        }
+        if (s->fog) {
+            rgba_t fc = rgba(s->fog_color);
+            int    f  = spec.a;
+
+            out.r = mul8(out.r, f) + mul8(fc.r, 255 - f);
+            out.g = mul8(out.g, f) + mul8(fc.g, 255 - f);
+            out.b = mul8(out.b, f) + mul8(fc.b, 255 - f);
+        }
+
+        if (s->atest && !nv4_cmp(s->afunc, out.a, s->aref))
+            continue;
+
+        /* stencil and depth */
+        if (s->sten) {
+            int pass = nv4_cmp(s->sfunc, s->sref & s->smask_r, sten & s->smask_r);
+
+            if (!pass) {
+                if (s->swrite) {
+                    int ns = nv4_stencil_op(s->sop_fail, sten, s->sref);
+                    sten   = (sten & ~s->smask_w) | (ns & s->smask_w);
+                    zold   = (zold & 0x00ffffff) | ((uint32_t) sten << 24);
+                    for (int i = 0; i < 4; i++)
+                        vram[(za + i) & vm] = zold >> (i * 8);
+                }
+                continue;
+            }
+        }
+        {
+            uint32_t zcur = (s->bpp == 2) ? zold : (zold & 0xffffff);
+            int      zpass = !s->zen || nv4_cmp(s->zfunc, depth, zcur);
+
+            if (s->sten && s->swrite) {
+                int ns = nv4_stencil_op(zpass ? s->sop_zpass : s->sop_zfail, sten, s->sref);
+                sten   = (sten & ~s->smask_w) | (ns & s->smask_w);
+            }
+            znew = (s->bpp == 2) ? depth : ((depth & 0xffffff) | ((uint32_t) sten << 24));
+            if (!zpass) {
+                if (s->sten && s->swrite)
+                    for (int i = 0; i < 4; i++)
+                        vram[(za + i) & vm] = ((zold & 0xffffff) | ((uint32_t) sten << 24)) >> (i * 8);
+                continue;
+            }
+            if (s->z_on && (s->zwrite || (s->sten && s->swrite)) && (za + s->bpp - 1 <= s->z_lim)) {
+                if (!s->zwrite)
+                    znew = (s->bpp == 2) ? zold : ((zold & 0xffffff) | ((uint32_t) sten << 24));
+                for (int i = 0; i < s->bpp; i++)
+                    vram[(za + i) & vm] = znew >> (i * 8);
+            }
+        }
+
+        /* framebuffer */
+        {
+            uint32_t old = 0;
+            rgba_t   dst = { 0, 0, 0, 0 };
+            uint32_t v;
+
+            if (s->ablend || !(s->wr_r && s->wr_g && s->wr_b && s->wr_a)) {
+                for (int i = 0; i < s->bpp; i++)
+                    old |= (uint32_t) vram[(ca + i) & vm] << (i * 8);
+                dst = nv4_unpack_color(s, old);
+            }
+            if (s->ablend) {
+                int sfr = nv4_blend_factor(s->sblend, 0, out.a, dst.a, out.r, dst.r, 0);
+                int sfg = nv4_blend_factor(s->sblend, 0, out.a, dst.a, out.g, dst.g, 0);
+                int sfb = nv4_blend_factor(s->sblend, 0, out.a, dst.a, out.b, dst.b, 0);
+                int sfa = nv4_blend_factor(s->sblend, 0, out.a, dst.a, out.a, dst.a, 1);
+                int dfr = nv4_blend_factor(s->dblend, 0, out.a, dst.a, out.r, dst.r, 0);
+                int dfg = nv4_blend_factor(s->dblend, 0, out.a, dst.a, out.g, dst.g, 0);
+                int dfb = nv4_blend_factor(s->dblend, 0, out.a, dst.a, out.b, dst.b, 0);
+                int dfa = nv4_blend_factor(s->dblend, 0, out.a, dst.a, out.a, dst.a, 1);
+
+                out.r = clamp255(mul8(out.r, sfr) + mul8(dst.r, dfr));
+                out.g = clamp255(mul8(out.g, sfg) + mul8(dst.g, dfg));
+                out.b = clamp255(mul8(out.b, sfb) + mul8(dst.b, dfb));
+                out.a = clamp255(mul8(out.a, sfa) + mul8(dst.a, dfa));
+            }
+            if (!s->wr_r)
+                out.r = dst.r;
+            if (!s->wr_g)
+                out.g = dst.g;
+            if (!s->wr_b)
+                out.b = dst.b;
+            if (!s->wr_a)
+                out.a = dst.a;
+            v = nv4_pack_color(s, out, x, sp->y);
+            for (int i = 0; i < s->bpp; i++)
+                vram[(ca + i) & vm] = v >> (i * 8);
+        }
+    }
+    {
+        uint32_t row = s->col_base + (uint32_t) sp->y * s->col_pitch;
+        uint32_t a0  = (row + sp->x0 * s->bpp) & vm;
+        uint32_t a1  = (row + sp->x1 * s->bpp) & vm;
+
+        for (uint32_t a = a0 & ~0xfffu; a <= a1; a += 0x1000)
+            nv4->svga.changedvram[(a & vm) >> 12] = nv4->svga.monitor->mon_changeframecount;
+    }
+}
+
+void
+nv4_3d_flush(nv4_t *nv4)
+{
+    nv4_3d_batch_t *b = nv4->batch3d;
+
+    if (!b || (!b->nspans && !b->ntris && !b->nstates))
+        return;
+    for (int i = 0; i < b->nspans; i++)
+        nv4_3d_span(nv4, b, &b->spans[i]);
+    b->nspans  = 0;
+    b->ntris   = 0;
+    b->nstates = 0;
+    for (int c = 0; c < NV4_CHANNELS; c++)
+        nv4->d3d[c].state = -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Setup.                                                              */
+/* ------------------------------------------------------------------ */
+static int64_t
+floordiv(int64_t a, int64_t b)
+{
+    int64_t q = a / b;
+
+    if ((a % b) && ((a < 0) != (b < 0)))
+        q--;
+    return q;
+}
+
+/* Plane equation of one attribute over the triangle. */
+static void
+nv4_plane(nv4_3d_tri_t *t, int at, float a0, float a1, float a2, float x10, float y10, float x20, float y20, float inv)
+{
+    t->c[at]  = a0;
+    t->dx[at] = ((a1 - a0) * y20 - (a2 - a0) * y10) * inv;
+    t->dy[at] = ((a2 - a0) * x10 - (a1 - a0) * x20) * inv;
+}
+
+static void
+nv4_3d_triangle(nv4_t *nv4, int chid, int cls, int i0, int i1, int i2)
+{
+    nv4_3d_batch_t      *b = nv4->batch3d;
+    nv4_d3d_t           *d = &nv4->d3d[chid];
+    const nv4_3d_state_t *s;
+    const nv4_d3d_vtx_t *v[3];
+    nv4_3d_tri_t        *t;
+    int32_t              X[3], Y[3];
+    int64_t              area;
+    float                inv, x10, y10, x20, y20;
+    int32_t              ymin, ymax;
+    int                  off16;
+
+    if (!b)
+        return;
+    if (d->state < 0) {
+        d->state = nv4_3d_make_state(nv4, b, cls, d);
+        if (d->state < 0)
+            return;
+    }
+    s    = &b->states[d->state];
+    v[0] = &d->vtx[i0];
+    v[1] = &d->vtx[i1];
+    v[2] = &d->vtx[i2];
+
+    /* 12.4 fixed point */
+    for (int i = 0; i < 3; i++) {
+        float fx = v[i]->sx * 16.0f;
+        float fy = v[i]->sy * 16.0f;
+
+        if (!(fx > -65536.0f && fx < 65536.0f) || !(fy > -65536.0f && fy < 65536.0f))
+            return;
+        X[i] = (int32_t) lrintf(fx);
+        Y[i] = (int32_t) lrintf(fy);
+    }
+    area = (int64_t) (X[1] - X[0]) * (Y[2] - Y[0]) - (int64_t) (X[2] - X[0]) * (Y[1] - Y[0]);
+    if (!area)
+        return;
+    /* y grows down: a positive area runs clockwise on screen */
+    if ((s->cull == 2) && (area > 0))
+        return;
+    if ((s->cull == 3) && (area < 0))
+        return;
+
+    if ((b->ntris >= B3D_TRIS) || (b->nspans + 4096 > B3D_SPANS)) {
+        /* the state must survive the flush */
+        nv4_3d_flush(nv4);
+        d->state = nv4_3d_make_state(nv4, b, cls, d);
+        if (d->state < 0)
+            return;
+        s = &b->states[d->state];
+    }
+
+    t        = &b->tris[b->ntris];
+    t->state = d->state;
+    t->x0    = X[0] / 16.0f;
+    t->y0    = Y[0] / 16.0f;
+    x10      = (X[1] - X[0]) / 16.0f;
+    y10      = (Y[1] - Y[0]) / 16.0f;
+    x20      = (X[2] - X[0]) / 16.0f;
+    y20      = (Y[2] - Y[0]) / 16.0f;
+    inv      = 1.0f / (x10 * y20 - x20 * y10);
+
+    {
+        float a[3][AT_COUNT];
+
+        for (int i = 0; i < 3; i++) {
+            const nv4_d3d_vtx_t *vx  = v[i];
+            const nv4_d3d_vtx_t *col = s->flat ? v[0] : vx;
+            float                q   = s->persp ? vx->rhw : 1.0f;
+
+            a[i][AT_Z]   = vx->sz;
+            a[i][AT_Q]   = q;
+            a[i][AT_U0]  = vx->tu[0] * q;
+            a[i][AT_V0]  = vx->tv[0] * q;
+            a[i][AT_U1]  = vx->tu[1] * q;
+            a[i][AT_V1]  = vx->tv[1] * q;
+            a[i][AT_R]   = (float) ((col->color >> 16) & 0xff);
+            a[i][AT_G]   = (float) ((col->color >> 8) & 0xff);
+            a[i][AT_B]   = (float) (col->color & 0xff);
+            a[i][AT_A]   = (float) (col->color >> 24);
+            a[i][AT_SR]  = (float) ((col->specular >> 16) & 0xff);
+            a[i][AT_SG]  = (float) ((col->specular >> 8) & 0xff);
+            a[i][AT_SB]  = (float) (col->specular & 0xff);
+            a[i][AT_FOG] = (float) (vx->specular >> 24);
+        }
+        for (int k = 0; k < AT_COUNT; k++)
+            nv4_plane(t, k, a[0][k], a[1][k], a[2][k], x10, y10, x20, y20, inv);
+        /* a half pixel more keeps rounding of colors to the nearest */
+        for (int k = AT_R; k <= AT_FOG; k++)
+            t->c[k] += 0.5f;
+    }
+
+    /* Spans: a pixel is in when its sample point is inside all three
+       edges, or on a top or left edge. */
+    off16 = (int) (s->origin * 16.0f);
+    ymin  = Y[0];
+    ymax  = Y[0];
+    for (int i = 1; i < 3; i++) {
+        if (Y[i] < ymin)
+            ymin = Y[i];
+        if (Y[i] > ymax)
+            ymax = Y[i];
+    }
+    ymin = (int32_t) floordiv(ymin - off16 + 15, 16);
+    ymax = (int32_t) floordiv(ymax - off16 - 1, 16);
+    if (ymin < s->cy0)
+        ymin = s->cy0;
+    if (ymax > s->cy1 - 1)
+        ymax = s->cy1 - 1;
+
+    for (int32_t y = ymin; y <= ymax; y++) {
+        int64_t sy = (int64_t) y * 16 + off16;
+        int64_t lo = INT64_MIN / 4;
+        int64_t hi = INT64_MAX / 4;
+
+        for (int e = 0; e < 3; e++) {
+            int     a  = e;
+            int     c  = (e + 1) % 3;
+            int64_t ex = X[c] - X[a];
+            int64_t ey = Y[c] - Y[a];
+            int64_t A, B;
+            int     tl;
+
+            /* orient so that inside is positive for both windings */
+            if (area > 0) {
+                ex = -ex;
+                ey = -ey;
+            }
+            /* E(sx) = ey*(sx - Xa) - ex*(sy - Ya), inside when > 0; a
+               left edge has ey > 0, a top edge ey == 0 and ex < 0 */
+            A  = ey;
+            B  = -ey * X[a] - ex * (sy - Y[a]);
+            tl = (ey > 0) || ((ey == 0) && (ex < 0));
+            /* E at sample x*16+off16: A*16*x + (A*off16 + B) */
+            {
+                int64_t k  = A * 16;
+                int64_t c0 = A * off16 + B;
+
+                if (k > 0) {
+                    /* k*x + c0 > 0, or >= 0 on a top or left edge */
+                    int64_t xm = tl ? floordiv(-c0 + k - 1, k) : floordiv(-c0, k) + 1;
+
+                    if (xm > lo)
+                        lo = xm;
+                } else if (k < 0) {
+                    int64_t xm = tl ? floordiv(c0, -k) : floordiv(c0 - 1, -k);
+
+                    if (xm < hi)
+                        hi = xm;
+                } else if (tl ? (c0 < 0) : (c0 <= 0)) {
+                    lo = 1;
+                    hi = 0;
+                }
+            }
+        }
+        if (lo < s->cx0)
+            lo = s->cx0;
+        if (hi > s->cx1 - 1)
+            hi = s->cx1 - 1;
+        if (lo > hi)
+            continue;
+        if (b->nspans >= B3D_SPANS)
+            break;
+        b->spans[b->nspans].y   = (int16_t) y;
+        b->spans[b->nspans].x0  = (int16_t) lo;
+        b->spans[b->nspans].x1  = (int16_t) (hi + 1);
+        b->spans[b->nspans].tri = (uint16_t) b->ntris;
+        b->nspans++;
+    }
+    b->ntris++;
+}
+
+/* A DrawPrimitive word: two triangles by vertex index. */
+static void
+nv4_3d_draw(nv4_t *nv4, int chid, int cls, uint32_t data)
+{
+    int n = (cls == 0x55) ? 8 : 16;
+    int i[6];
+
+    for (int k = 0; k < 6; k++)
+        i[k] = (data >> (k * 4)) & 0xf;
+    if ((i[0] < n) && (i[1] < n) && (i[2] < n))
+        nv4_3d_triangle(nv4, chid, cls, i[0], i[1], i[2]);
+    if ((i[3] < n) && (i[4] < n) && (i[5] < n) && ((i[3] != i[4]) || (i[4] != i[5])))
+        nv4_3d_triangle(nv4, chid, cls, i[3], i[4], i[5]);
+}
+
+/* ------------------------------------------------------------------ */
+/* Methods.                                                            */
+/* ------------------------------------------------------------------ */
+static void
+nv4_3d_vertex(nv4_d3d_t *d, int idx, int field, uint32_t data)
+{
+    nv4_d3d_vtx_t *v = &d->vtx[idx];
+
+    switch (field) {
+        case 0:
+            v->sx = f32(data);
+            break;
+        case 1:
+            v->sy = f32(data);
+            break;
+        case 2:
+            v->sz = f32(data);
+            break;
+        case 3:
+            v->rhw = f32(data);
+            break;
+        case 4:
+            v->color = data;
+            break;
+        case 5:
+            v->specular = data;
+            break;
+        case 6:
+            v->tu[0] = f32(data);
+            break;
+        case 7:
+            v->tv[0] = f32(data);
+            break;
+        case 8:
+            v->tu[1] = f32(data);
+            break;
+        case 9:
+            v->tv[1] = f32(data);
+            break;
+        default:
+            break;
+    }
+}
+
+int
+nv4_pgraph_3d_method(nv4_t *nv4, int chid, int cls, uint32_t mthd, uint32_t data)
+{
+    nv4_d3d_t *d   = &nv4->d3d[chid];
+    int        dx6 = (cls == 0x55);
+
+    /* vertices and draws */
+    if (!dx6 && (mthd >= 0x400) && (mthd < 0x600)) {
+        nv4_3d_vertex(d, (mthd - 0x400) >> 5, ((mthd - 0x400) >> 2) & 7, data);
+        return NV4_GR_OK;
+    }
+    if (!dx6 && (mthd >= 0x600) && (mthd < 0x700)) {
+        nv4_3d_draw(nv4, chid, cls, data);
+        return NV4_GR_OK;
+    }
+    if (dx6 && (mthd >= 0x400) && (mthd < 0x540)) {
+        nv4_3d_vertex(d, (mthd - 0x400) / 0x28, ((mthd - 0x400) % 0x28) >> 2, data);
+        return NV4_GR_OK;
+    }
+    if (dx6 && (mthd >= 0x540) && (mthd < 0x600)) {
+        nv4_3d_draw(nv4, chid, cls, data);
+        return NV4_GR_OK;
+    }
+
+    /* state: a new draw state is derived at the next triangle */
+    d->state = -1;
+    switch (mthd) {
+        case 0x184:
+            nv4_pgraph_set_grobj(nv4, 2, 0, 16, data);
+            return NV4_GR_OK;
+        case 0x188:
+            nv4_pgraph_set_grobj(nv4, 2, 16, 16, data);
+            return NV4_GR_OK;
+        case 0x18c:
+            /* unlike the 2D classes' set-context methods, the chip takes
+               this one itself on the TNT too */
+            nv4_pgraph_set_grobj(nv4, 0, 25, 1, data && ((nv4_ramin_read32(nv4, data << 4) & 0xfff) == 0x53));
+            return NV4_GR_OK;
+        case 0x200:
+            return NV4_GR_MISSING;
+        default:
+            break;
+    }
+    if (!dx6) {
+        switch (mthd) {
+            case 0x300:
+                d->color_key = data;
+                break;
+            case 0x304:
+                d->offset[0] = data;
+                break;
+            case 0x308:
+                d->format[0] = data;
+                break;
+            case 0x30c:
+                d->filter[0] = data;
+                break;
+            case 0x310:
+                d->blend = data;
+                break;
+            case 0x314:
+                d->control[0] = data;
+                break;
+            case 0x318:
+                d->fog_color = data;
+                break;
+            default:
+                return NV4_GR_ILLEGAL;
+        }
+        return NV4_GR_OK;
+    }
+    switch (mthd) {
+        case 0x308:
+        case 0x30c:
+            d->offset[(mthd - 0x308) >> 2] = data;
+            break;
+        case 0x310:
+        case 0x314:
+            d->format[(mthd - 0x310) >> 2] = data;
+            break;
+        case 0x318:
+        case 0x31c:
+            d->filter[(mthd - 0x318) >> 2] = data;
+            break;
+        case 0x320:
+            d->comb_alpha[0] = data;
+            break;
+        case 0x324:
+            d->comb_color[0] = data;
+            break;
+        case 0x32c:
+            d->comb_alpha[1] = data;
+            break;
+        case 0x330:
+            d->comb_color[1] = data;
+            break;
+        case 0x334:
+            d->comb_factor = data;
+            break;
+        case 0x338:
+            d->blend = data;
+            break;
+        case 0x33c:
+        case 0x340:
+        case 0x344:
+            d->control[(mthd - 0x33c) >> 2] = data;
+            break;
+        case 0x348:
+            d->fog_color = data;
+            break;
+        default:
+            return NV4_GR_ILLEGAL;
+    }
+    return NV4_GR_OK;
+}
+
+void
+nv4_3d_reset(nv4_t *nv4)
+{
+    if (nv4->batch3d) {
+        nv4->batch3d->nspans  = 0;
+        nv4->batch3d->ntris   = 0;
+        nv4->batch3d->nstates = 0;
+    }
+    memset(nv4->d3d, 0, sizeof(nv4->d3d));
+    for (int c = 0; c < NV4_CHANNELS; c++)
+        nv4->d3d[c].state = -1;
+}
+
+void
+nv4_3d_init(nv4_t *nv4)
+{
+    nv4->batch3d = calloc(1, sizeof(nv4_3d_batch_t));
+    nv4_3d_reset(nv4);
+}
+
+void
+nv4_3d_close(nv4_t *nv4)
+{
+    free(nv4->batch3d);
+    nv4->batch3d = NULL;
+}

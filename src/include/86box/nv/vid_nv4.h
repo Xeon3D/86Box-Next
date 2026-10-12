@@ -389,6 +389,32 @@ typedef struct nv4_gr_chan_s {
     uint32_t sifm_in_size, sifm_in_fmt, sifm_in_off;
 } nv4_gr_chan_t;
 
+/* The 3D classes' state, as the methods gave it, per channel: the
+   driver never touches it, so a channel switch needs no save. */
+typedef struct nv4_d3d_vtx_s {
+    float    sx, sy, sz, rhw;
+    uint32_t color;    /* A8R8G8B8 */
+    uint32_t specular; /* fog 31:24, R8G8B8 */
+    float    tu[2], tv[2];
+} nv4_d3d_vtx_t;
+
+typedef struct nv4_d3d_s {
+    uint32_t      color_key;
+    uint32_t      offset[2];
+    uint32_t      format[2];
+    uint32_t      filter[2];
+    uint32_t      blend;
+    uint32_t      control[3];     /* DX5: [0] only */
+    uint32_t      fog_color;
+    uint32_t      comb_alpha[2];  /* DX6 */
+    uint32_t      comb_color[2];
+    uint32_t      comb_factor;
+    nv4_d3d_vtx_t vtx[16];
+    int           state;          /* index of the derived draw state in the batch, -1: none */
+} nv4_d3d_t;
+
+struct nv4_3d_batch_s;
+
 /* ------------------------------------------------------------------ */
 /* Board options.                                                      */
 /* ------------------------------------------------------------------ */
@@ -503,6 +529,8 @@ typedef struct nv4_s {
     /* PGRAPH: the register file is the engine's state */
     uint32_t      pgraph_regs[0x2000 / 4];
     nv4_gr_chan_t gr_chan[NV4_CHANNELS];
+    nv4_d3d_t     d3d[NV4_CHANNELS];
+    struct nv4_3d_batch_s *batch3d; /* triangles set up, not yet drawn */
     uint32_t      dbg_cls_count[256]; /* methods per class, for the debug hook */
     uint32_t      dbg_trace;          /* methods left to log */
 
@@ -616,6 +644,13 @@ extern void     nv4_pgraph_set_grobj(nv4_t *nv4, int word, int shift, int bits, 
 /* subsystems/nv4_pgraph_2d.c: the 2D classes */
 extern int  nv4_pgraph_2d_method(nv4_t *nv4, nv4_gr_chan_t *ch, int cls, uint32_t mthd, uint32_t data);
 extern void nv4_pgraph_2d_reset_chan(nv4_gr_chan_t *ch);
+
+/* subsystems/nv4_pgraph_3d.c: the Direct3D classes */
+extern int  nv4_pgraph_3d_method(nv4_t *nv4, int chid, int cls, uint32_t mthd, uint32_t data);
+extern void nv4_3d_flush(nv4_t *nv4);
+extern void nv4_3d_init(nv4_t *nv4);
+extern void nv4_3d_close(nv4_t *nv4);
+extern void nv4_3d_reset(nv4_t *nv4);
 
 /* subsystems/nv4_pgraph.c, nv4_pvideo.c, nv4_pme.c */
 extern void     nv4_pgraph_reset(nv4_t *nv4);

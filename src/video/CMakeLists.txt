@@ -206,6 +206,7 @@ add_library(vid OBJECT
     nv/nv4/subsystems/nv4_pfifo.c
     nv/nv4/subsystems/nv4_pgraph.c
     nv/nv4/subsystems/nv4_pgraph_2d.c
+    nv/nv4/subsystems/nv4_pgraph_3d.c
     nv/nv4/subsystems/nv4_stubs.c
 
     # NVidia RIVA 128 - Object Classes

@@ -1476,10 +1476,13 @@ nv4_class_surf3d(nv4_t *nv4, uint32_t mthd, uint32_t data)
             return NV4_GR_OK;
         case 0x300:
             {
-                static const int fmts[4] = { 0, 0x2, 0x5, 0x7 };
+                /* color 7:0, type 15:8 (1 pitch, 2 swizzled), log2 width
+                   and height 23:16, 31:24 */
+                static const int fmts[9] = { 0, 0x2, 0x3, 0x5, 0x7, 0xb, 0x9, 0xa, 0xc };
 
-                nv4_set_surf_fmt(nv4, NV4_SURF_COLOR, fmts[data & 3]);
-                GR(NV4_PGRAPH_SURFACE) = (data >> 8) & 3;
+                if ((data & 0xff) < 9)
+                    nv4_set_surf_fmt(nv4, NV4_SURF_COLOR, fmts[data & 0xff]);
+                GR(NV4_PGRAPH_SURFACE)   = (data >> 8) & 3;
                 GR(NV4_PGRAPH_BSWIZZLE2) = data & 0x0f0f0000;
             }
             return NV4_GR_OK;

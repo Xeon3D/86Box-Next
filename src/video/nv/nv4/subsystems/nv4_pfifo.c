@@ -548,6 +548,8 @@ nv4_pfifo_run(nv4_t *nv4)
         }
     } while (work);
 
+    /* the FIFO ran dry: draw what the 3D engine has queued */
+    nv4_3d_flush(nv4);
     p->busy = 0;
 }
 

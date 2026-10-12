@@ -43,6 +43,9 @@
 #include <86box/debug_cmd.h>
 #include <86box/nv/vid_nv4.h>
 
+/* CPU access to the framebuffer sees the 3D engine's pixels */
+#define NV4_3D_SYNC(nv4) nv4_3d_flush(nv4)
+
 #ifdef ENABLE_NV4_LOG
 int nv4_do_log = ENABLE_NV4_LOG;
 
@@ -390,6 +393,7 @@ static uint8_t
 nv4_lfb_readb(uint32_t addr, void *priv)
 {
     nv4_t *nv4 = (nv4_t *) priv;
+    NV4_3D_SYNC(nv4);
     return nv4->svga.vram[(addr - nv4->lfb_base) & nv4->vram_mask];
 }
 
@@ -397,6 +401,7 @@ static uint16_t
 nv4_lfb_readw(uint32_t addr, void *priv)
 {
     nv4_t *nv4 = (nv4_t *) priv;
+    NV4_3D_SYNC(nv4);
     addr       = (addr - nv4->lfb_base) & nv4->vram_mask & ~1;
     return *(uint16_t *) &nv4->svga.vram[addr];
 }
@@ -405,6 +410,7 @@ static uint32_t
 nv4_lfb_readl(uint32_t addr, void *priv)
 {
     nv4_t *nv4 = (nv4_t *) priv;
+    NV4_3D_SYNC(nv4);
     addr       = (addr - nv4->lfb_base) & nv4->vram_mask & ~3;
     return *(uint32_t *) &nv4->svga.vram[addr];
 }
@@ -413,6 +419,7 @@ static void
 nv4_lfb_writeb(uint32_t addr, uint8_t val, void *priv)
 {
     nv4_t *nv4 = (nv4_t *) priv;
+    NV4_3D_SYNC(nv4);
     addr       = (addr - nv4->lfb_base) & nv4->vram_mask;
     nv4->svga.vram[addr]                                    = val;
     nv4->svga.changedvram[addr >> 12] = nv4->svga.monitor->mon_changeframecount;
@@ -422,6 +429,7 @@ static void
 nv4_lfb_writew(uint32_t addr, uint16_t val, void *priv)
 {
     nv4_t *nv4 = (nv4_t *) priv;
+    NV4_3D_SYNC(nv4);
     addr       = (addr - nv4->lfb_base) & nv4->vram_mask & ~1;
     *(uint16_t *) &nv4->svga.vram[addr] = val;
     nv4->svga.changedvram[addr >> 12]   = nv4->svga.monitor->mon_changeframecount;
@@ -431,6 +439,7 @@ static void
 nv4_lfb_writel(uint32_t addr, uint32_t val, void *priv)
 {
     nv4_t *nv4 = (nv4_t *) priv;
+    NV4_3D_SYNC(nv4);
     addr       = (addr - nv4->lfb_base) & nv4->vram_mask & ~3;
     *(uint32_t *) &nv4->svga.vram[addr] = val;
     nv4->svga.changedvram[addr >> 12]   = nv4->svga.monitor->mon_changeframecount;
@@ -893,6 +902,7 @@ nv4_init(const device_t *info)
 
     pci_add_card(nv4->is_agp ? PCI_ADD_AGP : PCI_ADD_NORMAL,nv4_pci_read, nv4_pci_write, nv4, &nv4->pci_slot);
 
+    nv4_3d_init(nv4);
     nv4_reset(nv4);
 
     nv4_debug_dev = nv4;
@@ -914,6 +924,7 @@ nv4_close(void *priv)
     nv4_vga_close(nv4);
     ddc_close(nv4->ddc);
     i2c_gpio_close(nv4->i2c);
+    nv4_3d_close(nv4);
     svga_close(&nv4->svga);
     free(nv4->bios_rom.rom);
     free(nv4);
