@@ -319,6 +319,11 @@ nv4_pfifo_switch(nv4_t *nv4, int chid)
         p->dma |= 1u << old;
     nv4_ramfc_load(nv4, chid);
     p->c1_push1 = chid | ((p->mode & (1u << chid)) ? PUSH1_MODE_DMA : 0);
+    /* the pusher runs for a DMA channel, as after the driver's own switch */
+    if (p->mode & (1u << chid))
+        p->c1_dma_push = (p->c1_dma_push & ~DMA_PUSH_SUSPENDED) | DMA_PUSH_ACCESS;
+    else
+        p->c1_dma_push &= ~DMA_PUSH_ACCESS;
     p->dma &= ~(1u << chid);
     nv4_log("NV4 PFIFO: channel switch %d -> %d\n", old, chid);
 }

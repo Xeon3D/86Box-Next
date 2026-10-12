@@ -40,6 +40,7 @@
 #include <86box/i2c.h>
 #include <86box/vid_ddc.h>
 #include <86box/plat_unused.h>
+#include <86box/debug_cmd.h>
 #include <86box/nv/vid_nv4.h>
 
 #ifdef ENABLE_NV4_LOG
@@ -783,6 +784,57 @@ nv4_reset(void *priv)
     nv4_pmc_update_irq(nv4);
 }
 
+/* The debug command file's "dev": what the display and the engines are
+   doing. */
+static nv4_t *nv4_debug_dev;
+
+static void
+nv4_debug_hook(const char *args)
+{
+    nv4_t       *nv4     = nv4_debug_dev;
+    svga_t      *svga;
+    nv4_pfifo_t *p;
+    uint32_t     nonzero = 0;
+    uint32_t     start;
+    uint32_t     bytes;
+
+    if (!nv4)
+        return;
+    if (args && !strncmp(args, "trace", 5)) {
+        nv4->dbg_trace = strtoul(args + 5, NULL, 0);
+        pclog("nv4: tracing %u methods\n", nv4->dbg_trace);
+        return;
+    }
+    svga  = &nv4->svga;
+    p     = &nv4->pfifo;
+    start = svga->memaddr_latch << 2;
+    bytes = svga->hdisp * svga->dispend * ((svga->bpp + 7) >> 3);
+    for (uint32_t i = 0; i < bytes; i++)
+        nonzero += (svga->vram[(start + i) & nv4->vram_mask] != 0);
+    pclog("nv4: mode %dx%d bpp %d start %06x pcrtc_start %08x rowoffset %d CR28 %02x nonzero %u/%u\n",
+          svga->hdisp, svga->dispend, svga->bpp, start, nv4->pcrtc_start, svga->rowoffset, svga->crtc[0x28], nonzero, bytes);
+    pclog("nv4: pmc intr %08x en %08x enable %08x | pfifo intr %08x en %08x caches %08x mode %08x dma %08x\n",
+          nv4_pmc_pending(nv4), nv4->pmc_intr_en, nv4->pmc_enable, p->intr, p->intr_en, p->caches, p->mode, p->dma);
+    pclog("nv4: cache1 push0 %08x push1 %08x pull0 %08x put %d get %d dma push %08x put %08x get %08x state %08x inst %04x\n",
+          p->c1_push0, p->c1_push1, p->c1_pull0, p->c1_put, p->c1_get, p->c1_dma_push, p->c1_dma_put, p->c1_dma_get,
+          p->c1_dma_state, p->c1_dma_instance);
+    pclog("nv4: pgraph intr %08x en %08x fifo %08x nsource %08x ctx_user %08x ctx_control %08x trapped %08x/%08x\n",
+          NV4_GR(nv4, NV4_PGRAPH_INTR), NV4_GR(nv4, NV4_PGRAPH_INTR_EN), NV4_GR(nv4, NV4_PGRAPH_FIFO),
+          NV4_GR(nv4, NV4_PGRAPH_NSOURCE), NV4_GR(nv4, NV4_PGRAPH_CTX_USER), NV4_GR(nv4, NV4_PGRAPH_CTX_CONTROL),
+          NV4_GR(nv4, NV4_PGRAPH_TRAPPED_ADDR), NV4_GR(nv4, NV4_PGRAPH_TRAPPED_DATA));
+    pclog("nv4: switch %08x %08x %08x %08x debug %08x %08x %08x %08x\n", NV4_GR(nv4, NV4_PGRAPH_CTX_SWITCH1),
+          NV4_GR(nv4, NV4_PGRAPH_CTX_SWITCH2), NV4_GR(nv4, NV4_PGRAPH_CTX_SWITCH3), NV4_GR(nv4, NV4_PGRAPH_CTX_SWITCH4),
+          NV4_GR(nv4, NV4_PGRAPH_DEBUG_0), NV4_GR(nv4, NV4_PGRAPH_DEBUG_1), NV4_GR(nv4, NV4_PGRAPH_DEBUG_2),
+          NV4_GR(nv4, NV4_PGRAPH_DEBUG_3));
+    for (int i = 0; i < 2; i++)
+        pclog("nv4: surf %d base %08x off %08x pitch %04x limit %08x fmt %x\n", i, NV4_GR(nv4, NV4_PGRAPH_BBASE + i * 4),
+              NV4_GR(nv4, NV4_PGRAPH_BOFFSET + i * 4), NV4_GR(nv4, NV4_PGRAPH_BPITCH + i * 4),
+              NV4_GR(nv4, NV4_PGRAPH_BLIMIT + i * 4), (NV4_GR(nv4, NV4_PGRAPH_BPIXEL) >> (i * 4)) & 0xf);
+    for (int i = 0; i < 256; i++)
+        if (nv4->dbg_cls_count[i])
+            pclog("nv4: class %02x: %u methods\n", i, nv4->dbg_cls_count[i]);
+}
+
 static void *
 nv4_init(const device_t *info)
 {
@@ -843,6 +895,9 @@ nv4_init(const device_t *info)
 
     nv4_reset(nv4);
 
+    nv4_debug_dev = nv4;
+    debug_cmd_set_device_hook(nv4_debug_hook);
+
     return nv4;
 }
 
@@ -851,6 +906,10 @@ nv4_close(void *priv)
 {
     nv4_t *nv4 = (nv4_t *) priv;
 
+    if (nv4_debug_dev == nv4) {
+        debug_cmd_set_device_hook(NULL);
+        nv4_debug_dev = NULL;
+    }
     timer_disable(&nv4->ptimer_timer);
     nv4_vga_close(nv4);
     ddc_close(nv4->ddc);

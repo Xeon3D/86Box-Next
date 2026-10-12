@@ -273,6 +273,123 @@ typedef struct nv4_pfifo_s {
 } nv4_pfifo_t;
 
 /* ------------------------------------------------------------------ */
+/* PGRAPH.                                                             */
+/* ------------------------------------------------------------------ */
+#define NV4_PGRAPH_DEBUG_0         0x400080
+#define NV4_PGRAPH_DEBUG_1         0x400084
+#define NV4_PGRAPH_DEBUG_2         0x400088
+#define NV4_PGRAPH_DEBUG_3         0x40008c
+#define NV4_PGRAPH_INTR            0x400100
+#define NV4_PGRAPH_NSTATUS         0x400104
+#define NV4_PGRAPH_NSOURCE         0x400108
+#define NV4_PGRAPH_INTR_EN         0x400140
+#define NV4_PGRAPH_CTX_SWITCH1     0x400160 /* class, flags, operation */
+#define NV4_PGRAPH_CTX_SWITCH2     0x400164 /* mono/color format, notify DMA */
+#define NV4_PGRAPH_CTX_SWITCH3     0x400168 /* DMA objects A and B */
+#define NV4_PGRAPH_CTX_SWITCH4     0x40016c /* object instance */
+#define NV4_PGRAPH_CTX_CONTROL     0x400170
+#define NV4_PGRAPH_CTX_USER        0x400174 /* subchannel 15:13, channel 27:24 */
+#define NV4_PGRAPH_CTX_CACHE1      0x400180 /* 8 each, one per subchannel */
+#define NV4_PGRAPH_CTX_CACHE2      0x4001a0
+#define NV4_PGRAPH_CTX_CACHE3      0x4001c0
+#define NV4_PGRAPH_CTX_CACHE4      0x4001e0
+#define NV4_PGRAPH_SOURCE_COLOR    0x40050c
+#define NV4_PGRAPH_UCLIP_MIN       0x40053c /* x, y */
+#define NV4_PGRAPH_UCLIP_MAX       0x400544 /* x, y */
+#define NV4_PGRAPH_UCLIPA_MIN      0x400560 /* x, y: the image classes' own clip */
+#define NV4_PGRAPH_UCLIPA_MAX      0x400568 /* x, y */
+#define NV4_PGRAPH_MONO_COLOR0     0x400600
+#define NV4_PGRAPH_ROP3            0x400604
+#define NV4_PGRAPH_BETA_AND        0x400608
+#define NV4_PGRAPH_BETA_PREMULT    0x40060c
+#define NV4_PGRAPH_BOFFSET         0x400640 /* 6 surfaces */
+#define NV4_PGRAPH_BBASE           0x400658
+#define NV4_PGRAPH_BPITCH          0x400670 /* 5 */
+#define NV4_PGRAPH_BLIMIT          0x400684 /* 6; bit 31: no surface */
+#define NV4_PGRAPH_BSWIZZLE2       0x40069c
+#define NV4_PGRAPH_BSWIZZLE5       0x4006a0
+#define NV4_PGRAPH_STATUS          0x400700
+#define NV4_PGRAPH_TRAPPED_ADDR    0x400704
+#define NV4_PGRAPH_TRAPPED_DATA    0x400708
+#define NV4_PGRAPH_SURFACE         0x40070c
+#define NV4_PGRAPH_STATE           0x400710
+#define NV4_PGRAPH_NOTIFY          0x400714
+#define NV4_PGRAPH_FIFO            0x400720
+#define NV4_PGRAPH_BPIXEL          0x400724 /* 4 bits per surface */
+#define NV4_PGRAPH_FFINTFC_ST2     0x400754
+#define NV4_PGRAPH_FFINTFC_ST2_D   0x400758
+#define NV4_PGRAPH_PATT_COLOR0     0x400800
+#define NV4_PGRAPH_PATT_COLOR1     0x400804
+#define NV4_PGRAPH_PATTERN         0x400808 /* 2: the 8x8 mono pattern */
+#define NV4_PGRAPH_PATTERN_SHAPE   0x400810 /* shape 1:0, color select 4 */
+#define NV4_PGRAPH_CHROMA          0x400814
+#define NV4_PGRAPH_STORED_FMT      0x400830 /* formats of mono, pattern, chroma */
+#define NV4_PGRAPH_PATT_COLORRAM   0x400900 /* 64: the color pattern, X8R8G8B8 */
+
+#define NV4_PGRAPH_INTR_NOTIFY         (1u << 0)
+#define NV4_PGRAPH_INTR_MISSING_HW     (1u << 4)
+#define NV4_PGRAPH_INTR_CONTEXT_SWITCH (1u << 12)
+#define NV4_PGRAPH_INTR_BUFFER_NOTIFY  (1u << 16)
+
+/* NSOURCE: why a NOTIFY interrupt was raised */
+#define NV4_NSOURCE_NOTIFICATION   (1u << 0)
+#define NV4_NSOURCE_DATA_ERROR     (1u << 1)
+#define NV4_NSOURCE_PROTECTION     (1u << 2)
+#define NV4_NSOURCE_ILLEGAL_MTHD   (1u << 6)
+#define NV4_NSOURCE_STATE_INVALID  (1u << 11)
+#define NV4_NSOURCE_DOUBLE_NOTIFY  (1u << 12)
+
+/* Surfaces, as PGRAPH numbers them */
+#define NV4_SURF_DST   0
+#define NV4_SURF_SRC   1
+#define NV4_SURF_COLOR 2
+#define NV4_SURF_ZETA  3
+#define NV4_SURF_SWZ   5
+
+/* What a class method did. */
+#define NV4_GR_OK      0
+#define NV4_GR_ILLEGAL 1 /* not a method of the class: the driver emulates it */
+#define NV4_GR_MISSING 2 /* a software method */
+
+/* Per-channel progress of primitives and transfers: what a method stream
+   leaves half done (vertices, image data). Object state proper lives in
+   the PGRAPH registers, which the driver saves and restores on a channel
+   switch. */
+typedef struct nv4_gr_chan_s {
+    uint32_t color;            /* solid primitives, GDI color 1 */
+    uint32_t color0;           /* GDI color 0 */
+    int32_t  vx[3], vy[3];     /* lines and triangles */
+    int      nvtx;
+
+    /* image transfers: IFC, SIFC, IIFC, GDI blocks C/E */
+    int32_t  img_x, img_y;     /* top left */
+    int32_t  img_dx, img_dy;   /* SIFC: 12.20 output step per input pixel */
+    int32_t  img_fx, img_fy;   /* SIFC: 12.4 output origin */
+    uint32_t in_w, in_h;
+    uint32_t out_w, out_h;
+    uint32_t pos;              /* pixels received */
+    uint32_t sifc_size;        /* SIFC input size, latched until the point */
+    int      img_kind;         /* which GDI block or class is streaming */
+    uint32_t iifc_pal;         /* IIFC palette offset */
+    uint32_t iifc_fmt;         /* IIFC index format */
+    uint32_t font;             /* GDI blocks F/G: pitch 31:28, offset 27:0 */
+
+    /* blit */
+    int32_t  blit_sx, blit_sy, blit_dx, blit_dy;
+
+    /* M2MF */
+    uint32_t m2mf_in, m2mf_out;
+    int32_t  m2mf_pitch_in, m2mf_pitch_out;
+    uint32_t m2mf_len, m2mf_count, m2mf_fmt;
+
+    /* SIFM */
+    int32_t  sifm_x, sifm_y;
+    uint32_t sifm_w, sifm_h;
+    int32_t  sifm_dudx, sifm_dvdy;
+    uint32_t sifm_in_size, sifm_in_fmt, sifm_in_off;
+} nv4_gr_chan_t;
+
+/* ------------------------------------------------------------------ */
 /* Board options.                                                      */
 /* ------------------------------------------------------------------ */
 typedef struct nv4_board_s {
@@ -383,9 +500,14 @@ typedef struct nv4_s {
 
     nv4_pfifo_t pfifo;
 
+    /* PGRAPH: the register file is the engine's state */
+    uint32_t      pgraph_regs[0x2000 / 4];
+    nv4_gr_chan_t gr_chan[NV4_CHANNELS];
+    uint32_t      dbg_cls_count[256]; /* methods per class, for the debug hook */
+    uint32_t      dbg_trace;          /* methods left to log */
+
     /* Register files of the units not yet modeled: what the driver
        wrote reads back. */
-    uint32_t pgraph_regs[0x2000 / 4];
     uint32_t pvideo_regs[0x300 / 4];
     uint32_t pme_regs[0x1000 / 4];
 } nv4_t;
@@ -485,6 +607,15 @@ extern void     nv4_pfifo_run(nv4_t *nv4);
 
 /* subsystems/nv4_pgraph.c: the puller's way in */
 extern nv4_mthd_result_t nv4_pgraph_method(nv4_t *nv4, int chid, int subc, uint32_t mthd, uint32_t data);
+
+#define NV4_GR(nv4, addr) ((nv4)->pgraph_regs[((addr) - NV4_PGRAPH_START) >> 2])
+extern void     nv4_pgraph_notify_write(nv4_t *nv4, uint32_t index, uint32_t info32);
+extern void     nv4_pgraph_blowup(nv4_t *nv4, uint32_t nsource);
+extern void     nv4_pgraph_set_grobj(nv4_t *nv4, int word, int shift, int bits, uint32_t val);
+
+/* subsystems/nv4_pgraph_2d.c: the 2D classes */
+extern int  nv4_pgraph_2d_method(nv4_t *nv4, nv4_gr_chan_t *ch, int cls, uint32_t mthd, uint32_t data);
+extern void nv4_pgraph_2d_reset_chan(nv4_gr_chan_t *ch);
 
 /* subsystems/nv4_pgraph.c, nv4_pvideo.c, nv4_pme.c */
 extern void     nv4_pgraph_reset(nv4_t *nv4);
