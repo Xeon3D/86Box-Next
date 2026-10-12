@@ -531,6 +531,8 @@ typedef struct nv4_s {
     nv4_gr_chan_t gr_chan[NV4_CHANNELS];
     nv4_d3d_t     d3d[NV4_CHANNELS];
     struct nv4_3d_batch_s *batch3d; /* triangles set up, not yet drawn */
+    int           render_threads;     /* 3D span shading threads, 1 = inline */
+    int           gpu_raster;         /* 3D span shading on the host GPU */
     uint32_t      dbg_cls_count[256]; /* methods per class, for the debug hook */
     uint32_t      dbg_trace;          /* methods left to log */
 
@@ -651,6 +653,7 @@ extern void nv4_3d_flush(nv4_t *nv4);
 extern void nv4_3d_init(nv4_t *nv4);
 extern void nv4_3d_close(nv4_t *nv4);
 extern void nv4_3d_reset(nv4_t *nv4);
+extern void nv4_3d_stats(nv4_t *nv4);
 
 /* subsystems/nv4_pgraph.c, nv4_pvideo.c, nv4_pme.c */
 extern void     nv4_pgraph_reset(nv4_t *nv4);

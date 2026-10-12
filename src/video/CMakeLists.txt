@@ -207,6 +207,7 @@ add_library(vid OBJECT
     nv/nv4/subsystems/nv4_pgraph.c
     nv/nv4/subsystems/nv4_pgraph_2d.c
     nv/nv4/subsystems/nv4_pgraph_3d.c
+    nv/nv4/subsystems/nv4_pgraph_3d_gpu.c
     nv/nv4/subsystems/nv4_stubs.c
 
     # NVidia RIVA 128 - Object Classes
@@ -302,6 +303,13 @@ if(NOT MSVC)
         PROPERTIES COMPILE_OPTIONS "-ffp-contract=off"
     )
 endif()
+# The RIVA TNT's CPU span shader must round as its GPU kernel does.
+if(NOT MSVC)
+    set_source_files_properties(
+        nv/nv4/subsystems/nv4_pgraph_3d.c
+        PROPERTIES COMPILE_OPTIONS "-ffp-contract=off"
+    )
+endif()
 
 # ATI Rage 128: optional GPU raster backend (vid_ati_rage128_gpu.c) needs
 # Vulkan HEADERS only -- the library is dlopen'd at runtime (after the
@@ -318,6 +326,8 @@ find_package(Vulkan QUIET)
 find_path(R128_VULKAN_INCLUDE_DIR vulkan/vulkan.h HINTS ${Vulkan_INCLUDE_DIR})
 if(R128_VULKAN_INCLUDE_DIR)
     target_compile_definitions(vid PRIVATE R128_GPU_HAVE_VULKAN)
+    # the RIVA TNT's GPU lane (nv4_pgraph_3d_gpu.c) loads Vulkan the same way
+    target_compile_definitions(vid PRIVATE NV4_GPU_HAVE_VULKAN)
     target_include_directories(vid PRIVATE ${R128_VULKAN_INCLUDE_DIR})
     message(STATUS "Rage 128 GPU raster backend: Vulkan headers found (${R128_VULKAN_INCLUDE_DIR}), enabled (runtime dlopen)")
 else()

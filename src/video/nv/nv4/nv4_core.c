@@ -814,6 +814,10 @@ nv4_debug_hook(const char *args)
         pclog("nv4: tracing %u methods\n", nv4->dbg_trace);
         return;
     }
+    if (args && !strncmp(args, "3d", 2)) {
+        nv4_3d_stats(nv4);
+        return;
+    }
     svga  = &nv4->svga;
     p     = &nv4->pfifo;
     start = svga->memaddr_latch << 2;
@@ -902,6 +906,11 @@ nv4_init(const device_t *info)
 
     pci_add_card(nv4->is_agp ? PCI_ADD_AGP : PCI_ADD_NORMAL,nv4_pci_read, nv4_pci_write, nv4, &nv4->pci_slot);
 
+    nv4->render_threads = device_get_config_int("render_threads");
+    /* NV4_GPU=0/1 overrides the option */
+    nv4->gpu_raster = device_get_config_int("gpu_raster");
+    if (getenv("NV4_GPU") && *getenv("NV4_GPU"))
+        nv4->gpu_raster = atoi(getenv("NV4_GPU"));
     nv4_3d_init(nv4);
     nv4_reset(nv4);
 
@@ -1005,6 +1014,36 @@ static const device_config_t nv4_tnt_config[] = {
         },
         .bios           = { { 0 } }
     },
+    {
+        .name           = "render_threads",
+        .description    = "Render threads",
+        .type           = CONFIG_SELECTION,
+        .default_string = NULL,
+        .default_int    = 2,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = {
+            { .description = "1", .value = 1 },
+            { .description = "2", .value = 2 },
+            { .description = "3", .value = 3 },
+            { .description = "4", .value = 4 },
+            { .description = "6", .value = 6 },
+            { .description = "8", .value = 8 },
+            { .description = ""              }
+        },
+        .bios           = { { 0 } }
+    },
+    {
+        .name           = "gpu_raster",
+        .description    = "Draw 3D on the host GPU (Vulkan)",
+        .type           = CONFIG_BINARY,
+        .default_string = NULL,
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = { { 0 } },
+        .bios           = { { 0 } }
+    },
     { .name = "", .description = "", .type = CONFIG_END }
 };
 
@@ -1022,6 +1061,36 @@ static const device_config_t nv4_tnt2_config[] = {
             { .description = "32 MB", .value = 32 },
             { .description = ""                   }
         },
+        .bios           = { { 0 } }
+    },
+    {
+        .name           = "render_threads",
+        .description    = "Render threads",
+        .type           = CONFIG_SELECTION,
+        .default_string = NULL,
+        .default_int    = 2,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = {
+            { .description = "1", .value = 1 },
+            { .description = "2", .value = 2 },
+            { .description = "3", .value = 3 },
+            { .description = "4", .value = 4 },
+            { .description = "6", .value = 6 },
+            { .description = "8", .value = 8 },
+            { .description = ""              }
+        },
+        .bios           = { { 0 } }
+    },
+    {
+        .name           = "gpu_raster",
+        .description    = "Draw 3D on the host GPU (Vulkan)",
+        .type           = CONFIG_BINARY,
+        .default_string = NULL,
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = { { 0 } },
         .bios           = { { 0 } }
     },
     { .name = "", .description = "", .type = CONFIG_END }
