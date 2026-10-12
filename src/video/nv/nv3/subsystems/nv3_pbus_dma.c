@@ -181,6 +181,9 @@ nv3_m2mf_write8(uint32_t inst, uint32_t offset, uint8_t val)
    destination. */
 bool nv3_perform_dma_m2mf(nv3_grobj_t grobj)
 {
+    /* An object's words (NV_SUBCHAN): word 1 = DMA instance (15:0) and notifier (31:16); word 2 =
+       MEMFMT instance (15:0) -- the M2MF's buffer notifier, see nv3_m2mf_notify_instance -- and
+       MEMFMT_LINEAR (16), which side is the linear framebuffer: 1 = the input, 0 = the output. */
     bool     from_vram = (nv3->pgraph.ctx_switch_c >> 16) & 1;
     uint32_t dma_inst  = nv3->pgraph.dma_settings & 0xFFFF;
     uint32_t in_inst   = from_vram ? NV3_M2MF_VRAM : dma_inst;
@@ -259,7 +262,12 @@ bool nv3_perform_dma_m2mf(nv3_grobj_t grobj)
    status) at notifier index `index` of the object's notifier DMA object */
 void nv3_write_notifier(UNUSED(nv3_grobj_t grobj), uint32_t index, uint16_t status, uint32_t info32, uint16_t info16)
 {
-    uint32_t inst = nv3->pgraph.notifier & 0xFFFF;
+    nv3_write_notifier_to(nv3->pgraph.notifier & 0xFFFF, index, status, info32, info16);
+}
+
+/* A notifier entry (16 bytes: time, info32, info16 | status << 16) in DMA object <inst> */
+void nv3_write_notifier_to(uint32_t inst, uint32_t index, uint16_t status, uint32_t info32, uint16_t info16)
+{
     uint32_t off  = index << 4;
     uint64_t time = nv3->ptimer.time;
 
