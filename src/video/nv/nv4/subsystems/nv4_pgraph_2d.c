@@ -348,7 +348,26 @@ typedef struct {
     uint32_t pitch;
     int      fmt;
     int      bpp;
+    int      swz;   /* swizzled: texels interleave x and y bits */
+    int      wl, hl;
 } nv4_surf_t;
+
+/* Offset of texel x,y in a swizzled surface of 2^wl by 2^hl: the bits
+   of x and y interleave, x first, until the smaller runs out. */
+static uint32_t
+nv4_swz_offset(uint32_t x, uint32_t y, int wl, int hl)
+{
+    uint32_t r   = 0;
+    int      bit = 0;
+
+    for (int i = 0; (i < wl) || (i < hl); i++) {
+        if (i < wl)
+            r |= ((x >> i) & 1) << bit++;
+        if (i < hl)
+            r |= ((y >> i) & 1) << bit++;
+    }
+    return r;
+}
 
 static int
 nv4_surf_get(nv4_t *nv4, int which, nv4_surf_t *s)
@@ -361,6 +380,9 @@ nv4_surf_get(nv4_t *nv4, int which, nv4_surf_t *s)
     s->off   = GR(NV4_PGRAPH_BOFFSET + which * 4);
     s->limit = lim & 0x7fffffff;
     s->pitch = (which < 5) ? (GR(NV4_PGRAPH_BPITCH + which * 4) & 0xffff) : 0;
+    s->swz   = (which == NV4_SURF_SWZ);
+    s->wl    = (GR(NV4_PGRAPH_BSWIZZLE5) >> 16) & 0xf;
+    s->hl    = (GR(NV4_PGRAPH_BSWIZZLE5) >> 24) & 0xf;
     return s->bpp && !(lim & 0x80000000);
 }
 
@@ -460,7 +482,8 @@ nv4_draw_begin(nv4_t *nv4, nv4_draw_t *d, int oclip, int use_uclip)
     uint32_t sw1 = GR(NV4_PGRAPH_CTX_SWITCH1);
 
     d->nv4 = nv4;
-    if (!nv4_surf_get(nv4, NV4_SURF_DST, &d->dst))
+    /* an object bound to a swizzled surface draws into it */
+    if (!nv4_surf_get(nv4, (sw1 & (1u << 14)) ? NV4_SURF_SWZ : NV4_SURF_DST, &d->dst))
         return 0;
     d->op    = (sw1 >> 15) & 7;
     d->rop   = GR(NV4_PGRAPH_ROP3) & 0xff;
@@ -468,8 +491,8 @@ nv4_draw_begin(nv4_t *nv4, nv4_draw_t *d, int oclip, int use_uclip)
     d->rop_d = ((d->op == 1) && (((d->rop >> 1) ^ d->rop) & 0x55)) || (d->op == 2) || (d->op == 5);
     d->cx0   = 0;
     d->cy0   = 0;
-    d->cx1   = d->dst.pitch ? (int32_t) (d->dst.pitch / d->dst.bpp) : 0x8000;
-    d->cy1   = 0x8000;
+    d->cx1   = d->dst.swz ? (1 << d->dst.wl) : (d->dst.pitch ? (int32_t) (d->dst.pitch / d->dst.bpp) : 0x8000);
+    d->cy1   = d->dst.swz ? (1 << d->dst.hl) : 0x8000;
     if (use_uclip && (sw1 & (1u << 13)))
         nv4_clip_and(nv4, d, NV4_PGRAPH_UCLIP_MIN, NV4_PGRAPH_UCLIP_MAX);
     if (oclip)
@@ -547,7 +570,10 @@ nv4_put(nv4_draw_t *d, int32_t x, int32_t y, nv4_px_t sp, uint32_t s)
         return;
     if (d->chroma && ((s & d->cmask) == d->chroma_val))
         return;
-    rel = d->dst.off + (uint32_t) y * d->dst.pitch + (uint32_t) x * d->dst.bpp;
+    if (d->dst.swz)
+        rel = d->dst.off + nv4_swz_offset(x, y, d->dst.wl, d->dst.hl) * d->dst.bpp;
+    else
+        rel = d->dst.off + (uint32_t) y * d->dst.pitch + (uint32_t) x * d->dst.bpp;
     if (rel + d->dst.bpp - 1 > d->dst.limit)
         return;
     a = d->dst.base + rel;
