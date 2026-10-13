@@ -264,34 +264,125 @@ From Bash with MSYS2 UCRT64 first on PATH:
   the start of the GPU work); most waits are at vertical blank when a
   batch in flight draws into the displayed bytes (front-buffer rendering).
 
-## Next (in rough order)
-1. **GPU lane speed** (only if a heavier workload needs it; 3DMark 99
-   runs at ~96% emulation speed):
-   - The submit side: texture hashing (34 GB per run, ~6 s) could be
-     skipped for VRAM pages nothing wrote since (needs write tracking on
-     every VRAM writer); grouping spans by row and the row copies could move
-     to a worker thread.
-   - Vertical-blank waits on front-buffer rendering: only the rows already
-     scanned matter.
-   - Kernel: `combine()` indexes `src[]` dynamically (local memory); the
-     whole kernel is one big function. Splitting variants by state
-     (specialization constants, as the Rage 128 does) would help.
-2. **CPU span shader speed:**
-   - Fixed-point attribute stepping instead of 14 float plane evaluations per
-     pixel.
-   - A per-span texture setup.
-   - Must stay bit-exact with the GPU kernel; change both together.
-3. **Rendering into a swizzled 3D colour surface** (SURFACE type 2): not
-   handled.
-4. **TNT2 boards:** the ERAZOR III works in Win98 with 4.11 (see status).
-   ULTRA and LT need a driver that lists 0029/002D (a 1999 Detonator).
-5. **The rest of the plan:**
-   - PVIDEO overlay (stub register file now).
-   - InstallShield's register-page banner glitch (some 2D stretch path).
-   - Docs and tests.
-6. **DAC checksum:** the NV3 has PRAMDAC TEST_CONTROL/CHECKSUM (fed56d813,
-   NVIDIA's mfgtest). The TNT has the same registers, but its LFSR is
-   unverified; only worth it if a TNT test program needs it.
+## Next (plan of 2026-10-13)
+
+Where we stand against the owner's plan: phases 1-5 and 7 are done for
+one driver (4.11.01.0115) and one benchmark (3DMark 99) on Win98. The
+biggest risk now is coverage, not speed: every new driver, API and OS
+has found new paths so far. So the order is: finish what is open, widen
+the software tested, fill the missing units, then variants, speed and
+integration.
+
+Work that touches separate files can run in parallel sessions: overlay
+(new `nv4_pvideo.c`), 2D classes (`nv4_pgraph_2d.c`), 3D
+(`nv4_pgraph_3d*.c`). Say in the "In progress" line at the top what you
+took, and commit only your own paths.
+
+### A. Close what is open
+1. **InstallShield banner glitch** (in progress, see top): a 2D stretch
+   path (SIFC 0x76 / SIFM 0x77). Finish and commit.
+2. **Unhandled-object counter:** the class switch's `default:` and the
+   3D paths that are known gaps (swizzled 3D colour surface, class 0x48,
+   0x38) only log with `ENABLE_NV4_LOG`. Count them per class/method and
+   show the counts in `dev`, so every test run below reports what it hit
+   that we don't draw. Cheap, and it drives the order of C.
+3. **Rendering into a swizzled 3D colour surface** (SURFACE type 2,
+   render to texture): implement when A2 shows a program using it
+   (3DMark 2000 and DX6/7 demos do). Rows in the swizzled layout break
+   the "row = base + y*pitch" region model: either shade such batches
+   serially on the CPU, or give regions a swizzled kind on both CPU and
+   GPU (bit-exact rules apply).
+
+### B. Widen the software tested (Win98, TNT then TNT2)
+4. **OpenGL ICD.** `nv4ogl.dll` is already installed with 4.11. The ICD
+   drives the card itself (its own channel, DMA pusher, likely other
+   method patterns than the D3D driver), so expect new paths. Tests:
+   GLQuake / Quake II, then Quake III Arena (ISO in
+   `C:\Users\xeon4\Downloads\Quake_III_Arena_Id_Software_1999`). Q3
+   needs a faster guest CPU than the Celeron 233: use a PII/PIII on the
+   p6bap in a VM copy (`work-tnt-q3`), not by editing work-tnt.
+5. **More Direct3D/DirectDraw:** DxDiag's DirectDraw tests (all modes,
+   8/16/32 bpp), 3DMark 2000 (needs DX7 runtime on the guest; exercises
+   DX6 multitexture, render to texture, high-res), and games the owner
+   has (Unreal Tournament D3D, Incoming, Forsaken, Expendable...).
+   Ask the owner what is on hand; use the recommended default (3DMark
+   2000 + UT demo) if no answer.
+6. **A 1999 Detonator** (2.08 / 3.53 / 3.68): lists 0029 (ULTRA), 002C
+   (Vanta), 002D (M64), so it is what tests those boards; newer drivers
+   use the NV5 class variants (0x63-0x66) and may move set-context
+   methods to hardware via DEBUG_3. The owner has to supply the files
+   (not in the archive drop or `F:\86box FTP`).
+7. **Windows 2000** (inbox NVIDIA driver) and **NT4** (archive driver):
+   different resman, multiple channels, NT's DMA/AGP handling. Copy a
+   VM from the `Latest\Windows 2000` / NT4 rigs into `work-w2k-tnt` /
+   `work-nt4-tnt`, switch the card, never edit the rigs. Remember the
+   NV3 Win2000 restart hang lesson (dynarec stale ROM blocks on PAM
+   change, NV reset on hard reset): test Start > Restart too.
+8. **Linux (optional):** XFree86 3.3.x/4.x `nv` driver and `rivafb` use
+   documented paths and are a second opinion on 2D/PFIFO behaviour.
+
+### C. Missing hardware
+9. **PVIDEO overlay** (now a register file in `nv4_stubs.c`): YUY2/UYVY
+   overlay with scaling, two buffers, colour key, and its interrupt
+   (buffer done). NV3's PVIDEO in `wt-nv3` works and was tested with
+   Indeo/Media Player and the colour key; port the behaviour to NV4's
+   register layout (rnndb, envytools). Tests: Media Player with MPEG-1 /
+   Indeo files (as on `work-indeo`), DirectDraw overlay in DxDiag.
+10. **Classes still ignored:**
+    - 0x48, the DX3 textured triangle kept from NV3 (old D3D apps,
+      possibly the ICD's fallbacks).
+    - 0x38 DVD subpicture (with the overlay; DVD players).
+    - NV5 0x63-0x66 (NV5 SIFM/IIFC/IFC/SIFC variants): needed by the
+      Detonators of B6. envytools `hwtest/pgraph.cc` has their method
+      lists.
+    Do them in the order A2's counters show them.
+11. **PME (media port), TV encoders** (Bt869/Chrontel on I2C): only if a
+    BIOS or driver hangs probing them.
+
+### D. Platforms and board variants
+12. **DOS/VESA:** a VBE tester (mode list, bank switching, linear
+    framebuffer, scrolling/display start), DOS games in VESA modes (Quake
+    1 `-vesa`), on the p6bap (Award) and an AMI board (where NV3's ROM
+    sizing bug hid). The ERAZOR II PCI on a Socket 7 board
+    (430TX/VX), to keep the PCI-only path honest.
+13. **M64 / Vanta:** the 64-bit memory configuration (BIOS strap table
+    entry 1) is wired; test with the LT (002D) once B6 gives a driver.
+    More boards are in `F:\86box FTP\NVidia Roms\nv4` / `nv5` (Creative,
+    Diamond Viper V550/V770, STB Velocity 4400, Leadtek, Hercules,
+    ELSA Synergy II): add a few once the ELSA set is solid, the same way
+    (ROM into `roms/video/nvidia/nv4`, Xeon3D/roms master, rigs).
+14. **AGP 4x on NV5:** check the AGP capability (version, rate bits) the
+    TNT2 reports against the datasheet; the driver may pick its AGP rate
+    from it.
+
+### E. Speed (when a workload from B needs it)
+Quake III and UT will be the first loads heavier than 3DMark 99; measure
+them with `dev 3d` before optimising.
+15. **CPU span shader:** fixed-point attribute stepping instead of ~14
+    float plane evaluations per pixel; per-span texture setup. Must stay
+    bit-exact with the GPU kernel: change both together, check with
+    `NV4_3D_VERIFY=1`.
+16. **GPU lane:** kernel variants by state (specialization constants, as
+    the Rage 128 does; `combine()`'s dynamic `src[]` indexing goes to
+    local memory); skip texture hashing for VRAM pages nothing wrote
+    (needs write tracking in every VRAM writer); at vertical blank wait
+    only for rows already scanned; move row grouping/copies to a worker.
+17. **Capture/replay harness** (the owner's plan asked for it): record a
+    method stream (FIFO pushes + the VRAM/texture bytes they read) from a
+    real run and replay it headless, comparing frames. Lets E15/E16 and
+    refactors be checked without booting Win98 each time.
+
+### F. Integration
+18. **Merge master into `tnt`:** master is 8 commits ahead, all NV3
+    (5ee69da2e already checked them; fed56d813 is F21). Rebuild, re-run
+    3DMark on TNT and TNT2, then a review pass over `src/video/nv/nv4`.
+19. **Owner's call:** push `tnt` to Xeon3D/86Box-Next, PR into master,
+    a TNT rig in `Latest` (with `.stage-branch = tnt`, as NVIDIA-RIG),
+    and a Qt 6 release build. Ask before pushing.
+20. **Docs:** a driver/RM notes file like NV3's `NV3-DRIVER-NOTES.md`,
+    and a test matrix (board x OS x driver x program) in this document.
+21. **DAC checksum** (TEST_CONTROL/CHECKSUM): only if a TNT test program
+    needs it; NV3's LFSR (fed56d813) is the starting guess.
 
 ## Sources
 - Owner's NVIDIA archive `98dec\Alpha.87`: `nv4_ref.h`, the resman (RM), BIOS
@@ -340,3 +431,6 @@ From Bash with MSYS2 UCRT64 first on PATH:
   - Mishap: bench.sh started a VM while the previous one hung at shutdown;
     two instances shared the disk for ~8 min. Win98 came back clean. tnt.sh
     now refuses a second instance.
+  - Plan for the next steps written ("Next" above): coverage first
+    (OpenGL ICD, more D3D, Detonator, Win2000/NT4), then overlay and the
+    missing classes, variants, speed, integration.
