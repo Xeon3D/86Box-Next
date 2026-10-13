@@ -495,7 +495,10 @@ nv4_draw_begin(nv4_t *nv4, nv4_draw_t *d, int oclip, int use_uclip)
     d->rop_d = ((d->op == 1) && (((d->rop >> 1) ^ d->rop) & 0x55)) || (d->op == 2) || (d->op == 5);
     d->cx0   = 0;
     d->cy0   = 0;
-    d->cx1   = d->dst.swz ? (1 << d->dst.wl) : (d->dst.pitch ? (int32_t) (d->dst.pitch / d->dst.bpp) : 0x8000);
+    /* A linear surface has no width: x past the pitch is the next
+       row's bytes (the OpenGL ICD's 8-pixel progress surface writes at
+       x = 8); the clips and the limit bound it. */
+    d->cx1   = d->dst.swz ? (1 << d->dst.wl) : 0x8000;
     d->cy1   = d->dst.swz ? (1 << d->dst.hl) : 0x8000;
     if (use_uclip && (sw1 & (1u << 13)))
         nv4_clip_and(nv4, d, NV4_PGRAPH_UCLIP_MIN, NV4_PGRAPH_UCLIP_MAX);
@@ -544,7 +547,7 @@ nv4_draw_begin(nv4_t *nv4, nv4_draw_t *d, int oclip, int use_uclip)
         uint32_t hi = d->dst.base + d->dst.limit;
 
         if (!d->dst.swz) {
-            uint32_t rhi = lo + (uint32_t) d->cy1 * d->dst.pitch - 1;
+            uint32_t rhi = lo + (uint32_t) (d->cy1 - 1) * d->dst.pitch + (uint32_t) d->cx1 * d->dst.bpp - 1;
 
             lo += (uint32_t) d->cy0 * d->dst.pitch;
             if (rhi < hi)
@@ -659,8 +662,13 @@ nv4_put(nv4_draw_t *d, int32_t x, int32_t y, nv4_px_t sp, uint32_t s)
     if (d->chroma && ((s & d->cmask) == d->chroma_val))
         return;
     if (d->defer) {
-        nv4_run_put(d, x, y, s);
-        return;
+        /* the 3D batch keeps a row's pixels on its row's bytes */
+        if ((uint32_t) (x + 1) * d->dst.bpp <= d->dst.pitch) {
+            nv4_run_put(d, x, y, s);
+            return;
+        }
+        nv4_pgraph_2d_flush_run(nv4);
+        d->touch = 1;
     }
     if (d->touch) {
         nv4_3d_touch(nv4, d->lo, d->hi, GR(NV4_PGRAPH_CTX_SWITCH1) & 0xff);
@@ -739,6 +747,7 @@ nv4_fill(nv4_draw_t *d, int32_t x0, int32_t y0, int32_t x1, int32_t y1, nv4_px_t
     /* a plain store (SRCCOPY, no chroma key) into a linear surface can
        join the 3D batch; anything else is drawn here, after it */
     if (!d->dst.swz && !d->chroma && (((d->op != 1) && (d->op != 2) && (d->op != 4) && (d->op != 5)) || ((d->op == 1) && (d->rop == 0xcc)))
+        && ((uint32_t) x1 * d->dst.bpp <= d->dst.pitch)
         && nv4_3d_fill(nv4, d->dst.base + d->dst.off, d->dst.pitch, d->dst.base + d->dst.limit, d->dst.bpp, x0, y0, x1, y1,
                        s))
         return;
