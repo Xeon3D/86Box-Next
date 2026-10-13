@@ -3,6 +3,10 @@
 Living document: whoever works on the TNT updates it as they go (status, the
 log at the bottom). Last updated: 2026-10-13.
 
+**In progress:** the InstallShield banner glitch (3DMark 99 setup's
+register page, on `nv4test.iso`: `d:\3dmark99\3dmark99max.exe`), a 2D
+stretch path. Everything before it is committed (latest `feee6a8d0`).
+
 ## The goal
 The owner asked for RIVA TNT/TNT2 emulation done "the way skiretic did the ATI
 Rage 128". The owner's plan is in `C:\Users\xeon4\Downloads\RIVA TNT and TNT2
