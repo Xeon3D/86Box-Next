@@ -50,6 +50,10 @@ public:
 #endif
     void leaveEvent(QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
+    /* 86Box-Next: pointer integration with 86Box Guest Tools. */
+    bool guestToolsPointer() const;
+    void guestToolsPointerMoved(QMouseEvent *event);
+    bool gtCursorHidden = false;
     void changeEvent(QEvent *event) override;
     void resizeEvent(QResizeEvent *event) override
     {

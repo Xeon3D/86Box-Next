@@ -200,6 +200,7 @@ extern int      bugger_enabled;             /* (C) enable ISAbugger */
 extern int      novell_keycard_enabled;     /* (C) enable Novell NetWare 2.x key card emulation. */
 extern int      postcard_enabled;           /* (C) enable POST card */
 extern int      unittester_enabled;         /* (C) enable unit tester device */
+extern int      guest_tools_enabled;        /* (C) enable 86Box Guest Tools */
 extern int      softpower_enabled;            /* (C) enable PC Convertible-style soft power card */
 extern int      gameport_type[];            /* (C) enable gameports */
 extern int      mcamem_type[];              /* (C) enable MCA mem cards */

@@ -26,6 +26,7 @@
 #    include "qt_soundcanvas.hpp"
 #endif
 #include "qt_usb_manager.hpp"
+#include "qt_guesttools.hpp"
 #include "qt_pccard_menu.hpp"
 #include "qt_modem_menu.hpp"
 #include "ui_qt_mainwindow.h"
@@ -62,6 +63,7 @@ extern "C" {
 #include <86box/nvr.h>
 #include <86box/acpi.h>
 #include <86box/renderdefs.h>
+#include <86box/guest_tools.h>
 
 #ifdef USE_VNC
 #    include <86box/vnc.h>
@@ -236,6 +238,8 @@ MainWindow::MainWindow(QWidget *parent)
        status bar too. */
     usbManager = new UsbManager(this);
     status->setUsbManager(usbManager);
+    /* 86Box-Next: 86Box Guest Tools' clipboard and pointer integration. */
+    new GuestTools(this);
 #ifdef USE_SOUNDCANVAS
     /* 86Box-Next: the Roland Sound Canvas MIDI device's front panel, behind the piano icon. */
     status->setSoundCanvas(new SoundCanvasPanelManager(this));
@@ -1462,7 +1466,7 @@ MainWindow::processKeyboardInput(bool down, uint32_t keycode)
 #    endif
 #endif
 
-    bool skip = main_window_blocked || (keycode < 0) || (kbd_req_capture && !mouse_capture) || qt_osd_is_visible();
+    bool skip = main_window_blocked || (keycode < 0) || (kbd_req_capture && !mouse_capture && !guest_tools_keyboard()) || qt_osd_is_visible();
 
     if (skip)
         return;
@@ -1486,7 +1490,7 @@ MainWindow::processKeyboardInput(bool down, uint32_t keycode)
         case 0x10b:           /* Microsoft scroll up normal */
         case 0x180 ... 0x1ff: /* E0 break codes (including Microsoft scroll down normal) */
             /* This key uses a break code as make. Send it manually, only on press. */
-            if (down && (mouse_capture || !kbd_req_capture || (video_fullscreen && !fullscreen_ui_visible))) {
+            if (down && (mouse_capture || guest_tools_keyboard() || !kbd_req_capture || (video_fullscreen && !fullscreen_ui_visible))) {
                 if (keycode & 0x100)
                     keyboard_send(0xe0);
                 keyboard_send(keycode & 0xff);
@@ -1808,7 +1812,7 @@ MainWindow::eventFilter(QObject *receiver, QEvent *event)
         }
     }
 
-    if (!main_window_blocked && !dopause && (!kbd_req_capture || mouse_capture)) {
+    if (!main_window_blocked && !dopause && (!kbd_req_capture || mouse_capture || guest_tools_keyboard())) {
 #if 0
         if (event->type() == QEvent::Shortcut) {
             auto shortcutEvent = (QShortcutEvent *) event;

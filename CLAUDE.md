@@ -281,6 +281,29 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   rebuilds the status bar. A new icon group needs a key there and a name in `iconGroupName()`.
   Preferences OK replaces `MachineStatus`; `adoptMenus()` carries the PC Card/USB/modem/Sound
   Canvas hooks over (they were lost before).
+- 86Box Guest Tools (Settings > Other peripherals, `guest_tools_enabled` in `[Other peripherals]`,
+  any machine, hard reset; device `guest_tools` with `pointer` and `clipboard` options): our own
+  VMware Tools-like integration -- no VMware backdoor. `src/device/guest_tools.c` is a two-port channel
+  at 86B0h (`guest_tools_proto.h`, shared with the agents: command port reads "86BX", the data port is
+  a byte stream, any access width so 8088 DOS code can use it too; every reply starts with a status;
+  HELLO / POLL / CLIP_GET / CLIP_SET / BYE). `check_io_perm` (`386_common.h`) lets every privilege
+  level reach those ports while the device is in (`guest_tools_io_bypass()`), so agents need no
+  kernel driver, NT included. Pointer integration: the agent polls the host pointer (0-65535 across
+  the guest display, from `RendererStack::guestToolsPointerMoved()`) and moves the guest's own
+  pointer; while it does (`guest_tools_pointer_active()`: features on, the agent's last POLL under
+  2 s old, mouse input mode 0) the UI never captures (`GuestTools::poll()` lets go of a capture),
+  hides the host pointer over the display and feeds only buttons and the wheel to the machine's
+  mouse (PS/2, serial...); `guest_tools_keyboard()` counts as capture for "Keyboard requires
+  capture". Clipboard: UTF-16 text, LF line ends, 1 MB; `src/qt/qt_guesttools.cpp` keeps a
+  snapshot of the host clipboard for the emulation thread and drops its own echoes. Agents in
+  `guest-tools/` (built in WSL: `wsl -e sh guest-tools/build.sh` -> `guest-tools/out/`
+  86BOXGT.EXE, a 1.44 MB floppy image and an ISO): `windows/gtagent.c`, one Win32 exe for
+  Windows 95 / NT 4.0 and later, no C runtime (KERNEL32/USER32/ADVAPI32/SHELL32/WINMM only,
+  subsystem 4.0), tray icon, `/install` (copies itself to the Windows directory + Run key) /
+  `/uninstall` / `/quiet`; stops following when a program confines the pointer (ClipCursor).
+  `mkicon.py` makes its BMP-format icon (Windows 95 reads no PNG icons). Tested in Windows 95 and
+  NT 4.0 (pointer, both clipboard directions, autostart). debug_cmd `gt pointer x y` / `gt clip
+  text` (`|` = new line; switches to a stand-in host clipboard and logs the guest's) / `gt state`.
 - Upstream's CI workflows and Dependabot are disabled/removed in this repo; only
   `sync-upstream.yml` runs.
 - Build number in the title bar / About box: `.build-number` (git-ignored, repo root)

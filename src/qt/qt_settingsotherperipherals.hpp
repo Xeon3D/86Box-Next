@@ -56,6 +56,8 @@ private slots:
 
     void on_checkBoxUnitTester_stateChanged(int arg1);
     void on_pushButtonConfigureUT_clicked();
+    void on_checkBoxGuestTools_stateChanged(int arg1);
+    void on_pushButtonConfigureGuestTools_clicked();
 
     void on_checkBoxKeyCard_stateChanged(int arg1);
     void on_pushButtonConfigureKeyCard_clicked();
@@ -71,6 +73,7 @@ private:
     int                           isarom_cfg_changed[4]      = { 0, 0, 0, 0 };
     int                           isartc_cfg_changed         = 0;
     int                           unittester_cfg_changed     = 0;
+    int                           guest_tools_cfg_changed    = 0;
     int                           novell_keycard_cfg_changed = 0;
     int                           softpower_cfg_changed      = 0;
     bool                          softpower_card_enabled     = false;

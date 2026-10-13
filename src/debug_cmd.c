@@ -17,6 +17,9 @@
  *                                  CPU executes linear addr; "bp clear" drops them all
  *                 wp addr          log each instruction that changes the dword at linear addr
  *                                  (its physical page as mapped now); "wp clear" drops it
+ *                 gt args          86Box Guest Tools: "pointer x y" (0-1, x < 0 = left the
+ *                                  display), "clip text" (a stand-in host clipboard; the
+ *                                  guest's text is logged), "state"
  *
  *               Each command is logged ("debug_cmd: ..."), so a test can wait
  *               for the file to vanish and then read the log.
@@ -30,6 +33,7 @@
 #include <86box/keyboard.h>
 #include <86box/video.h>
 #include <86box/debug_cmd.h>
+#include <86box/guest_tools.h>
 #include <86box/mem.h>
 #include "cpu.h"
 
@@ -333,7 +337,9 @@ debug_cmd_run(char *line)
         /* reset: hard reset, as the Action menu's (devices closed and made again) */
         always_log("debug_cmd: hard reset\n");
         pc_reset_hard();
-    } else if (!strcmp(line, "log"))
+    } else if (!strcmp(line, "gt"))
+        guest_tools_debug(arg);
+    else if (!strcmp(line, "log"))
         always_log("debug_cmd: %s\n", arg);
     else if (line[0])
         always_log("debug_cmd: unknown command \"%s\"\n", line);

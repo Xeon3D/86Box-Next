@@ -2713,6 +2713,7 @@ load_other_peripherals(void)
     bugger_enabled         = !!ini_section_get_int(cat, "bugger_enabled", 0);
     postcard_enabled       = !!ini_section_get_int(cat, "postcard_enabled", 0);
     unittester_enabled     = !!ini_section_get_int(cat, "unittester_enabled", 0);
+    guest_tools_enabled    = !!ini_section_get_int(cat, "guest_tools_enabled", 0);
     novell_keycard_enabled = !!ini_section_get_int(cat, "novell_keycard_enabled", 0);
     softpower_enabled      = !!ini_section_get_int(cat, "softpower_enabled", 0);
 
@@ -2724,6 +2725,9 @@ load_other_peripherals(void)
 
     if (!unittester_enabled)
         ini_section_delete_var(cat, "unittester_enabled");
+
+    if (!guest_tools_enabled)
+        ini_section_delete_var(cat, "guest_tools_enabled");
 
     if (!novell_keycard_enabled)
         ini_section_delete_var(cat, "novell_keycard_enabled");
@@ -4248,6 +4252,11 @@ save_other_peripherals(void)
         ini_section_delete_var(cat, "unittester_enabled");
     else
         ini_section_set_int(cat, "unittester_enabled", unittester_enabled);
+
+    if (guest_tools_enabled == 0)
+        ini_section_delete_var(cat, "guest_tools_enabled");
+    else
+        ini_section_set_int(cat, "guest_tools_enabled", guest_tools_enabled);
 
     if (novell_keycard_enabled == 0)
         ini_section_delete_var(cat, "novell_keycard_enabled");

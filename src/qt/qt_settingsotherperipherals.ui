@@ -192,6 +192,33 @@
             </property>
            </widget>
           </item>
+          <item row="10">
+           <layout class="QHBoxLayout" name="horizontalLayoutGuestTools">
+            <item>
+             <widget class="QCheckBox" name="checkBoxGuestTools">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="MinimumExpanding" vsizetype="Fixed">
+                <horstretch>0</horstretch>
+                <verstretch>0</verstretch>
+               </sizepolicy>
+              </property>
+              <property name="toolTip">
+               <string>Mouse integration without capture and a shared clipboard, with the 86Box Guest Tools agent running in the guest</string>
+              </property>
+              <property name="text">
+               <string>86Box Guest Tools</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="pushButtonConfigureGuestTools">
+              <property name="text">
+               <string>Configure</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
           <item row="1">
            <layout class="QHBoxLayout" name="horizontalLayoutIBPC">
             <item>

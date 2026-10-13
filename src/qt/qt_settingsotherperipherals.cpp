@@ -30,6 +30,7 @@ extern "C" {
 #include <86box/modem_card.h>
 #include <86box/usb_next.h>
 #include <86box/unittester.h>
+#include <86box/guest_tools.h>
 #include <86box/softpower.h>
 #include <86box/novell_cardkey.h>
 }
@@ -78,6 +79,7 @@ SettingsOtherPeripherals::SettingsOtherPeripherals(QWidget *parent)
     isartc_cfg_changed         = 0;
 
     unittester_cfg_changed     = 0;
+    guest_tools_cfg_changed    = 0;
     softpower_cfg_changed      = 0;
     softpower_card_enabled     = softpower_enabled > 0;
     novell_keycard_cfg_changed = 0;
@@ -112,6 +114,7 @@ SettingsOtherPeripherals::onCurrentMachineChanged(int machineId)
     ui->comboBoxRTC->setEnabled(machineHasIsaOrSidecar);
     ui->checkBoxISABugger->setEnabled(machineHasIsa);
     ui->pushButtonConfigureUT->setEnabled(unittester_enabled > 0);
+    ui->pushButtonConfigureGuestTools->setEnabled(guest_tools_enabled > 0);
     ui->checkBoxKeyCard->setEnabled(machineHasIsa);
     ui->pushButtonConfigureKeyCard->setEnabled(novell_keycard_enabled > 0);
     ui->checkBoxSoftPower->setEnabled(machineHasIsa && !nativeSoftPower);
@@ -120,6 +123,7 @@ SettingsOtherPeripherals::onCurrentMachineChanged(int machineId)
     ui->checkBoxISABugger->setChecked((machineHasIsa && (bugger_enabled > 0)) ? true : false);
     ui->checkBoxPOSTCard->setChecked(postcard_enabled > 0 ? true : false);
     ui->checkBoxUnitTester->setChecked(unittester_enabled > 0 ? true : false);
+    ui->checkBoxGuestTools->setChecked(guest_tools_enabled > 0);
     ui->checkBoxKeyCard->setChecked((machineHasIsa && (novell_keycard_enabled > 0)) ? true : false);
     /* Native power hardware must not overwrite the optional card preference. */
     ui->checkBoxSoftPower->setChecked(nativeSoftPower || (machineHasIsa && softpower_card_enabled));
@@ -298,6 +302,8 @@ SettingsOtherPeripherals::changed()
     has_changed |= (postcard_enabled       != (ui->checkBoxPOSTCard->isChecked() ? 1 : 0));
     has_changed |= (unittester_enabled     != (ui->checkBoxUnitTester->isChecked() ? 1 : 0));
     has_changed |= unittester_cfg_changed;
+    has_changed |= (guest_tools_enabled    != (ui->checkBoxGuestTools->isChecked() ? 1 : 0));
+    has_changed |= guest_tools_cfg_changed;
     has_changed |= (softpower_enabled      != (softpower_card_enabled ? 1 : 0));
     has_changed |= softpower_cfg_changed;
     has_changed |= (novell_keycard_enabled != (ui->checkBoxKeyCard->isChecked() ? 1 : 0));
@@ -347,6 +353,7 @@ SettingsOtherPeripherals::save(int soft)
     bugger_enabled         = ui->checkBoxISABugger->isChecked() ? 1 : 0;
     postcard_enabled       = ui->checkBoxPOSTCard->isChecked() ? 1 : 0;
     unittester_enabled     = ui->checkBoxUnitTester->isChecked() ? 1 : 0;
+    guest_tools_enabled    = ui->checkBoxGuestTools->isChecked() ? 1 : 0;
     softpower_enabled      = softpower_card_enabled ? 1 : 0;
     novell_keycard_enabled = ui->checkBoxKeyCard->isChecked() ? 1 : 0;
 
@@ -638,6 +645,18 @@ void
 SettingsOtherPeripherals::on_pushButtonConfigureUT_clicked()
 {
     unittester_cfg_changed |= DeviceConfig::ConfigureDevice(&unittester_device);
+}
+
+void
+SettingsOtherPeripherals::on_checkBoxGuestTools_stateChanged(int arg1)
+{
+    ui->pushButtonConfigureGuestTools->setEnabled(arg1 != 0);
+}
+
+void
+SettingsOtherPeripherals::on_pushButtonConfigureGuestTools_clicked()
+{
+    guest_tools_cfg_changed |= DeviceConfig::ConfigureDevice(&guest_tools_device);
 }
 
 void
