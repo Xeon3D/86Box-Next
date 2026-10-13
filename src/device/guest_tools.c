@@ -162,6 +162,10 @@ guest_tools_debug(const char *args)
         gt_debug            = 1;
         guest_tools_host_clipboard_changed();
         always_log("Guest Tools: host clipboard \"%s\"\n", text);
+    } else if (sscanf(args, "buttons %lf", &x) == 1) {
+        /* As the UI does while integrated: buttons, no motion. */
+        mouse_set_buttons_ex((int) x);
+        always_log("Guest Tools: host buttons %d\n", (int) x);
     } else if (!strcmp(args, "state")) {
         uint32_t pos = atomic_load(&gt_pointer);
 
@@ -171,7 +175,7 @@ guest_tools_debug(const char *args)
                    plat_get_ticks() - atomic_load(&gt_last_poll), guest_tools_pointer_active(),
                    pos >> 16, pos & 0xffff, atomic_load(&gt_pointer_inside), atomic_load(&gt_clip_seq));
     } else
-        always_log("Guest Tools: gt pointer x y | gt clip text | gt state\n");
+        always_log("Guest Tools: gt pointer x y | gt buttons mask | gt clip text | gt state\n");
 }
 
 /* ---- Request and reply buffers ---------------------------------------- */

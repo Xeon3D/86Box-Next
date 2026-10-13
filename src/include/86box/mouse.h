@@ -96,6 +96,7 @@ extern const device_t mouse_cga_lightpen_device;
 #endif
 
 extern int             mouse_both_enabled(void);
+extern int             mouse_live(void);
 extern void            mouse_clear_x(void);
 extern void            mouse_clear_y(void);
 extern void            mouse_clear_coords(void);

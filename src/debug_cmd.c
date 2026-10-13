@@ -19,7 +19,8 @@
  *                                  (its physical page as mapped now); "wp clear" drops it
  *                 gt args          86Box Guest Tools: "pointer x y" (0-1, x < 0 = left the
  *                                  display), "clip text" (a stand-in host clipboard; the
- *                                  guest's text is logged), "state"
+ *                                  guest's text is logged), "buttons mask" (1 left, 2 right),
+ *                                  "state"
  *
  *               Each command is logged ("debug_cmd: ..."), so a test can wait
  *               for the file to vanish and then read the log.
