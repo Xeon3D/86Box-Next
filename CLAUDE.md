@@ -294,7 +294,10 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   2 s old, mouse input mode 0) the UI never captures (`GuestTools::poll()` lets go of a capture),
   hides the host pointer over the display and feeds only buttons and the wheel to the machine's
   mouse (PS/2, serial...); `guest_tools_keyboard()` counts as capture for "Keyboard requires
-  capture". Clipboard: UTF-16 text, LF line ends, 1 MB; `src/qt/qt_guesttools.cpp` keeps a
+  capture". The keyboard follows the pointer: off the guest's display (`guest_tools_keyboard_outside()`)
+  `keyboard_input()` drops new presses (releases of keys down in the guest still pass), the Windows
+  low-level hook and the Qt key filter let the host have the keys, and `GuestTools::poll()` hands
+  the focus to another 86Box-Next window (same exe name) under the pointer -- only between machines. Clipboard: UTF-16 text, LF line ends, 1 MB; `src/qt/qt_guesttools.cpp` keeps a
   snapshot of the host clipboard for the emulation thread and drops its own echoes. Agents in
   `guest-tools/` (built in WSL: `wsl -e sh guest-tools/build.sh` -> `guest-tools/out/`
   86BOXGT.EXE, a 1.44 MB floppy image and an ISO): `windows/gtagent.c`, one Win32 exe for

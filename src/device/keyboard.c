@@ -320,6 +320,12 @@ keyboard_input(int down, uint16_t scan)
                            means we then use the scan code as is, and need to
                            make sure we do not accidentally strip that upper byte */
 
+    /* 86Box Guest Tools: the host pointer is off the guest's display, so the
+       keys are the host's. A key let go out there that went down in here
+       still reaches the machine, so none stays stuck. */
+    if (guest_tools_keyboard_outside() && (down || !recv_key[scan & 0x1ff]))
+        return;
+
     if (recv_key[scan & 0x1ff] ^ down) {
         if (down) {
             switch (scan & 0x1ff) {

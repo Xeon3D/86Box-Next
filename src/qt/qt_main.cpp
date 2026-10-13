@@ -244,7 +244,8 @@ emu_LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
             is_over_window                = is_over_window || ((secondaryRenderer != nullptr) && (GetForegroundWindow() == ((HWND) secondaryRenderer->winId())));
         }
 
-    bool skip = (main_window_blocked || (nCode < 0) || (nCode != HC_ACTION) || !is_over_window || (kbd_req_capture && !mouse_capture && !guest_tools_keyboard())) || qt_osd_is_visible();
+    bool skip = (main_window_blocked || (nCode < 0) || (nCode != HC_ACTION) || !is_over_window || (kbd_req_capture && !mouse_capture && !guest_tools_keyboard())) || qt_osd_is_visible() ||
+                guest_tools_keyboard_outside();
 
     if (skip)
         return CallNextHookEx(NULL, nCode, wParam, lParam);

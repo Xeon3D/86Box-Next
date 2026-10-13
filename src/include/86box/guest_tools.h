@@ -42,6 +42,10 @@ extern int  guest_tools_pointer_active(void);
    the guest's, as if the mouse were captured ("Keyboard requires capture"). */
 extern int  guest_tools_keyboard(void);
 
+/* Integrated, and the host pointer is off the guest's display: the keys
+   are the host's, not the machine's. */
+extern int  guest_tools_keyboard_outside(void);
+
 /* The host pointer over the guest display (UI thread): x and y from 0.0 to
    1.0 across it; inside = 0 when the pointer left it. */
 extern void guest_tools_host_pointer(double x, double y, int inside);

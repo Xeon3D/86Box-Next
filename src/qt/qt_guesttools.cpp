@@ -16,6 +16,10 @@
 #include <cstdlib>
 #include <cstring>
 
+#ifdef Q_OS_WINDOWS
+#    include <windows.h>
+#endif
+
 extern "C" {
 #include <86box/plat.h>
 #include <86box/guest_tools.h>
@@ -85,6 +89,60 @@ GuestTools::setHostClipboard(const QString &text)
     QApplication::clipboard()->setText(text);
 }
 
+#ifdef Q_OS_WINDOWS
+/* The executable's file name of a process, lower case; empty if unknown. */
+static QString
+processExeName(DWORD pid)
+{
+    wchar_t path[MAX_PATH];
+    DWORD   size = MAX_PATH;
+    HANDLE  proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    QString name;
+
+    if (proc == nullptr)
+        return name;
+    if (QueryFullProcessImageNameW(proc, 0, path, &size))
+        name = QString::fromWCharArray(path, static_cast<int>(size)).section(QLatin1Char('\\'), -1).toLower();
+    CloseHandle(proc);
+    return name;
+}
+
+/* Integrated, the keyboard follows the pointer from one machine's window to
+   another's: while this machine has the focus and the pointer is over
+   another 86Box-Next window on top, that window gets the focus. (Only
+   between machines: other programs still take the focus on a click.) */
+static void
+handFocusToMachineUnderPointer()
+{
+    HWND  fg  = GetForegroundWindow();
+    DWORD pid = 0;
+    POINT pt;
+    HWND  target;
+    DWORD target_pid = 0;
+
+    if ((fg == nullptr) || !GetCursorPos(&pt))
+        return;
+    GetWindowThreadProcessId(fg, &pid);
+    if (pid != GetCurrentProcessId())
+        return;
+    /* Not while dragging something. */
+    if ((GetAsyncKeyState(VK_LBUTTON) | GetAsyncKeyState(VK_RBUTTON) | GetAsyncKeyState(VK_MBUTTON)) & 0x8000)
+        return;
+
+    target = WindowFromPoint(pt);
+    if (target == nullptr)
+        return;
+    target = GetAncestor(target, GA_ROOT);
+    GetWindowThreadProcessId(target, &target_pid);
+    if ((target_pid == 0) || (target_pid == pid))
+        return;
+    if (processExeName(target_pid) != processExeName(pid))
+        return;
+
+    SetForegroundWindow(target);
+}
+#endif
+
 /* Pointer integration took over: let go of a mouse captured before it did. */
 void
 GuestTools::poll()
@@ -94,6 +152,11 @@ GuestTools::poll()
     if (active && !pointerActive && mouse_capture)
         plat_mouse_capture(0);
     pointerActive = active;
+
+#ifdef Q_OS_WINDOWS
+    if (guest_tools_keyboard_outside())
+        handFocusToMachineUnderPointer();
+#endif
 }
 
 /* Emulation thread. */

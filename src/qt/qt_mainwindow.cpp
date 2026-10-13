@@ -1812,7 +1812,8 @@ MainWindow::eventFilter(QObject *receiver, QEvent *event)
         }
     }
 
-    if (!main_window_blocked && !dopause && (!kbd_req_capture || mouse_capture || guest_tools_keyboard())) {
+    if (!main_window_blocked && !dopause && (!kbd_req_capture || mouse_capture || guest_tools_keyboard()) &&
+        !guest_tools_keyboard_outside()) {
 #if 0
         if (event->type() == QEvent::Shortcut) {
             auto shortcutEvent = (QShortcutEvent *) event;

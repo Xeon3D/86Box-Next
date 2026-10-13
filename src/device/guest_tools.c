@@ -107,6 +107,12 @@ guest_tools_keyboard(void)
     return atomic_load(&gt_pointer_inside) && guest_tools_pointer_active();
 }
 
+int
+guest_tools_keyboard_outside(void)
+{
+    return !mouse_capture && !atomic_load(&gt_pointer_inside) && guest_tools_pointer_active();
+}
+
 void
 guest_tools_host_pointer(double x, double y, int inside)
 {
