@@ -28,7 +28,7 @@ log at the bottom). Last updated: 2026-10-14.
   memory count): the guest is in the ELSA BIOS's planar-mode character
   output (c000:3a86 loop, INT 10h wrapper c000:1890 that unlocks/relocks
   CR1F/CR2C per call). Not the GPU lane (same with NV4_GPU=0). A host
-  sample (scratchpad sampler.py: suspends threads, symbolizes RIP with
+  sample (tools/nv4/sampler.py: suspends threads, symbolizes RIP with
   nm) shows 76% of the emulation thread in codegen_block_init: the
   dynarec keeps recompiling. The owner sees no slowdown on another board
   at 266 MHz. Suspects: the VIA Apollo Pro 133A's shadow RAM state for
