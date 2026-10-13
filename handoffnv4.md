@@ -332,6 +332,54 @@ From Bash with MSYS2 UCRT64 first on PATH:
   the start of the GPU work); most waits are at vertical blank when a
   batch in flight draws into the displayed bytes (front-buffer rendering).
 
+## What is left (2026-10-14, after Release 2.1.4.8)
+
+Done: boot/VGA/VESA, PFIFO, 2D, D3D (DX5/DX6), OpenGL ICD (Quake III),
+threads + GPU lane, TNT2 straps, merged into master and released. The
+plan below (2026-10-13) has the detail; this is where each item stands.
+Test VMs: no CPU faster than a Celeron 266 (owner's PC; see the memory
+note), so expect slow runs rather than raising the CPU.
+
+Recommended order: 4, then 7, then 5.
+
+**Loose ends**
+1. Desktop shortcut arrows: likely a stale `C:\WINDOWS\ShellIconCache`
+   from before c59c71997; delete it in work-tnt (MS-DOS mode, `attrib -h
+   -s`, `del c:\windows\shelli~1`) and look again.
+2. POST slowdown at 466 MHz (see In progress): parked, not hit at 266.
+3. Quake III follow-ups: timedemo fps with the GPU lane on; the TNT
+   (ERAZOR II, work-tnt) with the same ICD; GLQuake and Quake II (B4).
+
+**More software and drivers**
+4. Later NVIDIA drivers (B6): 8.05 and 71.84 are already unpacked in
+   `F:\Claude\86Box-Next\dl` (`NV805`, `NV7184`) and list the TNT2 Ultra
+   (0029), M64 (002D) and Vanta. They test the ERAZOR III ULTRA and LT,
+   the NV5 classes 0x64-0x66 (13ba43f0b, never run) and probably need
+   0x63 (not written). Install on a copy of work-tnt2 with the board
+   switched, never over the 4.11 VMs.
+5. Windows 2000 / NT4 (B7): other resman, several channels; test Start >
+   Restart too (the NV3 restart-hang lesson).
+6. Linux (B8, optional): XFree86 `nv`, `rivafb`.
+
+**Hardware not modeled yet**
+7. PVIDEO overlay (C9): register stub in `nv4_stubs.c`; port NV3's
+   (wt-nv3) to NV4's layout; Media Player + DxDiag overlay tests.
+8. Classes (C10): 0x38 DVD subpicture (3DMark 2000 sets it up), 0x48 DX3
+   triangle, NV5 0x63; 3D into a swizzled surface (A3) when something
+   needs it.
+9. PME / TV encoders (C11): only if a BIOS or driver hangs on them.
+
+**Platforms, speed, docs**
+10. DOS/VESA (D12): VBE tester, VESA games, an AMI board, ERAZOR II PCI
+    on Socket 7.
+11. More boards (D13/D14): Creative, Diamond Viper V550/V770, STB,
+    Leadtek, Hercules BIOSes are already in Xeon3D/roms
+    (`video/nvidia/nv4`); check the TNT2's AGP 4x capability.
+12. Speed (E15-E17): fixed-point CPU span stepping, GPU kernel variants,
+    a capture/replay harness (more useful under the 266 MHz cap).
+13. Docs (F20): driver notes like NV3's, a test matrix
+    (board x OS x driver x program).
+
 ## Next (plan of 2026-10-13)
 
 Where we stand against the owner's plan: phases 1-5 and 7 are done for
