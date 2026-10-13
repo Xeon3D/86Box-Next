@@ -219,6 +219,8 @@ extern void cartridge_eject(uint8_t id);
 extern void floppy_mount(uint8_t id, char *fn, uint8_t wp);
 extern void floppy_eject(uint8_t id);
 extern void cdrom_mount(uint8_t id, char *fn);
+/* cdrom_mount() from any thread: the UI's own thread does it */
+extern void plat_cdrom_mount_queued(uint8_t id, const char *fn);
 extern void plat_cdrom_ui_update(uint8_t id, uint8_t reload);
 extern void rdisk_eject(uint8_t id);
 extern void rdisk_mount(uint8_t id, char *fn, uint8_t wp);

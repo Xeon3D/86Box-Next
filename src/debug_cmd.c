@@ -17,6 +17,8 @@
  *                                  CPU executes linear addr; "bp clear" drops them all
  *                 wp addr          log each instruction that changes the dword at linear addr
  *                                  (its physical page as mapped now); "wp clear" drops it
+ *                 cdrom n path     put an image in CD-ROM drive n (0 = the first); no path
+ *                                  empties the drive
  *
  *               Each command is logged ("debug_cmd: ..."), so a test can wait
  *               for the file to vanish and then read the log.
@@ -31,6 +33,8 @@
 #include <86box/video.h>
 #include <86box/debug_cmd.h>
 #include <86box/mem.h>
+#include <86box/cdrom.h>
+#include <86box/plat.h>
 #include "cpu.h"
 
 #define DEBUG_CMD_QUEUE 512
@@ -311,6 +315,18 @@ debug_cmd_run(char *line)
         /* reset: hard reset, as the Action menu's (devices closed and made again) */
         always_log("debug_cmd: hard reset\n");
         pc_reset_hard();
+    } else if (!strcmp(line, "cdrom")) {
+        char *path = arg;
+        long  id   = strtol(arg, &path, 10);
+
+        while (*path == ' ')
+            path++;
+        if ((path == arg) || (id < 0) || (id >= CDROM_NUM))
+            always_log("debug_cmd: cdrom: no drive \"%s\"\n", arg);
+        else {
+            always_log("debug_cmd: cdrom %ld \"%s\"\n", id, path);
+            plat_cdrom_mount_queued((uint8_t) id, path);
+        }
     } else if (!strcmp(line, "log"))
         always_log("debug_cmd: %s\n", arg);
     else if (line[0])

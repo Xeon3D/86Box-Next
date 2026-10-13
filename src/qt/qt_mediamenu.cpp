@@ -1581,6 +1581,15 @@ cdrom_mount(uint8_t id, char *fn)
 }
 
 void
+plat_cdrom_mount_queued(uint8_t id, const char *fn)
+{
+    QString name(fn);
+
+    QMetaObject::invokeMethod(MediaMenu::ptr.get(), [id, name] { MediaMenu::ptr->cdromMount(id, name); },
+                              Qt::QueuedConnection);
+}
+
+void
 plat_cdrom_ui_update(uint8_t id, uint8_t reload)
 {
     emit MediaMenu::ptr->onCdromUpdateUi(id);

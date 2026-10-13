@@ -148,6 +148,12 @@ cdrom_mount(uint8_t id, char *fn)
 }
 
 void
+plat_cdrom_mount_queued(uint8_t id, const char *fn)
+{
+    cdrom_mount(id, (char *) fn);
+}
+
+void
 mo_eject(uint8_t id)
 {
     mo_t *dev = (mo_t *) mo_drives[id].priv;
