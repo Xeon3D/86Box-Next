@@ -289,6 +289,26 @@ debug_cmd_map(const char *arg)
         always_log("debug_cmd: map %08x: AGP aperture -> %08x\n", phys, ram);
 }
 
+/* find <text>: physical RAM addresses holding the text (the first 16) */
+static void
+debug_cmd_find(const char *arg)
+{
+    size_t   n     = strlen(arg);
+    uint32_t top   = mem_size << 10;
+    int      found = 0;
+
+    if (!n)
+        return;
+    for (uint32_t a = 0; (a + n <= top) && (found < 16); a++) {
+        if (ram[a] != (uint8_t) arg[0] || memcmp(&ram[a], arg, n))
+            continue;
+        always_log("debug_cmd: find \"%s\" at phys %08x\n", arg, a);
+        found++;
+    }
+    if (!found)
+        always_log("debug_cmd: find \"%s\": not found\n", arg);
+}
+
 static void
 debug_cmd_run(char *line)
 {
@@ -338,7 +358,9 @@ debug_cmd_run(char *line)
     else if (!strcmp(line, "speedlog")) {
         debug_cmd_speed_log = atoi(arg) != 0;
         always_log("debug_cmd: speedlog %s\n", debug_cmd_speed_log ? "on" : "off");
-    } else if (!strcmp(line, "interp")) {
+    } else if (!strcmp(line, "find"))
+        debug_cmd_find(arg);
+    else if (!strcmp(line, "interp")) {
         /* interp 1|0: run every block through the interpreter (to tell dynarec bugs apart) */
         cpu_force_interpreter = atoi(arg) != 0;
         always_log("debug_cmd: interpreter %s\n", cpu_force_interpreter ? "forced" : "off");

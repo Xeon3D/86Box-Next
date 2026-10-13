@@ -90,15 +90,6 @@ uint32_t nv3_pfifo_read(uint32_t address)
         // Debug
         case NV3_PFIFO_DEBUG_0:
             ret = nv3->pfifo.debug_0;
-
-            // update the internal cache error state since the cache_error interrupt was serviced by the Resource Manager.
-            // Do thi seven if this interrupt is disabled
-            if (nv3->pfifo.intr & NV3_PFIFO_INTR_CACHE_ERROR)
-            {
-                nv3->pfifo.debug_0 &= ~(1 << NV3_PFIFO_CACHE0_ERROR_PENDING);
-                nv3->pfifo.debug_0 &= ~(1 << NV3_PFIFO_CACHE1_ERROR_PENDING);
-            }
-    
             break;
         case NV3_PFIFO_CONFIG_0:
             ret = nv3->pfifo.config_0;
@@ -301,13 +292,13 @@ void nv3_pfifo_dma_pusher_kick(void)
         timer_on_auto(&nv3->dma_pusher_timer, 10.0);
 }
 
-/* Run the puller until CACHE1 is empty or PGRAPH stops taking methods (a trap) */
+/* Run the puller until CACHE1 is empty or stalls (PGRAPH not taking methods, or a cache error) */
 void nv3_pfifo_cache1_drain(void)
 {
     for (int i = 0; i < 64; i++) {
         uint32_t get = nv3->pfifo.cache1_settings.get_address;
 
-        if ((get == nv3->pfifo.cache1_settings.put_address) || !nv3->pgraph.fifo_access
+        if ((get == nv3->pfifo.cache1_settings.put_address)
             || !(nv3->pfifo.cache1_settings.pull0 & (1 << NV3_PFIFO_CACHE1_PULL0_ENABLED)))
             break;
         nv3_pfifo_cache1_pull();
@@ -327,7 +318,9 @@ void nv3_pfifo_trigger_dma_if_required(void)
         return;
     nv3_pfifo_dma_pusher_active = true;
 
-    while ((c1->dma_state & 1) && (c1->dma_length >= 4) && c1->push0) {
+    /* PUSH0 gates the CPU's writes into CACHE1, not the pusher: the resman turns it off for a DMA
+       transfer and back on after it (and NVIDIA's manufacturing test starts the pusher with it off) */
+    while ((c1->dma_state & 1) && (c1->dma_length >= 4)) {
         /* DMA_PT_INST points at the page table (word 2) of the push buffer's DMA object. DMA_GET
            indexes the page table directly: the resman (NV3RM.VXD) folds the object's adjust
            (word 0, bits 11:0) into the GET it programs, so it is not added again -- with it, a
@@ -377,6 +370,17 @@ void nv3_pfifo_trigger_dma_if_required(void)
         c1->dma_status = (c1->dma_status & ~(0x7FF << 18) & ~0x1FFC) | ((count - 1) << 18) | ((method + 4) & 0x1FFC);
     }
 
+    /* The buffer is done: the pusher turns its access off (the resman tests DMA0 ACCESS to see a
+       transfer complete), reports reason DONE (DMA_STATUS bit 30 clear) and raises PFIFO
+       DMA_PUSHER (INTR_0 bit 12) whether or not it is enabled -- NVIDIA's manufacturing test
+       waits for that bit */
+    if ((c1->dma_state & 1) && (c1->dma_length < 4)) {
+        c1->dma_state &= ~1;
+        c1->dma_status &= ~(1u << 30);
+        nv3->pfifo.intr |= (1 << NV3_PFIFO_INTR_DMA_PUSHER);
+        nv3_pmc_handle_interrupts(true);
+    }
+
     nv3_pfifo_dma_pusher_active = false;
 }
 
@@ -402,6 +406,11 @@ void nv3_pfifo_write(uint32_t address, uint32_t val)
         // Bit 16 - DMA Page Table Entry (pagefault?)
         case NV3_PFIFO_INTR:
             nv3->pfifo.intr &= ~val;
+            /* DEBUG_0's cache error latches go with the interrupt (the resman's interrupt loop also
+               services PFIFO while CACHE_ERROR0 reads pending, so it must not stay set). The old
+               code tested intr & 0, so they never cleared. */
+            if (val & (1 << NV3_PFIFO_INTR_CACHE_ERROR))
+                nv3->pfifo.debug_0 &= ~((1 << NV3_PFIFO_CACHE0_ERROR_PENDING) | (1 << NV3_PFIFO_CACHE1_ERROR_PENDING));
             nv3_pmc_handle_interrupts(true);
             break;
         case NV3_PFIFO_INTR_EN:
@@ -715,11 +724,7 @@ void nv3_pfifo_cache0_pull(void)
     if (nv3->pfifo.cache0_settings.put_address == nv3->pfifo.cache0_settings.get_address)
         return;
 
-    // PGRAPH is not taking methods (a trapped method is being handled): leave it queued
-    if (!nv3->pgraph.fifo_access)
-        return;
-
-    // There is only one entry for cache0 
+    // There is only one entry for cache0
     uint8_t current_channel = nv3->pfifo.cache0_settings.channel;
     uint8_t current_subchannel = nv3->pfifo.cache0_entry.subchannel;
     uint32_t current_param = nv3->pfifo.cache0_entry.data;
@@ -748,6 +753,10 @@ void nv3_pfifo_cache0_pull(void)
         nv3_pfifo_interrupt(NV3_PFIFO_INTR_CACHE_ERROR, true);
         return;
     }
+
+    // PGRAPH is not taking methods: leave it queued (see the CACHE1 puller)
+    if (!nv3->pgraph.fifo_access)
+        return;
 
     /* PGRAPH must hold this channel's context (see the CACHE1 puller) */
     if (!((nv3->pgraph.context_control >> NV3_PGRAPH_CONTEXT_CONTROL_CHID_VALID) & 1)
@@ -815,8 +824,8 @@ void nv3_pfifo_cache1_push(uint32_t addr, uint32_t param)
     uint32_t channel = (addr >> NV3_OBJECT_SUBMIT_CHANNEL) & 0x7F;
     uint32_t subchannel = (addr >> NV3_OBJECT_SUBMIT_SUBCHANNEL) & (NV3_DMA_CHANNELS - 1);
 
-    // first make sure there is even any cache available
-    if (!nv3->pfifo.cache1_settings.push0)
+    // first make sure there is even any cache available (PUSH0 gates the CPU's writes, not the DMA pusher's)
+    if (!nv3->pfifo.cache1_settings.push0 && !nv3_pfifo_dma_pusher_active)
     {
         oh_shit = true; 
         oh_shit_reason = nv3_runout_reason_no_cache_available;
@@ -922,10 +931,6 @@ void nv3_pfifo_cache1_pull(void)
     if (nv3->pfifo.cache1_settings.put_address == nv3->pfifo.cache1_settings.get_address)
         return;
 
-    // PGRAPH is not taking methods (a trapped method is being handled): leave it queued
-    if (!nv3->pgraph.fifo_access)
-        return;
-
     uint32_t get_index = nv3_pfifo_cache1_slot(nv3->pfifo.cache1_settings.get_address);
 
     uint8_t current_channel = nv3->pfifo.cache1_settings.channel;
@@ -968,6 +973,15 @@ void nv3_pfifo_cache1_pull(void)
         nv3_pfifo_interrupt(NV3_PFIFO_INTR_CACHE_ERROR, true);
         return;
     }
+
+    /* PGRAPH is not taking methods (a trapped method is being handled, or the resman turned it off
+       for VGA mode): leave this one queued. Only methods bound for PGRAPH wait -- hash misses and
+       software methods go to the resman above. In VGA mode the resman empties RAMHT and zeroes the
+       subchannel contexts, so whatever the display driver queues while a full-screen DOS box is up
+       comes out as cache errors and is thrown away; waiting here filled CACHE1, and the resman's
+       state unload on the way back to Windows waited forever for it to drain (black screen). */
+    if (!nv3->pgraph.fifo_access)
+        return;
 
     /* PGRAPH holds one channel's state: a method for another channel (or with no channel loaded)
        raises its CONTEXT_SWITCH interrupt and waits in the cache while the driver's handler

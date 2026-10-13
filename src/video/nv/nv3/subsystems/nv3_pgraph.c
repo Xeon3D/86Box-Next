@@ -561,10 +561,16 @@ void nv3_pgraph_interrupt_invalid(uint32_t num)
 }
 
 // VBlank. Fired every single frame.
-void nv3_pgraph_vblank_start(UNUSED(svga_t* svga))
+void nv3_pgraph_vblank_start(svga_t* svga)
 {
+    nv3_pramdac_checksum_frame(svga);
     nv3_pgraph_interrupt_valid(NV3_PGRAPH_INTR_0_VBLANK);
     nv3_pvideo_vblank();
+    {
+        extern void (*nv3_debug_vblank_hook)(void);
+        if (nv3_debug_vblank_hook)
+            nv3_debug_vblank_hook();
+    }
 }
 
 /* Arbitrates graphics object submission to the right object types */
