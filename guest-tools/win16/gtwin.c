@@ -615,19 +615,22 @@ WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
         return 1;
     }
 
-    if (has_switch(cmdline, "install")) {
-        if (!install(quiet))
-            return 1;
-    } else {
-        GetModuleFileName(inst, self, sizeof(self));
-        installed_path(dest);
-        if (!quiet && (lstrcmpi(self, dest) != 0) &&
+    GetModuleFileName(inst, self, sizeof(self));
+    installed_path(dest);
+    if (lstrcmpi(self, dest) != 0) {
+        /* Started from the disk: install (or offer to), and keep running
+           (Windows 3.x would take the installed copy for a second instance
+           of this one). Code and icon are preloaded and fixed (wlink and
+           gtwin.rc), so the disk can be ejected. */
+        int do_install = has_switch(cmdline, "install");
+
+        if (!do_install && !quiet &&
             (MessageBox(NULL, "Install " AGENT_TITLE " so it starts with Windows?\n\n"
                               "(No runs it this time only.)",
-                        AGENT_TITLE, MB_YESNO | MB_ICONQUESTION) == IDYES)) {
-            if (!install(0))
-                return 1;
-        }
+                        AGENT_TITLE, MB_YESNO | MB_ICONQUESTION) == IDYES))
+            do_install = 1;
+        if (do_install && !install(quiet))
+            return 1;
     }
 
     opt_pointer   = GetProfileInt(SECTION, "Pointer", 1) != 0;

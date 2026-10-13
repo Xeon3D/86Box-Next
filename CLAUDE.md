@@ -304,6 +304,16 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   Windows 95 / NT 4.0 and later, no C runtime (KERNEL32/USER32/ADVAPI32/SHELL32/WINMM only,
   subsystem 4.0), tray icon, `/install` (copies itself to the Windows directory + Run key) /
   `/uninstall` / `/quiet`; stops following when a program confines the pointer (ClipCursor).
+  Tools > "Install 86Box Guest Tools..." (`GuestTools::insertMedia()`): the images are built in
+  (`src/qt/guesttools.qrc` from `guest-tools/images/`, committed: build.sh writes them with fixed
+  dates/serial so they only change with the tools; Q_INIT_RESOURCE is needed -- `ui` is a static
+  library), written to `<global data dir>/guest-tools/86box-guest-tools-<md5 prefix>.iso|img`
+  and mounted in the first CD-ROM drive (else the first floppy, write-protected); off tools get
+  turned on first (hard reset, as Settings does). The CD carries AUTORUN.INF (open=86BOXGT.EXE).
+  Installing from a disk: the Win32 agent stops a running agent and waits for its process, clears
+  the read-only bit a CD copy carries, copies, then starts the installed copy and exits; GTWIN keeps
+  running itself (Windows 3.x would take the installed copy for a second instance of the disk's
+  module), with code and icon PRELOAD FIXED so the disk can go. debug_cmd `gt insert` runs it.
   `mkicon.py` makes its BMP-format icon (Windows 95 reads no PNG icons; `--win16`: one 32x32
   16-colour image). `win16/gtwin.c`: GTWIN.EXE for Windows 3.1 / WfW 3.11 (Open Watcom, WATCOM
   defaults to WSL's ~/ow), 16-bit port I/O, an icon window with the toggles in its window menu,

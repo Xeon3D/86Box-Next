@@ -10,8 +10,15 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QCryptographicHash>
+#include <QDir>
+#include <QFile>
+#include <QMessageBox>
 #include <QMimeData>
 #include <QTimer>
+#include <QWidget>
+
+#include "qt_mediamenu.hpp"
 
 #include <cstdlib>
 #include <cstring>
@@ -21,6 +28,11 @@
 #endif
 
 extern "C" {
+#include <86box/86box.h>
+#include <86box/config.h>
+#include <86box/timer.h>
+#include <86box/cdrom.h>
+#include <86box/fdd.h>
 #include <86box/plat.h>
 #include <86box/guest_tools.h>
 }
@@ -46,6 +58,12 @@ GuestTools::GuestTools(QObject *parent)
 
     connect(QApplication::clipboard(), &QClipboard::dataChanged, this, &GuestTools::hostClipboardChanged);
     guest_tools_set_clipboard_handlers(setHostHandler, getHostHandler);
+    guest_tools_insert_media_hook = [] {
+        if (instance != nullptr)
+            QMetaObject::invokeMethod(instance, [] {
+                insertMedia(qobject_cast<QWidget *>(instance->parent()));
+            }, Qt::QueuedConnection);
+    };
 
     timer = new QTimer(this);
     connect(timer, &QTimer::timeout, this, &GuestTools::poll);
@@ -55,7 +73,8 @@ GuestTools::GuestTools(QObject *parent)
 GuestTools::~GuestTools()
 {
     guest_tools_set_clipboard_handlers(nullptr, nullptr);
-    instance = nullptr;
+    guest_tools_insert_media_hook = nullptr;
+    instance                      = nullptr;
 }
 
 void
@@ -193,4 +212,113 @@ GuestTools::getHostHandler(size_t *chars)
     copy[text.size()] = 0;
     *chars            = text.size();
     return copy;
+}
+
+/* ---- Install media --------------------------------------------------------- */
+
+/* The built-in image, written once to the global data directory (its name
+   carries a hash of the contents, so a newer build never overwrites an
+   image a running machine has open). Empty on failure. */
+static void
+init_resources()
+{
+    static bool done = false;
+    if (!done) {
+        /* A static library's resources only link in when referenced. */
+        Q_INIT_RESOURCE(guesttools);
+        done = true;
+    }
+}
+
+static QString
+mediaFile(const QString &ext)
+{
+    init_resources();
+
+    QFile res(QStringLiteral(":/guesttools/86box-guest-tools.") + ext);
+    char  dir[1024];
+
+    if (!res.open(QIODevice::ReadOnly))
+        return QString();
+    const QByteArray data = res.readAll();
+    const QString    hash = QString::fromLatin1(QCryptographicHash::hash(data, QCryptographicHash::Md5).toHex().left(8));
+
+    plat_get_global_data_dir(dir, sizeof(dir));
+    QDir base(QString::fromUtf8(dir));
+    if (!base.mkpath(QStringLiteral("guest-tools")))
+        return QString();
+    const QString path = base.filePath(QStringLiteral("guest-tools/86box-guest-tools-%1.%2").arg(hash, ext));
+
+    QFile out(path);
+    if (out.exists() && (out.size() == data.size()))
+        return path;
+    if (!out.open(QIODevice::WriteOnly) || (out.write(data) != data.size()))
+        return QString();
+    return path;
+}
+
+void
+GuestTools::insertMedia(QWidget *parent)
+{
+    const QString title = tr("86Box Guest Tools");
+    int           cd    = -1;
+    int           fd    = -1;
+    bool          reset = false;
+    QString       text;
+
+    for (int i = 0; (i < CDROM_NUM) && (cd < 0); i++) {
+        if (cdrom[i].bus_type != CDROM_BUS_DISABLED)
+            cd = i;
+    }
+    for (int i = 0; (i < FDD_NUM) && (fd < 0); i++) {
+        if (fdd_get_type(&drives[i]) != 0)
+            fd = i;
+    }
+    if ((cd < 0) && (fd < 0)) {
+        QMessageBox::warning(parent, title, tr("This machine has no CD-ROM or floppy drive to put the Guest Tools in."));
+        return;
+    }
+
+    if (!guest_tools_enabled) {
+        if (QMessageBox::question(parent, title,
+                                  tr("86Box Guest Tools are off for this machine. Turn them on?\n\n"
+                                     "The machine restarts (as after changing its settings)."))
+            != QMessageBox::Yes)
+            return;
+        const int was_paused = dopause;
+        plat_pause(1);
+        guest_tools_enabled = 1;
+        config_changed      = 2;
+        pc_reset_hard();
+        config_save();
+        plat_pause(was_paused);
+        reset = true;
+    }
+
+    const QString path = mediaFile((cd >= 0) ? QStringLiteral("iso") : QStringLiteral("img"));
+    if (path.isEmpty()) {
+        QMessageBox::warning(parent, title, tr("Could not write the Guest Tools image to the data directory."));
+        return;
+    }
+
+    if (cd >= 0) {
+        MediaMenu::ptr->cdromMount(cd, path);
+        text = tr("The 86Box Guest Tools CD is in the machine's CD-ROM drive.\n\n"
+                  "Windows 95 and later start the installer by themselves%1. "
+                  "If not, run 86BOXGT.EXE from the CD; on Windows 3.x, GTWIN.EXE "
+                  "(Program Manager: File > Run).")
+                   .arg(reset ? tr(" (Windows 95/98: when Windows starts)") : QString());
+    } else {
+        MediaMenu::ptr->floppyMount(fd, path, true);
+        text = tr("The 86Box Guest Tools floppy is in drive %1:.\n\n"
+                  "Run %1:\\86BOXGT.EXE (Windows 95 and later) or %1:\\GTWIN.EXE "
+                  "(Windows 3.x: Program Manager, File > Run).")
+                   .arg(QChar('A' + fd));
+    }
+
+    /* Not modal: the machine keeps running while it shows. */
+    auto *box = new QMessageBox(QMessageBox::Information, title, text, QMessageBox::Ok, parent);
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    box->setModal(false);
+    box->show();
 }

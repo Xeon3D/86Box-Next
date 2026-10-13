@@ -9,9 +9,14 @@ copied on the host can be pasted in the machine and the other way round.
 
 First, in 86Box-Next
 --------------------
-Settings > Other peripherals: tick "86Box Guest Tools". Configure picks
-the features: mouse integration, and the clipboard in either or both
-directions. The machine restarts.
+Tools > Install 86Box Guest Tools puts this disk into the machine (the CD
+if it has a CD-ROM drive, else the floppy), turning the tools on first if
+they are off (the machine restarts then). Windows 95 and later start the
+installer from the CD by themselves.
+
+The tools are switched in Settings > Other peripherals > "86Box Guest
+Tools"; Configure picks the features: mouse integration, and the
+clipboard in either or both directions.
 
 Windows 95, 98, ME, NT 4.0, 2000, XP and later
 ---------------------------------------------

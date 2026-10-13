@@ -60,6 +60,10 @@ extern void guest_tools_host_clipboard_changed(void);
 extern void guest_tools_set_clipboard_handlers(void (*set_host)(const uint16_t *text, size_t chars),
                                                uint16_t *(*get_host)(size_t *chars));
 
+/* The UI's Tools > Install 86Box Guest Tools, for debug_cmd's "gt insert"
+   (called on the emulation thread; the UI runs it on its own). */
+extern void (*guest_tools_insert_media_hook)(void);
+
 /* debug_cmd's "gt" command. */
 extern void guest_tools_debug(const char *args);
 

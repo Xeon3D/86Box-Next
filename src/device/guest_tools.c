@@ -54,6 +54,8 @@ typedef struct guest_tools_t {
 
 int guest_tools_ports_open = 0;
 
+void (*guest_tools_insert_media_hook)(void) = NULL;
+
 /* Shared with the UI thread. */
 static atomic_int  gt_features;      /* GT_FEAT_* of the device in, 0 without one */
 static atomic_int  gt_pointer_ready; /* the agent follows the host pointer */
@@ -176,6 +178,10 @@ guest_tools_debug(const char *args)
         /* Relative motion through the machine's mouse. */
         mouse_scale((int) x, (int) y);
         always_log("Guest Tools: host motion %d, %d\n", (int) x, (int) y);
+    } else if (!strcmp(args, "insert")) {
+        always_log("Guest Tools: inserting the install media\n");
+        if (guest_tools_insert_media_hook != NULL)
+            guest_tools_insert_media_hook();
     } else if (!strcmp(args, "state")) {
         uint32_t pos = atomic_load(&gt_pointer);
 

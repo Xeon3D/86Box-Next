@@ -175,7 +175,7 @@ no_channel(EXCEPTION_POINTERS *info)
                 "86Box Guest Tools are not enabled for this machine.\n\n"
                 "Turn on \"86Box Guest Tools\" in the machine's Settings > Other peripherals, "
                 "then restart the machine.",
-                AGENT_TITLE, MB_OK | MB_ICONINFORMATION);
+                AGENT_TITLE, MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST);
     ExitProcess(1);
     return EXCEPTION_EXECUTE_HANDLER;
 }
@@ -587,7 +587,7 @@ about(void)
               (host_features & GT_FEAT_POINTER) ? "on" : "off",
               (host_features & GT_FEAT_CLIP_IN) ? "on" : "off",
               (host_features & GT_FEAT_CLIP_OUT) ? "on" : "off");
-    MessageBoxA(hwnd, text, AGENT_TITLE, MB_OK | MB_ICONINFORMATION);
+    MessageBoxA(hwnd, text, AGENT_TITLE, MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST);
 }
 
 /* ---- Window ------------------------------------------------------------ */
@@ -710,15 +710,28 @@ run_key_remove(void)
     }
 }
 
+/* Ask a running agent to exit and wait until its process is gone (its
+   window goes first; the exe stays locked until the process ends). */
 static void
 stop_running_agent(void)
 {
-    HWND other = FindWindowA(AGENT_CLASS, NULL);
+    HWND   other = FindWindowA(AGENT_CLASS, NULL);
+    DWORD  pid   = 0;
+    HANDLE proc  = NULL;
 
+    if (other == NULL)
+        return;
+    GetWindowThreadProcessId(other, &pid);
+    if (pid != 0)
+        proc = OpenProcess(SYNCHRONIZE, FALSE, pid);
     for (int i = 0; (other != NULL) && (i < 50); i++) {
         PostMessageA(other, WM_COMMAND, ID_EXIT, 0);
         Sleep(100);
         other = FindWindowA(AGENT_CLASS, NULL);
+    }
+    if (proc != NULL) {
+        WaitForSingleObject(proc, 5000);
+        CloseHandle(proc);
     }
 }
 
@@ -733,23 +746,34 @@ install(int quiet)
     installed_path(dest);
 
     if (lstrcmpiA(self, dest) != 0) {
+        int copied = 0;
+
         stop_running_agent();
-        if (!CopyFileA(self, dest, FALSE)) {
+        /* Copied from a CD, the file comes read-only: CopyFile would refuse
+           to replace it next time. */
+        SetFileAttributesA(dest, FILE_ATTRIBUTE_NORMAL);
+        for (int i = 0; !copied && (i < 20); i++) {
+            copied = CopyFileA(self, dest, FALSE);
+            if (!copied)
+                Sleep(250);
+        }
+        if (!copied) {
             if (!quiet)
                 MessageBoxA(NULL, "Could not copy the agent into the Windows directory.",
-                            AGENT_TITLE, MB_OK | MB_ICONERROR);
+                            AGENT_TITLE, MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
             return 0;
         }
+        SetFileAttributesA(dest, FILE_ATTRIBUTE_NORMAL);
     }
     if (!run_key_set(dest)) {
         if (!quiet)
             MessageBoxA(NULL, "Could not make the agent start with Windows.",
-                        AGENT_TITLE, MB_OK | MB_ICONERROR);
+                        AGENT_TITLE, MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
         return 0;
     }
     if (!quiet)
         MessageBoxA(NULL, AGENT_TITLE " is installed and will start with Windows.",
-                    AGENT_TITLE, MB_OK | MB_ICONINFORMATION);
+                    AGENT_TITLE, MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST);
     return 1;
 }
 
@@ -763,7 +787,7 @@ uninstall(int quiet)
     installed_path(path);
     DeleteFileA(path);
     if (!quiet)
-        MessageBoxA(NULL, AGENT_TITLE " is removed.", AGENT_TITLE, MB_OK | MB_ICONINFORMATION);
+        MessageBoxA(NULL, AGENT_TITLE " is removed.", AGENT_TITLE, MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST);
 }
 
 /* ---- Start ------------------------------------------------------------- */
@@ -808,23 +832,31 @@ agent_main(void)
     if (!gt_present()) {
         if (!quiet)
             MessageBoxA(NULL, "This is not an 86Box machine with 86Box Guest Tools turned on.",
-                        AGENT_TITLE, MB_OK | MB_ICONINFORMATION);
+                        AGENT_TITLE, MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST);
         return 1;
     }
 
-    if (has_switch(cmdline, "install")) {
-        if (!install(quiet))
-            return 1;
-    } else {
-        /* Started from the disk rather than the installed copy: offer to install. */
-        GetModuleFileNameA(NULL, self, MAX_PATH);
-        installed_path(dest);
-        if (!quiet && (lstrcmpiA(self, dest) != 0) &&
+    GetModuleFileNameA(NULL, self, MAX_PATH);
+    installed_path(dest);
+    if (lstrcmpiA(self, dest) != 0) {
+        /* Started from the disk rather than the installed copy: install (or
+           offer to), then hand over to the installed copy -- a program
+           running from a disk breaks when the disk is ejected. */
+        int do_install = has_switch(cmdline, "install");
+
+        if (!do_install && !quiet &&
             (MessageBoxA(NULL, "Install " AGENT_TITLE " so it starts with Windows?\n\n"
                                "(No runs it this time only.)",
-                         AGENT_TITLE, MB_YESNO | MB_ICONQUESTION) == IDYES)) {
-            if (!install(0))
+                         AGENT_TITLE, MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST) == IDYES))
+            do_install = 1;
+        if (do_install) {
+            char run[MAX_PATH + 2];
+
+            if (!install(quiet))
                 return 1;
+            wsprintfA(run, "\"%s\"", dest);
+            WinExec(run, SW_SHOWNORMAL);
+            return 0;
         }
     }
 
@@ -838,7 +870,7 @@ agent_main(void)
 
     if (!gt_hello()) {
         if (!quiet)
-            MessageBoxA(NULL, "The emulator did not answer the agent.", AGENT_TITLE, MB_OK | MB_ICONERROR);
+            MessageBoxA(NULL, "The emulator did not answer the agent.", AGENT_TITLE, MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
         return 1;
     }
 

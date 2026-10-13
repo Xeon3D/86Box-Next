@@ -1,3 +1,4 @@
 #include <windows.h>
 
-1 ICON "gtwin.ico"
+/* Preloaded and fixed: the agent may run from a disk that gets ejected. */
+1 ICON PRELOAD FIXED "gtwin.ico"

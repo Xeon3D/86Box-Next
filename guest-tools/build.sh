@@ -46,22 +46,36 @@ cp "$here/win16/gtwin.rc" "$obj/"
 wcc -q -bt=windows -zW -ms -2 -os -s -wx -we -i="$proto" -fo="$obj/gtwin.obj" "$here/win16/gtwin.c"
 (cd "$obj" && wrc -q -r -bt=windows -fo=gtwin.res gtwin.rc)
 wlink option quiet system windows name "$out/GTWIN.EXE" file "$obj/gtwin.obj" \
-    option resource="$obj/gtwin.res" option stack=8k option heapsize=4k
+    option resource="$obj/gtwin.res" option stack=8k option heapsize=4k \
+    segment class "'CODE'" preload fixed
 
 # ---- Disk images ----
+# Fixed dates and serial: the same files give the same images, so the copies
+# the emulator embeds (images/, committed) change only when the tools do.
+stamp="2026-01-01 00:00:00"
+export SOURCE_DATE_EPOCH=1767225600
+
 readme="$obj/README.TXT"
 sed 's/$/\r/' "$here/README.TXT" > "$readme"
+autorun="$obj/AUTORUN.INF"
+printf '[autorun]\r\nopen=86BOXGT.EXE\r\nicon=86BOXGT.EXE\r\nlabel=86Box Guest Tools\r\n' > "$autorun"
 files="$out/86BOXGT.EXE $out/GTWIN.EXE $readme"
+touch -d "$stamp" $files "$autorun"
 
 rm -f "$out/86box-guest-tools.img"
-mformat -C -f 1440 -v GUESTTOOLS -i "$out/86box-guest-tools.img" ::
-mcopy -i "$out/86box-guest-tools.img" $files ::
+mformat -C -f 1440 -v GUESTTOOLS -N 86B00001 -i "$out/86box-guest-tools.img" ::
+mcopy -m -i "$out/86box-guest-tools.img" $files ::
 
 rm -f "$out/86box-guest-tools.iso"
 rm -rf "$obj/iso"
 mkdir -p "$obj/iso"
-cp $files "$obj/iso/"
+cp -p $files "$autorun" "$obj/iso/"
+touch -d "$stamp" "$obj/iso"
 xorriso -as mkisofs -quiet -iso-level 1 -J -V GUESTTOOLS \
+    --modification-date=2026010100000000 \
     -o "$out/86box-guest-tools.iso" "$obj/iso"
 
-ls -l "$out/86BOXGT.EXE" "$out/GTWIN.EXE" "$out/86box-guest-tools.img" "$out/86box-guest-tools.iso"
+mkdir -p "$here/images"
+cp "$out/86box-guest-tools.img" "$out/86box-guest-tools.iso" "$here/images/"
+
+ls -l "$out/86BOXGT.EXE" "$out/GTWIN.EXE" "$here/images/"

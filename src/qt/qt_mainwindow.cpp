@@ -238,8 +238,12 @@ MainWindow::MainWindow(QWidget *parent)
        status bar too. */
     usbManager = new UsbManager(this);
     status->setUsbManager(usbManager);
-    /* 86Box-Next: 86Box Guest Tools' clipboard and pointer integration. */
+    /* 86Box-Next: 86Box Guest Tools' clipboard and pointer integration,
+       and its install media (Tools menu). */
     new GuestTools(this);
+    connect(ui->actionInstall_Guest_Tools, &QAction::triggered, this, [this] {
+        GuestTools::insertMedia(this);
+    });
 #ifdef USE_SOUNDCANVAS
     /* 86Box-Next: the Roland Sound Canvas MIDI device's front panel, behind the piano icon. */
     status->setSoundCanvas(new SoundCanvasPanelManager(this));
