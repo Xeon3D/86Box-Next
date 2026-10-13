@@ -5,6 +5,7 @@
 #   tnt.sh cmd "<lines>"    run debug commands (waits until consumed)
 #   tnt.sh shot NAME        screenshot to $TNT_DIR/NAME.bmp, PNG copy in $TNT_SHOTS
 #   tnt.sh stop             kill the VM (last resort: Win98 then boots to Safe Mode)
+#   tnt.sh running          print how many work-tnt VMs run (0 or 1)
 # TNT_DIR: the VM folder (default F:/Claude/86Box-Next/work-tnt), with
 #   86Box-Next.exe, 86box.cfg and romsx/ (the NV4 ROMs, passed with -R).
 # TNT_SHOTS: where PNGs go (default $TNT_DIR/shots).
@@ -14,6 +15,11 @@ SHOTS=${TNT_SHOTS:-$W/shots}
 CMDF="$W/dbg.cmd"
 case "$1" in
 start)
+    # two instances would share the disk image and the command file
+    if [ "$(powershell -NoProfile -Command "@(Get-CimInstance Win32_Process -Filter \"Name='86Box-Next.exe'\" | Where-Object { \$_.CommandLine -like '*work-tnt*' }).Count")" != "0" ]; then
+        echo "tnt.sh: a work-tnt VM is already running" >&2
+        exit 1
+    fi
     rm -f "$CMDF" "$W/86box.log"
     powershell -NoProfile -Command "\$env:BOX86NEXT_DEBUG_CMD='$WW\dbg.cmd'; Start-Process -FilePath '$WW\86Box-Next.exe' -ArgumentList '-P','\"$WW\"','-R','\"$WW\romsx\"','-L','\"$WW\86box.log\"' -WindowStyle Minimized" ;;
 cmd)
@@ -24,6 +30,8 @@ shot)
     bash "$0" cmd "shot $WW\\$2.bmp"
     sleep 0.5
     py -c "from PIL import Image; Image.open(r'$WW\\$2.bmp').save(r'$(cygpath -w "$SHOTS")\\$2.png')" 2>/dev/null || echo "no PIL; bmp at $W/$2.bmp" ;;
+running)
+    powershell -NoProfile -Command "@(Get-CimInstance Win32_Process -Filter \"Name='86Box-Next.exe'\" | Where-Object { \$_.CommandLine -like '*work-tnt*' }).Count" ;;
 stop)
     powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='86Box-Next.exe'\" | Where-Object { \$_.CommandLine -like '*work-tnt*' } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force }" ;;
 esac

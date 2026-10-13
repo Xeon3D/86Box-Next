@@ -115,9 +115,13 @@ nv4_vblank_start(svga_t *svga)
     /* what the 3D engine has queued is on screen by the next frame
        (waited for only when it draws into the displayed bytes) */
     {
-        uint32_t lo   = svga->memaddr_latch << 2;
-        uint32_t span = svga->rowoffset << 3;
-        uint32_t len  = ((span > (uint32_t) svga->hdisp * 4) ? span : (uint32_t) svga->hdisp * 4) * svga->dispend;
+        uint32_t lo    = svga->memaddr_latch << 2;
+        uint32_t pitch = svga->rowoffset << 3;
+        uint32_t len;
+
+        if (!pitch)
+            pitch = (uint32_t) svga->hdisp * ((svga->bpp + 7) >> 3);
+        len = pitch * svga->dispend;
 
         nv4_3d_vblank(nv4, lo, lo + len);
     }

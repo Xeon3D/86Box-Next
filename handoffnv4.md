@@ -1,7 +1,7 @@
 # Handoff: NVIDIA RIVA TNT / TNT2 (NV4/NV5) emulation
 
 Living document: whoever works on the TNT updates it as they go (status, the
-log at the bottom). Last updated: 2026-10-12.
+log at the bottom). Last updated: 2026-10-13.
 
 ## The goal
 The owner asked for RIVA TNT/TNT2 emulation done "the way skiretic did the ATI
@@ -83,6 +83,9 @@ From Bash with MSYS2 UCRT64 first on PATH:
   - 3DMark 99 Max, installed from `nv4test.iso`, the CD image now in the cfg.
     The owner accepted the EULA; no serial.
   - Windows logs in by itself; ~50 s to the desktop.
+  - The VM is muted (`sound_muted = 1` in its `[General]`); keep it that way,
+    the owner hears it otherwise.
+  - Edit `86box.cfg` only while the VM is not running.
 - **`tools/nv4/tnt.sh`:** `start`, `cmd "<debug lines>"`, `shot NAME` (PNG in
   `work-tnt/shots/`), `stop` (last resort). Useful debug lines:
   - `key 1d,01,81,9d` (Ctrl+Esc, Start menu)
@@ -93,7 +96,11 @@ From Bash with MSYS2 UCRT64 first on PATH:
   - `dev trace N` (log the next N methods)
   - `dev 3d` (3D flush count, spans and host shading time; then resets them)
 - **`tools/nv4/bench.sh THREADS GPU`:** boots, starts 3DMark's benchmark, times
-  40 s of 3D shading, shuts down.
+  40 s of 3D shading, shuts down. If the owner is using the guest at the same
+  time, the keystrokes go astray: check with `shot`.
+- **Shutting down mid-benchmark:** Esc aborts, Enter closes the "aborted" box.
+  A stray Enter can open the Result Browser, whose "save?" prompt then blocks
+  Windows' shutdown ("not responding" box): `key 12,92` (End Task).
 - **3DMark's score** (2620 at 800x600x16) is in guest time, so it does not move
   with host speed. Compare µs per span from `dev 3d` instead.
 - **Environment switches:**
@@ -101,6 +108,8 @@ From Bash with MSYS2 UCRT64 first on PATH:
   - `NV4_3D_VERIFY=1` shades every parallel batch twice and logs any byte that
     differs ("nv4 3D verify: ..."). It is slow, since it copies the whole VRAM
     3 times per flush.
+  - `NV4_GPU_PROFILE=N` logs the next N GPU batches one by one: spans,
+    pixels, and GPU time for uploads, kernel and download.
 - **Screenshot seams** are the shot catching a half-drawn frame, not tearing.
 
 ## Status (what works)
@@ -125,7 +134,14 @@ From Bash with MSYS2 UCRT64 first on PATH:
       blend / DX6 combiners, specular, fog, alpha test, stencil, Z/W, blend,
       dither, write masks.
   - A batch is flushed before anything that must see its pixels: a non-3D
-    method, a notify, LFB access, the FIFO going idle, a full batch.
+    method, a notify, LFB or VGA-window access, the start of vertical blank,
+    a full batch (16K triangles / 256K spans). Not when the FIFO runs dry:
+    the driver moves PUT every few triangles.
+  - `nv4_3d_flush` draws (with the GPU: submits); `nv4_3d_sync` also waits
+    for the GPU's pixels and is what LFB, VGA window and 2D methods call.
+    Vertical blank waits only when the batch in flight draws into the
+    displayed bytes. Anything new that reads or writes VRAM from the CPU
+    must call `nv4_3d_sync` first.
   - Both of these are hardware methods on the TNT (trapping them loops the
     resman):
     - SetContextSurface (0x18c) of the D3D classes.
@@ -140,7 +156,9 @@ From Bash with MSYS2 UCRT64 first on PATH:
   - Aliasing rows (zero pitch, Z rows narrower than colour rows) are shaded
     serially.
 - **GPU lane** (`nv4_pgraph_3d_gpu.c` + `.comp`, Vulkan loaded at run time):
-  - One workgroup per row, the CPU span shader ported operation for operation.
+  - The CPU span shader ported operation for operation. One invocation per
+    pixel walks its row's spans in submission order (no barriers);
+    workgroups are rows x 64 pixels.
   - Bit-exact rules, on both sides (don't break them):
     - `precise` floats in the kernel; `-ffp-contract=off` for
       `nv4_pgraph_3d.c`.
@@ -148,14 +166,17 @@ From Bash with MSYS2 UCRT64 first on PATH:
     - log2 is computed from the float's bits (`nv4_log2_bits`).
     - Float-to-int conversions go through `nv4_f2i` / `f2i` (INT_MIN when out
       of range).
-  - Each flush is synchronous:
-    1. Copy the touched colour/Z rows into a device-local VRAM mirror.
+  - A flush submits and returns:
+    1. Wait for the batch still in flight, if any, and copy its rows back.
     2. Gather the batch's textures through their DMA objects into a 32 MB
-       arena.
-    3. Dispatch the kernel.
-    4. Copy the rows back.
-  - Verify result: 2621 GPU batches and 17000 threaded batches identical to the
-    serial path.
+       arena; copy the touched colour/Z rows and the records to the GPU.
+    3. Dispatch; copy the rows to a staging buffer.
+    The rows reach VRAM at the next flush or sync point.
+  - The GPU stays in P5/P8 (~700 MHz) under this bursty load (nvidia-smi), so
+    each dispatch has ~0.5 ms of latency whatever its size. Fewer, larger,
+    overlapped batches are what helps.
+  - Verify result: 2621 synchronous and 2000 asynchronous GPU batches, and
+    17000 threaded batches, identical to the serial path.
 - **Speed** (40 s of 3DMark Game 1, i7-12700K + RTX 2080 SUPER):
 
   | Path | µs/span |
@@ -168,12 +189,16 @@ From Bash with MSYS2 UCRT64 first on PATH:
 
 ## Next (in rough order)
 1. **GPU lane speed.**
-   - Cache gathered textures across flushes. Invalidate on LFB writes, M2MF
-     and 2D writes into their VRAM ranges; textures in system/AGP memory need
-     a checksum or an always-regather policy.
-   - Submit asynchronously and wait only when something reads VRAM (the Rage
-     128 does this with fences and range tracking).
+   - Unmeasured guess: most waits come from the 2D clear at the start of each frame (a
+     2D method syncs). Doing 2D fills on the GPU, or tracking which pages a
+     2D op touches, would let the batch stay in flight.
+   - Cache gathered textures across flushes (~40 MB/s of re-gathering now).
+     Invalidate on LFB writes, M2MF and 2D writes into their VRAM ranges;
+     textures in system/AGP memory need a checksum or always-regather.
    - Avoid re-uploading unchanged rows.
+   - Kernel: `combine()` indexes `src[]` dynamically (local memory); the
+     whole kernel is one big function. Splitting variants by state
+     (specialization constants, as the Rage 128 does) would help.
 2. **CPU span shader speed:**
    - Fixed-point attribute stepping instead of 14 float plane evaluations per
      pixel.
@@ -219,3 +244,6 @@ From Bash with MSYS2 UCRT64 first on PATH:
     other post-branch NV3 fixes were checked: already covered or NV3-specific
     (see that commit message).
   - `tools/nv4/` scripts and this document added.
+- 2026-10-13:
+  - GPU lane profiled and made asynchronous; FIFO-idle flush dropped,
+    batches 4x larger (fddb3b009).

@@ -88,7 +88,7 @@ nv4_vga_mem_read(uint32_t addr, void *priv)
 {
     nv4_t *nv4 = (nv4_t *) priv;
 
-    nv4_3d_sync(nv4);
+    nv4_3d_sync(nv4, NV4_SYNC_VGA);
     if (nv4->svga.crtc[NV4_CR_ENH] & 0x80)
         return nv4_ramin_read8(nv4, addr & 0xffff);
     return svga_read(addr, &nv4->svga);
@@ -99,7 +99,7 @@ nv4_vga_mem_readw(uint32_t addr, void *priv)
 {
     nv4_t *nv4 = (nv4_t *) priv;
 
-    nv4_3d_sync(nv4);
+    nv4_3d_sync(nv4, NV4_SYNC_VGA);
     if (nv4->svga.crtc[NV4_CR_ENH] & 0x80)
         return nv4_ramin_read16(nv4, addr & 0xffff);
     return svga_readw(addr, &nv4->svga);
@@ -110,7 +110,7 @@ nv4_vga_mem_readl(uint32_t addr, void *priv)
 {
     nv4_t *nv4 = (nv4_t *) priv;
 
-    nv4_3d_sync(nv4);
+    nv4_3d_sync(nv4, NV4_SYNC_VGA);
     if (nv4->svga.crtc[NV4_CR_ENH] & 0x80)
         return nv4_ramin_read32(nv4, addr & 0xffff);
     return svga_readl(addr, &nv4->svga);
@@ -121,7 +121,7 @@ nv4_vga_mem_write(uint32_t addr, uint8_t val, void *priv)
 {
     nv4_t *nv4 = (nv4_t *) priv;
 
-    nv4_3d_sync(nv4);
+    nv4_3d_sync(nv4, NV4_SYNC_VGA);
     if (nv4->svga.crtc[NV4_CR_ENH] & 0x80)
         nv4_ramin_write8(nv4, addr & 0xffff, val);
     else
@@ -133,7 +133,7 @@ nv4_vga_mem_writew(uint32_t addr, uint16_t val, void *priv)
 {
     nv4_t *nv4 = (nv4_t *) priv;
 
-    nv4_3d_sync(nv4);
+    nv4_3d_sync(nv4, NV4_SYNC_VGA);
     if (nv4->svga.crtc[NV4_CR_ENH] & 0x80)
         nv4_ramin_write16(nv4, addr & 0xffff, val);
     else
@@ -145,7 +145,7 @@ nv4_vga_mem_writel(uint32_t addr, uint32_t val, void *priv)
 {
     nv4_t *nv4 = (nv4_t *) priv;
 
-    nv4_3d_sync(nv4);
+    nv4_3d_sync(nv4, NV4_SYNC_VGA);
     if (nv4->svga.crtc[NV4_CR_ENH] & 0x80)
         nv4_ramin_write32(nv4, addr & 0xffff, val);
     else

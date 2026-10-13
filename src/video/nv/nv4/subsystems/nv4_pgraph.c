@@ -200,6 +200,33 @@ nv4_pgraph_common_method(nv4_t *nv4, uint32_t mthd, uint32_t data)
     }
 }
 
+static int
+nv4_pgraph_state_only(int cls)
+{
+    switch (cls) {
+        case 0x12: /* beta */
+        case 0x72: /* beta4 */
+        case 0x43: /* ROP */
+        case 0x17: /* chroma */
+        case 0x57:
+        case 0x18: /* pattern */
+        case 0x44:
+        case 0x19: /* clip */
+        case 0x42: /* surfaces */
+        case 0x52:
+        case 0x53:
+        case 0x58:
+        case 0x59:
+        case 0x5a:
+        case 0x5b:
+        case 0x54: /* the 3D classes: their own batch */
+        case 0x55:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 nv4_mthd_result_t
 nv4_pgraph_method(nv4_t *nv4, int chid, int subc, uint32_t mthd, uint32_t data)
 {
@@ -245,9 +272,11 @@ nv4_pgraph_method(nv4_t *nv4, int chid, int subc, uint32_t mthd, uint32_t data)
         nv4->dbg_trace--;
         pclog("nv4 trace: ch %d sub %d class %02x mthd %04x data %08x\n", chid, subc, cls, mthd, data);
     }
-    /* a 3D batch is drawn before anything else touches memory */
-    if ((cls != 0x54) && (cls != 0x55))
-        nv4_3d_sync(nv4);
+    /* a 3D batch is drawn before anything else touches memory; the
+       classes that only hold state (surfaces, ROP, beta, chroma,
+       pattern, clip) do not, and draw states are snapshots */
+    if (!nv4_pgraph_state_only(cls))
+        nv4_3d_sync(nv4, cls);
     r = nv4_pgraph_common_method(nv4, mthd, data);
     if (r < 0) {
         if ((cls == 0x54) || (cls == 0x55))

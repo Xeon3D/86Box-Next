@@ -650,7 +650,12 @@ extern void nv4_pgraph_2d_reset_chan(nv4_gr_chan_t *ch);
 /* subsystems/nv4_pgraph_3d.c: the Direct3D classes */
 extern int  nv4_pgraph_3d_method(nv4_t *nv4, int chid, int cls, uint32_t mthd, uint32_t data);
 extern void nv4_3d_flush(nv4_t *nv4);
-extern void nv4_3d_sync(nv4_t *nv4);
+/* Who asks for the 3D pixels (for "dev 3d"): a PGRAPH class 0-255, or */
+#define NV4_SYNC_LFB    256
+#define NV4_SYNC_VGA    257
+#define NV4_SYNC_VBLANK 258
+#define NV4_SYNC_CAUSES 259
+extern void nv4_3d_sync(nv4_t *nv4, int cause);
 extern void nv4_3d_vblank(nv4_t *nv4, uint32_t lo, uint32_t hi);
 extern void nv4_3d_init(nv4_t *nv4);
 extern void nv4_3d_close(nv4_t *nv4);

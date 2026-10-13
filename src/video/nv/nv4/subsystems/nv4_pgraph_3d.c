@@ -1226,6 +1226,14 @@ nv4_3d_stats(nv4_t *nv4)
 
         nv4_gpu_counts(b->gpu, &n, &f);
         pclog("nv4 3D: GPU took %llu batches, left %llu to the CPU\n", (unsigned long long) n, (unsigned long long) f);
+        for (int i = 0; i < NV4_SYNC_CAUSES; i++)
+            if (b->st_sync_n[i])
+                pclog("nv4 3D: waited for the GPU %u times, %llu us, for %s %02x\n", b->st_sync_n[i],
+                      (unsigned long long) b->st_sync_us[i],
+                      (i == NV4_SYNC_LFB) ? "LFB" : ((i == NV4_SYNC_VGA) ? "VGA" : ((i == NV4_SYNC_VBLANK) ? "vblank" : "class")),
+                      i & 0xff);
+        memset(b->st_sync_us, 0, sizeof(b->st_sync_us));
+        memset(b->st_sync_n, 0, sizeof(b->st_sync_n));
     }
     b->st_flushes = b->st_spans = b->st_us = 0;
 }
@@ -1265,12 +1273,25 @@ nv4_3d_flush(nv4_t *nv4)
 
 /* Draw the batch and, when the GPU has one in flight, wait for its
    pixels: for anything that reads or writes VRAM itself. */
+static void
+nv4_3d_gpu_wait(nv4_t *nv4, int cause)
+{
+    nv4_3d_batch_t *b  = nv4->batch3d;
+    uint64_t        t0 = nv4_3d_now_us();
+
+    if (!nv4_gpu_pending_overlaps(b->gpu, 0, 0xffffffff))
+        return;
+    nv4_gpu_wait(b->gpu, nv4);
+    b->st_sync_us[cause] += nv4_3d_now_us() - t0;
+    b->st_sync_n[cause]++;
+}
+
 void
-nv4_3d_sync(nv4_t *nv4)
+nv4_3d_sync(nv4_t *nv4, int cause)
 {
     nv4_3d_flush(nv4);
     if (nv4->batch3d && nv4->batch3d->gpu)
-        nv4_gpu_wait(nv4->batch3d->gpu, nv4);
+        nv4_3d_gpu_wait(nv4, cause);
 }
 
 /* Vertical blank: the batch is drawn, and waited for only if it draws
@@ -1281,7 +1302,7 @@ nv4_3d_vblank(nv4_t *nv4, uint32_t lo, uint32_t hi)
 {
     nv4_3d_flush(nv4);
     if (nv4->batch3d && nv4->batch3d->gpu && nv4_gpu_pending_overlaps(nv4->batch3d->gpu, lo, hi))
-        nv4_gpu_wait(nv4->batch3d->gpu, nv4);
+        nv4_3d_gpu_wait(nv4, NV4_SYNC_VBLANK);
 }
 
 /* ------------------------------------------------------------------ */

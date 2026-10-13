@@ -44,7 +44,7 @@
 #include <86box/nv/vid_nv4.h>
 
 /* CPU access to the framebuffer sees the 3D engine's pixels */
-#define NV4_3D_SYNC(nv4) nv4_3d_sync(nv4)
+#define NV4_3D_SYNC(nv4) nv4_3d_sync(nv4, NV4_SYNC_LFB)
 
 #ifdef ENABLE_NV4_LOG
 int nv4_do_log = ENABLE_NV4_LOG;
