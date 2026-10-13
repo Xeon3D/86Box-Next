@@ -214,16 +214,25 @@ From Bash with MSYS2 UCRT64 first on PATH:
     - log2 is computed from the float's bits (`nv4_log2_bits`).
     - Float-to-int conversions go through `nv4_f2i` / `f2i` (INT_MIN when out
       of range).
-  - A flush submits and returns:
-    1. Wait for the batch still in flight, if any, and copy its rows back.
+  - A flush submits and returns. Two batches can be in flight (slots with
+    their own records, command buffer, fence and timestamps; they complete
+    oldest first):
+    1. If this slot's last batch is still in flight, complete it (and any
+       older one): wait, copy its rows back into VRAM.
     2. Textures: the 32 MB arena is a cache keyed by (DMA object, offset,
        size). Each batch hashes its textures' bytes where they are (VRAM,
        or system memory, through the AGP aperture via `agpgart_resolve`)
        and copies only new or changed ones. A full arena is emptied and the
-       batch gathered again. Then copy the touched colour/Z rows and the
-       records to the GPU.
-    3. Dispatch; copy the rows to a staging buffer.
-    The rows reach VRAM at the next flush or sync point.
+       batch gathered again. A texture whose bytes a batch in flight draws
+       (render to texture) completes that batch first; any texture copy
+       waits for every batch in flight (they read the arena).
+    3. Upload the touched colour/Z rows, except bytes a batch in flight
+       owns (the GPU's mirror is newer there), and the records.
+    4. Dispatch; copy the rows to a staging buffer.
+    The rows reach VRAM when the slot is reused or a sync point waits.
+  - Verify mode completes each batch at once, so it cannot exercise the
+    2-slot pipeline (uploads that skip in-flight rows). Reason about every
+    reader of VRAM when changing it.
   - The GPU stays in P5/P8 (~700 MHz) under this bursty load (nvidia-smi), so
     each dispatch has ~0.5 ms of latency whatever its size. Fewer, larger,
     overlapped batches are what helps.
@@ -245,25 +254,21 @@ From Bash with MSYS2 UCRT64 first on PATH:
   34 s of the 40 s on 3D.
 - **GPU waits:** `dev 3d` lists them by cause. State-only classes (surfaces,
   ROP, beta, chroma, pattern, clip) neither flush nor wait
-  (`nv4_pgraph_state_only`). What remains is the 2D rectangle clear (class
-  0x5e) at the start of each frame, ~0.8 s per 40 s.
+  (`nv4_pgraph_state_only`); 2D draws join the batch or wait by byte range
+  (see 3D above). Over a whole 3DMark run (TNT, GPU lane) the emulation
+  thread spends 9.5 s submitting and 4.9 s waiting (was ~70 s in all at
+  the start of the GPU work); most waits are at vertical blank when a
+  batch in flight draws into the displayed bytes (front-buffer rendering).
 
 ## Next (in rough order)
-1. **GPU lane speed.**
-   - Waits over a whole 3DMark run: 37 s -> 12 s after regions, fills and
-     2D runs; ~10 s of the rest is a flush waiting for the batch still in
-     flight (one in flight at a time). Two slots (own records, command
-     buffer, fence; rows that a batch in flight owns aren't uploaded from
-     VRAM) would remove most of it.
-   - The submit side (~2.4 s per 40 s) is gather + row copies + grouping
-     spans by row; it could move to a worker thread.
-   - Over a whole 3DMark run (TNT, GPU lane): submit side 12.8 s
-     (textures 6 s: 34 GB hashed, 127 MB copied), waits 27 s, almost all
-     on the frame clear (class 0x5e). Hashing could be skipped for VRAM
-     pages nothing wrote since (needs write tracking on every VRAM writer).
-     Invalidate on LFB writes, M2MF and 2D writes into their VRAM ranges;
-     textures in system/AGP memory need a checksum or always-regather.
-   - Avoid re-uploading unchanged rows.
+1. **GPU lane speed** (only if a heavier workload needs it; 3DMark 99
+   runs at ~96% emulation speed):
+   - The submit side: texture hashing (34 GB per run, ~6 s) could be
+     skipped for VRAM pages nothing wrote since (needs write tracking on
+     every VRAM writer); grouping spans by row and the row copies could move
+     to a worker thread.
+   - Vertical-blank waits on front-buffer rendering: only the rows already
+     scanned matter.
    - Kernel: `combine()` indexes `src[]` dynamically (local memory); the
      whole kernel is one big function. Splitting variants by state
      (specialization constants, as the Rage 128 does) would help.
@@ -324,7 +329,10 @@ From Bash with MSYS2 UCRT64 first on PATH:
   - GPU texture cache (hash, copy only changed textures) and AGP textures
     read in place: texture step over a full run 49 s -> 6 s.
   - Batch regions, 2D fills/runs joining the batch, range-based waits
-    (`nv4_3d_touch`): GPU waits over a full run 37 s -> 12 s.
+    (`nv4_3d_touch`): GPU waits over a full run 37 s -> 12 s (ffbfc79c2).
+    Threaded verify (4 threads) over a whole run: 12622 batches, none
+    differ.
+  - 2-slot GPU pipeline: submit 19.5 -> 9.5 s, waits 12 -> 4.9 s per run.
   - Mishap: bench.sh started a VM while the previous one hung at shutdown;
     two instances shared the disk for ~8 min. Win98 came back clean. tnt.sh
     now refuses a second instance.

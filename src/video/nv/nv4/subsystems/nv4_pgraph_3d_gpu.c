@@ -17,8 +17,10 @@
  *          in submission order, and writes the bytes the CPU span
  *          shader would.
  *
- *          A flush submits and returns: the color and depth rows the
- *          batch touches are copied into a device-local mirror of VRAM,
+ *          A flush submits and returns (two batches can be in flight):
+ *          the color and depth rows the batch touches are copied into a
+ *          device-local mirror of VRAM (but not those a batch in flight
+ *          owns: the mirror's are newer),
  *          the batch's textures are gathered through their DMA objects
  *          (VRAM or system memory alike) into a texture arena, the
  *          records go to device memory, the kernel runs and the rows go
@@ -205,20 +207,43 @@ typedef struct {
 } gpu_buf_t;
 
 enum {
-    B_VRAM,   /* bindings 0-5, device-local: a mirror of VRAM */
+    B_VRAM,   /* bindings 0-1, device-local: a mirror of VRAM */
     B_TEX,    /* the texture arena */
-    B_STATES, /* the batch's records */
-    B_TRIS,
-    B_SPANS,
-    B_ROWS,
-    B_STATES_H, /* host-visible staging from here on */
-    B_TRIS_H,
-    B_SPANS_H,
-    B_ROWS_H,
-    B_VSTAGE, /* VRAM rows in and out */
+    B_VSTAGE, /* host-visible: VRAM rows in and out */
     B_TSTAGE, /* textures in */
     B_COUNT
 };
+
+/* A batch's records, bindings 2-5: states, triangles, spans, rows */
+enum {
+    R_STATES,
+    R_TRIS,
+    R_SPANS,
+    R_ROWS,
+    R_COUNT
+};
+
+/* Two batches can be in flight: each has its own records, command
+   buffer and fence. The rows a batch in flight owns are newer in the
+   GPU's VRAM mirror than in VRAM, so a later batch does not upload them;
+   batches complete (rows copied back) oldest first. */
+#    define GPU_SLOTS 2
+
+typedef struct {
+    gpu_buf_t       rec[R_COUNT];  /* device-local */
+    gpu_buf_t       rech[R_COUNT]; /* host-visible staging */
+    VkDescriptorSet dset;
+    VkCommandBuffer cb;
+    VkFence         fence;
+    VkQueryPool     qpool; /* GPU timestamps: start, rows in, kernel, rows out */
+    int             pending;
+    uint64_t        seq;
+    VkBufferCopy    pdown[B3D_REGIONS]; /* its rows, to copy back */
+    int             pndown;
+    int             p_spans, p_chunks;
+    uint32_t        p_rows;
+    uint64_t        p_px;
+} gpu_slot_t;
 
 /* A texture in the arena: where its bytes came from, a hash of them,
    and where they are */
@@ -245,11 +270,11 @@ typedef struct nv4_gpu_s {
     VkPipelineLayout      pl;
     VkPipeline            pipe;
     VkDescriptorPool      dpool;
-    VkDescriptorSet       dset;
     VkCommandPool         cpool;
-    VkCommandBuffer       cb;
-    VkFence               fence;
     gpu_buf_t             b[B_COUNT];
+    gpu_slot_t            slot[GPU_SLOTS];
+    int                   next; /* the slot the next batch takes */
+    uint64_t              seq;
 
     uint32_t      vram_size;
     /* The texture arena keeps textures across batches: each batch hashes
@@ -268,18 +293,10 @@ typedef struct nv4_gpu_s {
     uint64_t      batches, fallbacks;
     uint64_t      us_gather, us_copy, us_wait, tex_bytes; /* where the time goes */
     uint64_t      row_bytes;
-    VkQueryPool   qpool;     /* GPU timestamps: start, rows in, kernel, rows out */
+    int           has_ts;    /* timestamps work on this queue */
     float         ts_period; /* ns per tick */
     uint64_t      ts_ns[3];  /* uploads, kernel, download */
     int           prof_left; /* flushes left to log one by one (NV4_GPU_PROFILE=n) */
-
-    /* the batch in flight */
-    int           pending;
-    VkBufferCopy  pdown[B3D_REGIONS]; /* its rows, to copy back */
-    int           pndown;
-    int           p_spans, p_chunks;
-    uint32_t      p_rows;
-    uint64_t      p_px;
 } nv4_gpu_t;
 
 static uint64_t
@@ -467,28 +484,33 @@ gpu_create(nv4_gpu_t *g)
     }
     g->vkGetDeviceQueue(g->dev, g->qfam, 0, &g->queue);
     g->ts_period = props.limits.timestampPeriod;
-    if (qf[g->qfam].timestampValidBits) {
+    g->has_ts    = qf[g->qfam].timestampValidBits != 0;
+    for (int i = 0; g->has_ts && (i < GPU_SLOTS); i++) {
         VkQueryPoolCreateInfo qpi = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
 
         qpi.queryType  = VK_QUERY_TYPE_TIMESTAMP;
         qpi.queryCount = 4;
-        if (g->vkCreateQueryPool(g->dev, &qpi, NULL, &g->qpool) != VK_SUCCESS)
-            g->qpool = VK_NULL_HANDLE;
+        if (g->vkCreateQueryPool(g->dev, &qpi, NULL, &g->slot[i].qpool) != VK_SUCCESS)
+            g->slot[i].qpool = VK_NULL_HANDLE;
     }
     pclog("NV4 GPU: using %s\n", props.deviceName);
 
     if (!gpu_buf(g, &g->b[B_VRAM], g->vram_size, 0) || !gpu_buf(g, &g->b[B_TEX], GPU_TEX_ARENA, 0)
-        || !gpu_buf(g, &g->b[B_STATES], sizeof(nv4_gpu_state_t) * B3D_STATES, 0)
-        || !gpu_buf(g, &g->b[B_TRIS], sizeof(nv4_3d_tri_t) * B3D_TRIS, 0)
-        || !gpu_buf(g, &g->b[B_SPANS], sizeof(nv4_gpu_span_t) * B3D_SPANS, 0)
-        || !gpu_buf(g, &g->b[B_ROWS], sizeof(nv4_gpu_row_t) * 4096, 0)
-        || !gpu_buf(g, &g->b[B_STATES_H], sizeof(nv4_gpu_state_t) * B3D_STATES, 1)
-        || !gpu_buf(g, &g->b[B_TRIS_H], sizeof(nv4_3d_tri_t) * B3D_TRIS, 1)
-        || !gpu_buf(g, &g->b[B_SPANS_H], sizeof(nv4_gpu_span_t) * B3D_SPANS, 1)
-        || !gpu_buf(g, &g->b[B_ROWS_H], sizeof(nv4_gpu_row_t) * 4096, 1)
         || !gpu_buf(g, &g->b[B_VSTAGE], g->vram_size, 1) || !gpu_buf(g, &g->b[B_TSTAGE], GPU_TEX_ARENA, 1)) {
         pclog("NV4 GPU: buffer allocation failed\n");
         return 0;
+    }
+    for (int i = 0; i < GPU_SLOTS; i++) {
+        static const VkDeviceSize rsize[R_COUNT] = {
+            sizeof(nv4_gpu_state_t) * B3D_STATES, sizeof(nv4_3d_tri_t) * B3D_TRIS,
+            sizeof(nv4_gpu_span_t) * B3D_SPANS, sizeof(nv4_gpu_row_t) * 4096
+        };
+
+        for (int r = 0; r < R_COUNT; r++)
+            if (!gpu_buf(g, &g->slot[i].rec[r], rsize[r], 0) || !gpu_buf(g, &g->slot[i].rech[r], rsize[r], 1)) {
+                pclog("NV4 GPU: buffer allocation failed\n");
+                return 0;
+            }
     }
 
     /* pipeline */
@@ -500,7 +522,7 @@ gpu_create(nv4_gpu_t *g)
         VkShaderModuleCreateInfo      sci = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
         VkComputePipelineCreateInfo   cpi = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
         VkShaderModule                sm;
-        VkDescriptorPoolSize          ps  = { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6 };
+        VkDescriptorPoolSize          ps  = { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6 * GPU_SLOTS };
         VkDescriptorPoolCreateInfo    dpi = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
         VkDescriptorSetAllocateInfo   dai = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
         VkDescriptorBufferInfo        dbi[6];
@@ -539,29 +561,32 @@ gpu_create(nv4_gpu_t *g)
             pclog("NV4 GPU: pipeline creation failed (%d)\n", res);
             return 0;
         }
-        dpi.maxSets       = 1;
+        dpi.maxSets       = GPU_SLOTS;
         dpi.poolSizeCount = 1;
         dpi.pPoolSizes    = &ps;
         if (g->vkCreateDescriptorPool(g->dev, &dpi, NULL, &g->dpool) != VK_SUCCESS)
             return 0;
-        dai.descriptorPool     = g->dpool;
-        dai.descriptorSetCount = 1;
-        dai.pSetLayouts        = &g->dsl;
-        if (g->vkAllocateDescriptorSets(g->dev, &dai, &g->dset) != VK_SUCCESS)
-            return 0;
-        for (int i = 0; i < 6; i++) {
-            dbi[i].buffer = g->b[i].buf; /* B_VRAM .. B_ROWS are bindings 0-5 */
-            dbi[i].offset = 0;
-            dbi[i].range  = VK_WHOLE_SIZE;
-            memset(&wr[i], 0, sizeof(wr[i]));
-            wr[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            wr[i].dstSet          = g->dset;
-            wr[i].dstBinding      = i;
-            wr[i].descriptorCount = 1;
-            wr[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            wr[i].pBufferInfo     = &dbi[i];
+        for (int sl = 0; sl < GPU_SLOTS; sl++) {
+            dai.descriptorPool     = g->dpool;
+            dai.descriptorSetCount = 1;
+            dai.pSetLayouts        = &g->dsl;
+            if (g->vkAllocateDescriptorSets(g->dev, &dai, &g->slot[sl].dset) != VK_SUCCESS)
+                return 0;
+            for (int i = 0; i < 6; i++) {
+                /* VRAM, the arena, then the slot's records */
+                dbi[i].buffer = (i < 2) ? g->b[i].buf : g->slot[sl].rec[i - 2].buf;
+                dbi[i].offset = 0;
+                dbi[i].range  = VK_WHOLE_SIZE;
+                memset(&wr[i], 0, sizeof(wr[i]));
+                wr[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                wr[i].dstSet          = g->slot[sl].dset;
+                wr[i].dstBinding      = i;
+                wr[i].descriptorCount = 1;
+                wr[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                wr[i].pBufferInfo     = &dbi[i];
+            }
+            g->vkUpdateDescriptorSets(g->dev, 6, wr, 0, NULL);
         }
-        g->vkUpdateDescriptorSets(g->dev, 6, wr, 0, NULL);
     }
     {
         VkCommandPoolCreateInfo     cpci = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
@@ -575,10 +600,12 @@ gpu_create(nv4_gpu_t *g)
         cbai.commandPool        = g->cpool;
         cbai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         cbai.commandBufferCount = 1;
-        if (g->vkAllocateCommandBuffers(g->dev, &cbai, &g->cb) != VK_SUCCESS)
-            return 0;
-        if (g->vkCreateFence(g->dev, &fci, NULL, &g->fence) != VK_SUCCESS)
-            return 0;
+        for (int i = 0; i < GPU_SLOTS; i++) {
+            if (g->vkAllocateCommandBuffers(g->dev, &cbai, &g->slot[i].cb) != VK_SUCCESS)
+                return 0;
+            if (g->vkCreateFence(g->dev, &fci, NULL, &g->slot[i].fence) != VK_SUCCESS)
+                return 0;
+        }
     }
     return 1;
 }
@@ -609,10 +636,24 @@ gpu_destroy(nv4_gpu_t *g)
 {
     if (g->dev) {
         g->vkDeviceWaitIdle(g->dev);
-        if (g->fence)
-            g->vkDestroyFence(g->dev, g->fence, NULL);
-        if (g->qpool)
-            g->vkDestroyQueryPool(g->dev, g->qpool, NULL);
+        for (int i = 0; i < GPU_SLOTS; i++) {
+            gpu_slot_t *sl = &g->slot[i];
+
+            if (sl->fence)
+                g->vkDestroyFence(g->dev, sl->fence, NULL);
+            if (sl->qpool)
+                g->vkDestroyQueryPool(g->dev, sl->qpool, NULL);
+            for (int r = 0; r < R_COUNT; r++) {
+                if (sl->rec[r].buf)
+                    g->vkDestroyBuffer(g->dev, sl->rec[r].buf, NULL);
+                if (sl->rec[r].mem)
+                    g->vkFreeMemory(g->dev, sl->rec[r].mem, NULL);
+                if (sl->rech[r].buf)
+                    g->vkDestroyBuffer(g->dev, sl->rech[r].buf, NULL);
+                if (sl->rech[r].mem)
+                    g->vkFreeMemory(g->dev, sl->rech[r].mem, NULL);
+            }
+        }
         if (g->cpool)
             g->vkDestroyCommandPool(g->dev, g->cpool, NULL);
         if (g->dpool)
@@ -659,8 +700,9 @@ nv4_gpu_close(struct nv4_gpu_s *g)
 {
     if (!g)
         return;
-    if (g->pending)
-        g->vkWaitForFences(g->dev, 1, &g->fence, VK_TRUE, UINT64_MAX);
+    for (int i = 0; i < GPU_SLOTS; i++)
+        if (g->slot[i].pending)
+            g->vkWaitForFences(g->dev, 1, &g->slot[i].fence, VK_TRUE, UINT64_MAX);
     pclog("NV4 GPU: %llu batches on the GPU, %llu left to the CPU\n", (unsigned long long) g->batches,
           (unsigned long long) g->fallbacks);
     gpu_destroy(g);
@@ -708,12 +750,42 @@ gpu_tex_bytes(nv4_t *nv4, const nv4_3d_tex_t *t, uint32_t off, uint32_t len, uin
     }
 }
 
+static void gpu_complete_upto(nv4_gpu_t *g, nv4_t *nv4, uint64_t seq);
+int         nv4_gpu_pending_overlaps(struct nv4_gpu_s *g, uint32_t lo, uint32_t hi);
+
+/* A texture drawn into by a batch still in flight (render to texture)
+   reads that batch's pixels: it completes first. */
+static void
+gpu_tex_settle(nv4_gpu_t *g, nv4_t *nv4, const nv4_3d_tex_t *t)
+{
+    for (uint32_t done = 0; done < t->size;) {
+        uint32_t off   = t->offset + done;
+        uint32_t chunk = 0x1000 - (off & 0xfff);
+        uint32_t addr;
+        int      target;
+
+        if (chunk > t->size - done)
+            chunk = t->size - done;
+        if ((nv4_dma_translate(nv4, t->dma, off & ~0xfffu, 0, &addr, &target) == NV4_DMA_OK) && !target) {
+            uint32_t va = (addr + (off & 0xfff)) & nv4->vram_mask;
+
+            if (nv4_gpu_pending_overlaps(g, va, va + chunk - 1)) {
+                gpu_complete_upto(g, nv4, UINT64_MAX);
+                return;
+            }
+        }
+        done += chunk;
+    }
+}
+
 /* A 64-bit hash of a texture's bytes, read where they are. */
 static uint64_t
 gpu_tex_hash(nv4_gpu_t *g, nv4_t *nv4, const nv4_3d_tex_t *t)
 {
     uint8_t  tmp[0x1000];
     uint64_t h = 0x9e3779b97f4a7c15ull ^ t->size;
+
+    gpu_tex_settle(g, nv4, t);
 
     for (uint32_t done = 0; done < t->size;) {
         uint32_t       off   = t->offset + done;
@@ -739,11 +811,15 @@ gpu_tex_hash(nv4_gpu_t *g, nv4_t *nv4, const nv4_3d_tex_t *t)
     return h;
 }
 
-/* Copy a texture's bytes into the arena's staging at <base>, to upload. */
+/* Copy a texture's bytes into the arena's staging at <base>, to upload.
+   A batch in flight may still read the arena and its staging: they
+   finish first. */
 static void
 gpu_tex_copy(nv4_gpu_t *g, nv4_t *nv4, const nv4_3d_tex_t *t, uint32_t base)
 {
     uint8_t *dst = (uint8_t *) g->b[B_TSTAGE].map + base;
+
+    gpu_complete_upto(g, nv4, UINT64_MAX);
 
     for (uint32_t done = 0; done < t->size;) {
         uint32_t off   = t->offset + done;
@@ -884,88 +960,145 @@ gpu_pack_state(nv4_gpu_state_t *o, const nv4_3d_state_t *s)
 }
 
 static void
-gpu_barrier(nv4_gpu_t *g, VkPipelineStageFlags src, VkAccessFlags sa, VkPipelineStageFlags dst, VkAccessFlags da)
+gpu_barrier(nv4_gpu_t *g, VkCommandBuffer cb, VkPipelineStageFlags src, VkAccessFlags sa, VkPipelineStageFlags dst,
+            VkAccessFlags da)
 {
     VkMemoryBarrier mb = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
 
     mb.srcAccessMask = sa;
     mb.dstAccessMask = da;
-    g->vkCmdPipelineBarrier(g->cb, src, dst, 0, 1, &mb, 0, NULL, 0, NULL);
+    g->vkCmdPipelineBarrier(cb, src, dst, 0, 1, &mb, 0, NULL, 0, NULL);
 }
 
-/* Wait for the batch in flight and copy its rows back into VRAM. */
+/* Wait for one batch in flight and copy its rows back into VRAM. */
 static void
-gpu_complete(nv4_gpu_t *g, nv4_t *nv4)
+gpu_complete(nv4_gpu_t *g, nv4_t *nv4, gpu_slot_t *sl)
 {
     uint8_t *stage = (uint8_t *) g->b[B_VSTAGE].map;
     uint64_t t0, t1;
 
-    if (!g->pending)
-        return;
     t0 = gpu_now_us();
-    g->vkWaitForFences(g->dev, 1, &g->fence, VK_TRUE, UINT64_MAX);
+    g->vkWaitForFences(g->dev, 1, &sl->fence, VK_TRUE, UINT64_MAX);
     t1 = gpu_now_us();
     g->us_wait += t1 - t0;
-    if (g->qpool) {
+    if (sl->qpool) {
         uint64_t ts[4];
 
-        if (g->vkGetQueryPoolResults(g->dev, g->qpool, 0, 4, sizeof(ts), ts, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT)
+        if (g->vkGetQueryPoolResults(g->dev, sl->qpool, 0, 4, sizeof(ts), ts, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT)
             == VK_SUCCESS) {
             for (int i = 0; i < 3; i++)
                 g->ts_ns[i] += (uint64_t) ((double) (ts[i + 1] - ts[i]) * g->ts_period);
             if (g->prof_left) {
                 g->prof_left--;
-                pclog("nv4 GPU prof: %d spans %llu px rows %u x%d: up %.0f kernel %.0f down %.0f us\n", g->p_spans,
-                      (unsigned long long) g->p_px, g->p_rows, g->p_chunks, (ts[1] - ts[0]) * g->ts_period / 1000.0,
+                pclog("nv4 GPU prof: %d spans %llu px rows %u x%d: up %.0f kernel %.0f down %.0f us\n", sl->p_spans,
+                      (unsigned long long) sl->p_px, sl->p_rows, sl->p_chunks, (ts[1] - ts[0]) * g->ts_period / 1000.0,
                       (ts[2] - ts[1]) * g->ts_period / 1000.0, (ts[3] - ts[2]) * g->ts_period / 1000.0);
             }
         }
     }
-    for (int i = 0; i < g->pndown; i++) {
-        memcpy(nv4->svga.vram + g->pdown[i].srcOffset, stage + g->pdown[i].srcOffset, g->pdown[i].size);
-        g->row_bytes += g->pdown[i].size;
+    for (int i = 0; i < sl->pndown; i++) {
+        memcpy(nv4->svga.vram + sl->pdown[i].srcOffset, stage + sl->pdown[i].srcOffset, sl->pdown[i].size);
+        g->row_bytes += sl->pdown[i].size;
     }
-    for (int i = 0; i < g->pndown; i++)
-        for (uint32_t a = g->pdown[i].srcOffset & ~0xfffu; a < g->pdown[i].srcOffset + g->pdown[i].size; a += 0x1000)
+    for (int i = 0; i < sl->pndown; i++)
+        for (uint32_t a = sl->pdown[i].srcOffset & ~0xfffu; a < sl->pdown[i].srcOffset + sl->pdown[i].size; a += 0x1000)
             nv4->svga.changedvram[a >> 12] = nv4->svga.monitor->mon_changeframecount;
     g->us_copy += gpu_now_us() - t1;
-    g->pending = 0;
+    sl->pending = 0;
+}
+
+/* Complete the batches in flight up to number <seq>, oldest first (a
+   later batch's rows are newer). */
+static void
+gpu_complete_upto(nv4_gpu_t *g, nv4_t *nv4, uint64_t seq)
+{
+    for (;;) {
+        gpu_slot_t *old = NULL;
+
+        for (int i = 0; i < GPU_SLOTS; i++)
+            if (g->slot[i].pending && (g->slot[i].seq <= seq) && (!old || (g->slot[i].seq < old->seq)))
+                old = &g->slot[i];
+        if (!old)
+            return;
+        gpu_complete(g, nv4, old);
+    }
 }
 
 void
 nv4_gpu_wait(struct nv4_gpu_s *g, nv4_t *nv4)
 {
-    gpu_complete(g, nv4);
+    gpu_complete_upto(g, nv4, UINT64_MAX);
 }
 
 int
 nv4_gpu_pending_overlaps(struct nv4_gpu_s *g, uint32_t lo, uint32_t hi)
 {
-    if (!g->pending)
-        return 0;
-    for (int i = 0; i < g->pndown; i++)
-        if ((g->pdown[i].srcOffset <= hi) && (lo < g->pdown[i].srcOffset + g->pdown[i].size))
-            return 1;
+    for (int s = 0; s < GPU_SLOTS; s++) {
+        const gpu_slot_t *sl = &g->slot[s];
+
+        for (int i = 0; sl->pending && (i < sl->pndown); i++)
+            if ((sl->pdown[i].srcOffset <= hi) && (lo < sl->pdown[i].srcOffset + sl->pdown[i].size))
+                return 1;
+    }
     return 0;
+}
+
+/* Upload the bytes lo..hi of VRAM to the GPU's mirror, except those a
+   batch in flight owns (the mirror's are newer). */
+static void
+gpu_upload_range(nv4_gpu_t *g, nv4_t *nv4, uint32_t lo, uint32_t hi, VkBufferCopy *up, int *nup, int max)
+{
+    uint8_t *stage = (uint8_t *) g->b[B_VSTAGE].map;
+
+    for (int s = 0; s < GPU_SLOTS; s++) {
+        const gpu_slot_t *sl = &g->slot[s];
+
+        for (int i = 0; sl->pending && (i < sl->pndown); i++) {
+            uint32_t plo = (uint32_t) sl->pdown[i].srcOffset;
+            uint32_t phi = plo + (uint32_t) sl->pdown[i].size - 1;
+
+            if ((plo > hi) || (phi < lo))
+                continue;
+            /* the parts either side */
+            if (plo > lo)
+                gpu_upload_range(g, nv4, lo, plo - 1, up, nup, max);
+            if (phi < hi)
+                gpu_upload_range(g, nv4, phi + 1, hi, up, nup, max);
+            return;
+        }
+    }
+    /* at most 1 + 8 pieces per region (two batches in flight, four
+       regions each), so <max> (64) is never reached */
+    if (*nup >= max)
+        return;
+    memcpy(stage + lo, nv4->svga.vram + lo, hi - lo + 1);
+    up[*nup].srcOffset = up[*nup].dstOffset = lo;
+    up[*nup].size                           = hi - lo + 1;
+    (*nup)++;
 }
 
 int
 nv4_gpu_shade(struct nv4_gpu_s *g, nv4_t *nv4, const nv4_3d_batch_t *b)
 {
-    nv4_gpu_state_t *gs    = (nv4_gpu_state_t *) g->b[B_STATES_H].map;
-    nv4_gpu_span_t  *gsp   = (nv4_gpu_span_t *) g->b[B_SPANS_H].map;
-    nv4_gpu_row_t   *gr    = (nv4_gpu_row_t *) g->b[B_ROWS_H].map;
-    uint8_t         *stage = (uint8_t *) g->b[B_VSTAGE].map;
-    VkBufferCopy     up[B3D_REGIONS], down[B3D_REGIONS];
+    gpu_slot_t      *sl = &g->slot[g->next];
+    nv4_gpu_state_t *gs;
+    nv4_gpu_span_t  *gsp;
+    nv4_gpu_row_t   *gr;
+    VkCommandBuffer  cb;
+    VkBufferCopy     up[64], down[B3D_REGIONS];
     int              nup = 0, ndown = 0;
     uint32_t         nrows = 0;
     int              xmax  = 0;
     uint32_t         pc[2];
     uint64_t         t0, t1, t2;
 
-    /* the batch in flight first: this one reads its rows and textures,
-       and its staging buffers are reused */
-    gpu_complete(g, nv4);
+    /* this slot's last batch (and any older one) first */
+    if (sl->pending)
+        gpu_complete_upto(g, nv4, sl->seq);
+    gs  = (nv4_gpu_state_t *) sl->rech[R_STATES].map;
+    gsp = (nv4_gpu_span_t *) sl->rech[R_SPANS].map;
+    gr  = (nv4_gpu_row_t *) sl->rech[R_ROWS].map;
+    cb  = sl->cb;
     if (!b->nregions)
         goto fallback;
     for (int r = 0; r < b->nregions; r++)
@@ -1003,7 +1136,7 @@ nv4_gpu_shade(struct nv4_gpu_s *g, nv4_t *nv4, const nv4_3d_batch_t *b)
     }
     t1 = gpu_now_us();
     g->us_gather += t1 - t0;
-    memcpy(g->b[B_TRIS_H].map, b->tris, sizeof(nv4_3d_tri_t) * b->ntris);
+    memcpy(sl->rech[R_TRIS].map, b->tris, sizeof(nv4_3d_tri_t) * b->ntris);
 
     /* spans grouped by row, each row in submission order */
     memset(g->row_count, 0, sizeof(g->row_count));
@@ -1042,12 +1175,12 @@ nv4_gpu_shade(struct nv4_gpu_s *g, nv4_t *nv4, const nv4_3d_batch_t *b)
 
         if (rg->wlo > rg->whi)
             continue;
-        up[nup].srcOffset = up[nup].dstOffset = rg->wlo;
-        up[nup].size                          = rg->whi - rg->wlo + 1;
-        memcpy(stage + rg->wlo, nv4->svga.vram + rg->wlo, up[nup].size);
-        down[ndown++] = up[nup++];
+        gpu_upload_range(g, nv4, rg->wlo, rg->whi, up, &nup, 64);
+        down[ndown].srcOffset = down[ndown].dstOffset = rg->wlo;
+        down[ndown].size                              = rg->whi - rg->wlo + 1;
+        ndown++;
     }
-    if (!nup)
+    if (!ndown)
         goto fallback;
 
     t2 = gpu_now_us();
@@ -1057,13 +1190,14 @@ nv4_gpu_shade(struct nv4_gpu_s *g, nv4_t *nv4, const nv4_3d_batch_t *b)
         VkSubmitInfo             si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
 
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        g->vkResetCommandBuffer(g->cb, 0);
-        g->vkBeginCommandBuffer(g->cb, &bi);
-        if (g->qpool) {
-            g->vkCmdResetQueryPool(g->cb, g->qpool, 0, 4);
-            g->vkCmdWriteTimestamp(g->cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, g->qpool, 0);
+        g->vkResetCommandBuffer(cb, 0);
+        g->vkBeginCommandBuffer(cb, &bi);
+        if (sl->qpool) {
+            g->vkCmdResetQueryPool(cb, sl->qpool, 0, 4);
+            g->vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, sl->qpool, 0);
         }
-        g->vkCmdCopyBuffer(g->cb, g->b[B_VSTAGE].buf, g->b[B_VRAM].buf, nup, up);
+        if (nup)
+            g->vkCmdCopyBuffer(cb, g->b[B_VSTAGE].buf, g->b[B_VRAM].buf, nup, up);
         {
             /* the records, read many times per pixel, to device memory */
             VkBufferCopy rc[4] = {
@@ -1075,51 +1209,54 @@ nv4_gpu_shade(struct nv4_gpu_s *g, nv4_t *nv4, const nv4_3d_batch_t *b)
 
             for (int i = 0; i < 4; i++)
                 if (rc[i].size)
-                    g->vkCmdCopyBuffer(g->cb, g->b[B_STATES_H + i].buf, g->b[B_STATES + i].buf, 1, &rc[i]);
+                    g->vkCmdCopyBuffer(cb, sl->rech[i].buf, sl->rec[i].buf, 1, &rc[i]);
         }
         if (g->ntcopy)
-            g->vkCmdCopyBuffer(g->cb, g->b[B_TSTAGE].buf, g->b[B_TEX].buf, g->ntcopy, g->tcopy);
-        gpu_barrier(g, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT,
+            g->vkCmdCopyBuffer(cb, g->b[B_TSTAGE].buf, g->b[B_TEX].buf, g->ntcopy, g->tcopy);
+        gpu_barrier(g, cb, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT,
                     VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_HOST_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                     VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-        if (g->qpool)
-            g->vkCmdWriteTimestamp(g->cb, VK_PIPELINE_STAGE_TRANSFER_BIT, g->qpool, 1);
-        g->vkCmdBindPipeline(g->cb, VK_PIPELINE_BIND_POINT_COMPUTE, g->pipe);
-        g->vkCmdBindDescriptorSets(g->cb, VK_PIPELINE_BIND_POINT_COMPUTE, g->pl, 0, 1, &g->dset, 0, NULL);
+        if (sl->qpool)
+            g->vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, sl->qpool, 1);
+        g->vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g->pipe);
+        g->vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g->pl, 0, 1, &sl->dset, 0, NULL);
         pc[0] = nrows;
         pc[1] = nv4->vram_mask;
-        g->vkCmdPushConstants(g->cb, g->pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), pc);
+        g->vkCmdPushConstants(cb, g->pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), pc);
         /* a workgroup per row and 64 pixels */
-        g->vkCmdDispatch(g->cb, nrows, (xmax + 63) / 64, 1);
-        gpu_barrier(g, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        g->vkCmdDispatch(cb, nrows, (xmax + 63) / 64, 1);
+        gpu_barrier(g, cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                     VK_ACCESS_TRANSFER_READ_BIT);
-        if (g->qpool)
-            g->vkCmdWriteTimestamp(g->cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g->qpool, 2);
-        g->vkCmdCopyBuffer(g->cb, g->b[B_VRAM].buf, g->b[B_VSTAGE].buf, ndown, down);
-        if (g->qpool)
-            g->vkCmdWriteTimestamp(g->cb, VK_PIPELINE_STAGE_TRANSFER_BIT, g->qpool, 3);
-        gpu_barrier(g, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+        if (sl->qpool)
+            g->vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, sl->qpool, 2);
+        g->vkCmdCopyBuffer(cb, g->b[B_VRAM].buf, g->b[B_VSTAGE].buf, ndown, down);
+        if (sl->qpool)
+            g->vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, sl->qpool, 3);
+        gpu_barrier(g, cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_HOST_BIT,
                     VK_ACCESS_HOST_READ_BIT);
-        g->vkEndCommandBuffer(g->cb);
+        g->vkEndCommandBuffer(cb);
         si.commandBufferCount = 1;
-        si.pCommandBuffers    = &g->cb;
-        g->vkResetFences(g->dev, 1, &g->fence);
-        if (g->vkQueueSubmit(g->queue, 1, &si, g->fence) != VK_SUCCESS)
+        si.pCommandBuffers    = &cb;
+        g->vkResetFences(g->dev, 1, &sl->fence);
+        if (g->vkQueueSubmit(g->queue, 1, &si, sl->fence) != VK_SUCCESS)
             goto fallback;
     }
 
-    /* in flight: the rows come back at the next flush or sync point */
-    g->pending = 1;
-    g->pndown  = ndown;
+    /* in flight: the rows come back when a later batch needs the slot
+       or a sync point waits */
+    sl->pending  = 1;
+    sl->seq      = ++g->seq;
+    sl->pndown   = ndown;
     for (int i = 0; i < ndown; i++)
-        g->pdown[i] = down[i];
-    g->p_spans   = b->nspans;
-    g->p_rows    = nrows;
-    g->p_chunks  = (xmax + 63) / 64;
-    g->p_px      = 0;
+        sl->pdown[i] = down[i];
+    sl->p_spans  = b->nspans;
+    sl->p_rows   = nrows;
+    sl->p_chunks = (xmax + 63) / 64;
+    sl->p_px     = 0;
     if (g->prof_left)
         for (int i = 0; i < b->nspans; i++)
-            g->p_px += b->spans[i].x1 - b->spans[i].x0;
+            sl->p_px += b->spans[i].x1 - b->spans[i].x0;
+    g->next = (g->next + 1) % GPU_SLOTS;
     g->batches++;
     return 1;
 

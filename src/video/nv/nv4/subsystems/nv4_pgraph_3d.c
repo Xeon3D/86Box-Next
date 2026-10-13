@@ -1289,8 +1289,12 @@ nv4_3d_shade_serial(nv4_t *nv4, nv4_3d_batch_t *b)
 static int
 nv4_3d_shade_parallel(nv4_t *nv4, nv4_3d_batch_t *b)
 {
-    if (b->gpu && nv4_gpu_shade(b->gpu, nv4, b))
-        return 1;
+    if (b->gpu) {
+        if (nv4_gpu_shade(b->gpu, nv4, b))
+            return 1;
+        /* the CPU draws it: the GPU's batches in flight first */
+        nv4_gpu_wait(b->gpu, nv4);
+    }
     if (b->nthreads > 1) {
         nv4_3d_shade_threaded(b);
         return 1;
