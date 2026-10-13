@@ -2481,6 +2481,21 @@ nv4_pgraph_2d_method(nv4_t *nv4, nv4_gr_chan_t *ch, int cls, uint32_t mthd, uint
             return nv4_class_sifc(nv4, ch, cls, mthd, data);
         case 0x60:
             return nv4_class_iifc(nv4, ch, mthd, data);
+        /* The TNT2's own image classes: the TNT's with a colour conversion
+           method (dither or truncate to a 16 bpp surface; 2D is drawn
+           truncated). On the TNT these numbers are not image classes. */
+        case 0x64:
+            if (nv4->chip != NV4_CHIP_TNT2)
+                break;
+            return (mthd == 0x3e0) ? NV4_GR_OK : nv4_class_iifc(nv4, ch, mthd, data);
+        case 0x65:
+            if (nv4->chip != NV4_CHIP_TNT2)
+                break;
+            return (mthd == 0x2f8) ? NV4_GR_OK : nv4_class_ifc(nv4, ch, 0x61, mthd, data);
+        case 0x66:
+            if (nv4->chip != NV4_CHIP_TNT2)
+                break;
+            return (mthd == 0x2f8) ? NV4_GR_OK : nv4_class_sifc(nv4, ch, 0x76, mthd, data);
         case 0x4a:
         case 0x4b:
             return nv4_class_gdi(nv4, ch, cls, mthd, data);
@@ -2490,9 +2505,9 @@ nv4_pgraph_2d_method(nv4_t *nv4, nv4_gr_chan_t *ch, int cls, uint32_t mthd, uint
         case 0x77:
             return nv4_class_sifm(nv4, ch, cls, mthd, data);
         default:
-            /* the DX3 triangle (0x48), DVD subpicture (0x38) and the NV5
-               image classes (0x63-0x66) are not drawn yet */
-            nv4_gap(nv4, cls, mthd, "class not drawn");
-            return NV4_GR_OK;
+            break;
     }
+    /* the DX3 triangle (0x48) and DVD subpicture (0x38) are not drawn yet */
+    nv4_gap(nv4, cls, mthd, "class not drawn");
+    return NV4_GR_OK;
 }

@@ -270,6 +270,9 @@ nv4_pgraph_draws_only(int cls)
         case 0x36:
         case 0x76:
         case 0x60:
+        case 0x64:
+        case 0x65:
+        case 0x66:
             return 1;
         default:
             return 0;
