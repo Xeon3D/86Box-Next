@@ -51,6 +51,7 @@
 #include <86box/video.h>
 #include <86box/vid_svga.h>
 #include <86box/nv/vid_nv4.h>
+#include "cpu.h"
 
 /* Registers */
 #define PFIFO_DELAY_0               0x002040
@@ -326,7 +327,7 @@ nv4_pfifo_switch(nv4_t *nv4, int chid)
         p->c1_dma_push &= ~DMA_PUSH_ACCESS;
     p->dma &= ~(1u << chid);
     nv4_log("NV4 PFIFO: channel switch %d -> %d\n", old, chid);
-    if (nv4->dbg_trace)
+    if (nv4->dbg_trace && nv4->dbg_trace--)
         pclog("nv4 trace: channel switch %d -> %d, put %08x get %08x\n", old, chid, p->c1_dma_put, p->c1_dma_get);
 }
 
@@ -471,7 +472,7 @@ nv4_dma_push(nv4_t *nv4)
             nv4_pfifo_intr(nv4, INTR_DMA_PT);
             break;
         }
-        if (nv4->dbg_trace)
+        if (nv4->dbg_trace && nv4->dbg_trace--)
             pclog("nv4 trace: push ch %d get %08x word %08x\n", CHID(p), p->c1_dma_get, word);
         p->c1_dma_get = (p->c1_dma_get + 4) & 0x1ffffffc;
 
@@ -596,8 +597,9 @@ nv4_user_write(nv4_t *nv4, uint32_t addr, uint32_t val)
     uint32_t     off  = addr & 0x1fff;
 
     nv4->dbg_user[chid].writes++;
-    if (nv4->dbg_trace)
-        pclog("nv4 trace: user ch %d %04x = %08x (cache1 ch %d)\n", chid, (subc << 13) | off, val, CHID(p));
+    if (nv4->dbg_trace && nv4->dbg_trace--)
+        pclog("nv4 trace: user ch %d %04x = %08x (cache1 ch %d) from %08x\n", chid, (subc << 13) | off, val, CHID(p),
+              cs + cpu_state.pc);
     nv4->dbg_user[chid].last_off = (subc << 13) | off;
     nv4->dbg_user[chid].last_val = val;
     if (p->mode & (1u << chid)) {

@@ -18,6 +18,11 @@ extern void debug_cmd_set_device_hook(void (*hook)(const char *args));
 extern int  debug_cmd_bp_count;
 extern void debug_cmd_bp_check(uint32_t lin);
 
+/* "speedlog 1|0": the speed shown in the title bar, logged with where the
+   guest is, once a second. */
+extern int  debug_cmd_speed_log;
+extern void debug_cmd_log_speed(int speed_percent);
+
 #ifdef __cplusplus
 }
 #endif

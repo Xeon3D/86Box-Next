@@ -266,6 +266,14 @@ debug_cmd_peek(const char *arg)
     always_log("debug_cmd: peek %08x (phys %08x):%s\n", lin, (uint32_t) phys, bytes);
 }
 
+int debug_cmd_speed_log;
+
+void
+debug_cmd_log_speed(int speed_percent)
+{
+    always_log("debug_cmd: speed %d%% at %04x:%08x\n", speed_percent, CS, cpu_state.pc);
+}
+
 static void
 debug_cmd_map(const char *arg)
 {
@@ -327,7 +335,10 @@ debug_cmd_run(char *line)
         debug_cmd_peek(arg);
     else if (!strcmp(line, "map"))
         debug_cmd_map(arg);
-    else if (!strcmp(line, "interp")) {
+    else if (!strcmp(line, "speedlog")) {
+        debug_cmd_speed_log = atoi(arg) != 0;
+        always_log("debug_cmd: speedlog %s\n", debug_cmd_speed_log ? "on" : "off");
+    } else if (!strcmp(line, "interp")) {
         /* interp 1|0: run every block through the interpreter (to tell dynarec bugs apart) */
         cpu_force_interpreter = atoi(arg) != 0;
         always_log("debug_cmd: interpreter %s\n", cpu_force_interpreter ? "forced" : "off");

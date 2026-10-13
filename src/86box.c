@@ -2145,6 +2145,8 @@ pc_run(void)
 #else
         ui_emu_status(speed_percent);
 #endif
+        if (debug_cmd_speed_log)
+            debug_cmd_log_speed(speed_percent);
         title_update = 0;
     }
 }
