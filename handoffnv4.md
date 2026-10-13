@@ -177,21 +177,30 @@ From Bash with MSYS2 UCRT64 first on PATH:
     overlapped batches are what helps.
   - Verify result: 2621 synchronous and 2000 asynchronous GPU batches, and
     17000 threaded batches, identical to the serial path.
-- **Speed** (40 s of 3DMark Game 1, i7-12700K + RTX 2080 SUPER):
+- **Speed:** host time on the emulation thread per span, over 40 s of
+  3DMark's first tests (i7-12700K + RTX 2080 SUPER, `tools/nv4/bench.sh`):
 
   | Path | µs/span |
   |---|---|
   | 1 thread | 4.9 |
-  | 4 threads | 0.9 |
-  | GPU | 0.57 |
+  | 4 threads | 0.85 |
+  | 8 threads | 0.54 |
+  | GPU (async) | 0.23 |
 
-  With 1 thread, the 3D took 34 s of the 40 s.
+  The GPU figure is submit time plus waits. Before this work, 1 thread spent
+  34 s of the 40 s on 3D.
+- **GPU waits:** `dev 3d` lists them by cause. State-only classes (surfaces,
+  ROP, beta, chroma, pattern, clip) neither flush nor wait
+  (`nv4_pgraph_state_only`). What remains is the 2D rectangle clear (class
+  0x5e) at the start of each frame, ~0.8 s per 40 s.
 
 ## Next (in rough order)
 1. **GPU lane speed.**
-   - Unmeasured guess: most waits come from the 2D clear at the start of each frame (a
-     2D method syncs). Doing 2D fills on the GPU, or tracking which pages a
-     2D op touches, would let the batch stay in flight.
+   - The remaining waits are the 2D rectangle clear (class 0x5e). A
+     rectangle fill on the GPU (or a wait only when the rectangle overlaps
+     the batch's rows) would let the batch stay in flight.
+   - The submit side (~2.4 s per 40 s) is gather + row copies + grouping
+     spans by row; it could move to a worker thread.
    - Cache gathered textures across flushes (~40 MB/s of re-gathering now).
      Invalidate on LFB writes, M2MF and 2D writes into their VRAM ranges;
      textures in system/AGP memory need a checksum or always-regather.
@@ -247,3 +256,10 @@ From Bash with MSYS2 UCRT64 first on PATH:
 - 2026-10-13:
   - GPU lane profiled and made asynchronous; FIFO-idle flush dropped,
     batches 4x larger (fddb3b009).
+  - GPU waits by cause; state-only classes skip the sync; vblank range fixed
+    (a27854013).
+  - Full 3DMark 99 run on the async GPU lane: every test renders, 2616
+    3DMarks (2620 on the CPU path).
+  - Mishap: bench.sh started a VM while the previous one hung at shutdown;
+    two instances shared the disk for ~8 min. Win98 came back clean. tnt.sh
+    now refuses a second instance.
