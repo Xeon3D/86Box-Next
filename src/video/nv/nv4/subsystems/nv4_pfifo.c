@@ -326,6 +326,8 @@ nv4_pfifo_switch(nv4_t *nv4, int chid)
         p->c1_dma_push &= ~DMA_PUSH_ACCESS;
     p->dma &= ~(1u << chid);
     nv4_log("NV4 PFIFO: channel switch %d -> %d\n", old, chid);
+    if (nv4->dbg_trace)
+        pclog("nv4 trace: channel switch %d -> %d, put %08x get %08x\n", old, chid, p->c1_dma_put, p->c1_dma_get);
 }
 
 /* CACHE1 can change hands: reassign is on, nothing is queued and the
@@ -469,6 +471,8 @@ nv4_dma_push(nv4_t *nv4)
             nv4_pfifo_intr(nv4, INTR_DMA_PT);
             break;
         }
+        if (nv4->dbg_trace)
+            pclog("nv4 trace: push ch %d get %08x word %08x\n", CHID(p), p->c1_dma_get, word);
         p->c1_dma_get = (p->c1_dma_get + 4) & 0x1ffffffc;
 
         if (count) {
@@ -564,6 +568,7 @@ nv4_user_read(nv4_t *nv4, uint32_t addr)
     int          chid = (addr >> 16) & 0x0f;
     uint32_t     off  = addr & 0x1fff;
 
+    nv4->dbg_user[chid].reads++;
     if (p->mode & (1u << chid)) {
         uint32_t a = nv4_ramfc_base(p) + chid * 32;
         if (off == 0x40)
@@ -590,6 +595,11 @@ nv4_user_write(nv4_t *nv4, uint32_t addr, uint32_t val)
     int          subc = (addr >> 13) & 7;
     uint32_t     off  = addr & 0x1fff;
 
+    nv4->dbg_user[chid].writes++;
+    if (nv4->dbg_trace)
+        pclog("nv4 trace: user ch %d %04x = %08x (cache1 ch %d)\n", chid, (subc << 13) | off, val, CHID(p));
+    nv4->dbg_user[chid].last_off = (subc << 13) | off;
+    nv4->dbg_user[chid].last_val = val;
     if (p->mode & (1u << chid)) {
         if (off == 0x40) {
             /* DMA_PUT */

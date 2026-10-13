@@ -542,6 +542,10 @@ typedef struct nv4_s {
         uint32_t    count;
     } dbg_gap[64];
     int           dbg_gaps;
+    /* channel control area accesses, for the debug hook */
+    struct {
+        uint32_t reads, writes, last_off, last_val;
+    } dbg_user[16];
     uint32_t      dbg_trace;          /* methods left to log */
     uint32_t      dbg_vblanks;        /* vertical blanks, for "dev 3d" */
     uint32_t      vblank_count;       /* vertical blanks since power-on */

@@ -17,6 +17,8 @@
  *                                  CPU executes linear addr; "bp clear" drops them all
  *                 wp addr          log each instruction that changes the dword at linear addr
  *                                  (its physical page as mapped now); "wp clear" drops it
+ *                 map addr         the memory mappings that read and write physical addr,
+ *                                  and where the AGP aperture sends it
  *                 cdrom n path     put an image in CD-ROM drive n (0 = the first); no path
  *                                  empties the drive
  *
@@ -34,6 +36,7 @@
 #include <86box/debug_cmd.h>
 #include <86box/mem.h>
 #include <86box/cdrom.h>
+#include <86box/agpgart.h>
 #include <86box/plat.h>
 #include "cpu.h"
 
@@ -264,6 +267,21 @@ debug_cmd_peek(const char *arg)
 }
 
 static void
+debug_cmd_map(const char *arg)
+{
+    uint32_t             phys = strtoul(arg, NULL, 16);
+    const mem_mapping_t *r    = read_mapping[phys >> MEM_GRANULARITY_BITS];
+    const mem_mapping_t *w    = write_mapping[phys >> MEM_GRANULARITY_BITS];
+    uint32_t             ram;
+
+    always_log("debug_cmd: map %08x: read %s %08x+%08x exec %d, write %s %08x+%08x exec %d\n", phys,
+               r ? (r->enable ? "on" : "off") : "none", r ? r->base : 0, r ? r->size : 0, r ? !!r->exec : 0,
+               w ? (w->enable ? "on" : "off") : "none", w ? w->base : 0, w ? w->size : 0, w ? !!w->exec : 0);
+    if (agpgart_resolve(phys, &ram))
+        always_log("debug_cmd: map %08x: AGP aperture -> %08x\n", phys, ram);
+}
+
+static void
 debug_cmd_run(char *line)
 {
     char *arg;
@@ -307,6 +325,8 @@ debug_cmd_run(char *line)
         debug_cmd_bp(arg);
     else if (!strcmp(line, "peek"))
         debug_cmd_peek(arg);
+    else if (!strcmp(line, "map"))
+        debug_cmd_map(arg);
     else if (!strcmp(line, "interp")) {
         /* interp 1|0: run every block through the interpreter (to tell dynarec bugs apart) */
         cpu_force_interpreter = atoi(arg) != 0;

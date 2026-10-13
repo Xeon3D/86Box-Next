@@ -822,6 +822,22 @@ nv4_debug_hook(const char *args)
         nv4_3d_stats(nv4);
         return;
     }
+    if (args && !strncmp(args, "dma", 3)) {
+        /* dma INST [OFFSET]: a DMA object and where OFFSET lands */
+        char    *end;
+        uint32_t inst = strtoul(args + 3, &end, 16);
+        uint32_t off  = strtoul(end, NULL, 16);
+        uint32_t addr = 0;
+        int      target = 0;
+        int      r      = nv4_dma_translate(nv4, inst, off, 0, &addr, &target);
+
+        pclog("nv4: dma %04x: %08x %08x %08x %08x; offset %08x -> %s %08x\n", inst,
+              nv4_ramin_read32(nv4, inst << 4), nv4_ramin_read32(nv4, (inst << 4) + 4),
+              nv4_ramin_read32(nv4, (inst << 4) + 8), nv4_ramin_read32(nv4, (inst << 4) + 12), off,
+              (r != NV4_DMA_OK) ? "fault" : (target == 0) ? "vram" : (target == 2) ? "pci" : (target == 3) ? "agp" : "?",
+              addr);
+        return;
+    }
     svga  = &nv4->svga;
     p     = &nv4->pfifo;
     start = svga->memaddr_latch << 2;
@@ -851,6 +867,11 @@ nv4_debug_hook(const char *args)
     for (int i = 0; i < 256; i++)
         if (nv4->dbg_cls_count[i])
             pclog("nv4: class %02x: %u methods\n", i, nv4->dbg_cls_count[i]);
+    for (int i = 0; i < 16; i++)
+        if (nv4->dbg_user[i].reads || nv4->dbg_user[i].writes)
+            pclog("nv4: user ch %d: %u reads, %u writes, last %04x = %08x%s\n", i, nv4->dbg_user[i].reads,
+                  nv4->dbg_user[i].writes, nv4->dbg_user[i].last_off, nv4->dbg_user[i].last_val,
+                  (nv4->pfifo.mode & (1u << i)) ? " (DMA)" : "");
     for (int i = 0; i < nv4->dbg_gaps; i++)
         pclog("nv4: not modeled: class %02x method %04x: %s (%u times)\n", nv4->dbg_gap[i].cls,
               nv4->dbg_gap[i].mthd, nv4->dbg_gap[i].what, nv4->dbg_gap[i].count);
