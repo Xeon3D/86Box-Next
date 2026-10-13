@@ -174,6 +174,28 @@ nv4_pgraph_load_grobj(nv4_t *nv4, int subc, uint32_t inst)
     GR(NV4_PGRAPH_CTX_CACHE3 + subc * 4) = nv4_ramin_read32(nv4, base + 8);
 }
 
+/* Something the guest asked for that is not modeled: logged the first
+   time, counted always, listed by the debug hook's "dev". */
+void
+nv4_gap(nv4_t *nv4, int cls, uint32_t mthd, const char *what)
+{
+    int i;
+
+    for (i = 0; i < nv4->dbg_gaps; i++)
+        if ((nv4->dbg_gap[i].cls == cls) && (nv4->dbg_gap[i].mthd == mthd) && (nv4->dbg_gap[i].what == what)) {
+            nv4->dbg_gap[i].count++;
+            return;
+        }
+    if (i == (int) (sizeof(nv4->dbg_gap) / sizeof(nv4->dbg_gap[0])))
+        return;
+    nv4->dbg_gap[i].cls   = cls;
+    nv4->dbg_gap[i].mthd  = mthd;
+    nv4->dbg_gap[i].what  = what;
+    nv4->dbg_gap[i].count = 1;
+    nv4->dbg_gaps++;
+    pclog("nv4: not modeled: class %02x method %04x: %s\n", cls, mthd, what);
+}
+
 /* Methods every class has. Returns -1 for a class method. */
 static int
 nv4_pgraph_common_method(nv4_t *nv4, uint32_t mthd, uint32_t data)

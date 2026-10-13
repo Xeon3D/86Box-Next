@@ -418,6 +418,8 @@ nv4_3d_make_state(nv4_t *nv4, nv4_3d_batch_t *b, int cls, const nv4_d3d_t *d)
     memset(s, 0, sizeof(*s));
 
     s->dx6     = (cls == 0x55);
+    if (GR(NV4_PGRAPH_SURFACE) == 2)
+        nv4_gap(nv4, cls, 0, "3D into a swizzled colour surface (drawn as pitch)");
     s->col_fmt = (GR(NV4_PGRAPH_BPIXEL) >> 8) & 0xf;
     s->bpp     = bpp_of(s->col_fmt);
     s->col_base  = GR(NV4_PGRAPH_BBASE + 2 * 4) + GR(NV4_PGRAPH_BOFFSET + 2 * 4);

@@ -534,6 +534,14 @@ typedef struct nv4_s {
     int           render_threads;     /* 3D span shading threads, 1 = inline */
     int           gpu_raster;         /* 3D span shading on the host GPU */
     uint32_t      dbg_cls_count[256]; /* methods per class, for the debug hook */
+    /* what the guest asked for that is not modeled (nv4_gap) */
+    struct {
+        uint8_t     cls;
+        uint16_t    mthd;
+        const char *what;
+        uint32_t    count;
+    } dbg_gap[64];
+    int           dbg_gaps;
     uint32_t      dbg_trace;          /* methods left to log */
     uint32_t      dbg_vblanks;        /* vertical blanks, for "dev 3d" */
     uint32_t      vblank_count;       /* vertical blanks since power-on */
@@ -647,6 +655,7 @@ extern void     nv4_pfifo_run(nv4_t *nv4);
 
 /* subsystems/nv4_pgraph.c: the puller's way in */
 extern nv4_mthd_result_t nv4_pgraph_method(nv4_t *nv4, int chid, int subc, uint32_t mthd, uint32_t data);
+extern void nv4_gap(nv4_t *nv4, int cls, uint32_t mthd, const char *what);
 
 #define NV4_GR(nv4, addr) ((nv4)->pgraph_regs[((addr) - NV4_PGRAPH_START) >> 2])
 extern void     nv4_pgraph_notify_write(nv4_t *nv4, uint32_t index, uint32_t info32);

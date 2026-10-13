@@ -851,6 +851,9 @@ nv4_debug_hook(const char *args)
     for (int i = 0; i < 256; i++)
         if (nv4->dbg_cls_count[i])
             pclog("nv4: class %02x: %u methods\n", i, nv4->dbg_cls_count[i]);
+    for (int i = 0; i < nv4->dbg_gaps; i++)
+        pclog("nv4: not modeled: class %02x method %04x: %s (%u times)\n", nv4->dbg_gap[i].cls,
+              nv4->dbg_gap[i].mthd, nv4->dbg_gap[i].what, nv4->dbg_gap[i].count);
 }
 
 static void *
