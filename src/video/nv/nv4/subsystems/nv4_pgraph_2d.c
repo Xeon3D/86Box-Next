@@ -1148,15 +1148,17 @@ nv4_img_mono_data(nv4_t *nv4, nv4_gr_chan_t *ch, uint32_t data, int oclip)
     }
 }
 
-/* A data word of palette indexes: 8-bit or 4-bit. */
+/* A data word of palette indexes: 8-bit (format 0, bytes in memory
+   order) or 4-bit (format 1, SVGA order: in each byte the high nibble
+   is the left pixel, as in a 4 bpp DIB). */
 static void
 nv4_img_index_data(nv4_t *nv4, nv4_gr_chan_t *ch, uint32_t data)
 {
     nv4_draw_t d;
     int        ok;
     int        cfmt  = nv4_src_fmt(nv4);
-    int        n     = (ch->iifc_fmt == 1) ? 8 : 4;
-    int        bits  = 32 / n;
+    int        i4    = ch->iifc_fmt == 1;
+    int        n     = i4 ? 8 : 4;
     int        esize = ((cfmt == CF_A8R8G8B8) || (cfmt == CF_X8R8G8B8)) ? 4 : 2;
     uint32_t   lut   = GR(NV4_PGRAPH_CTX_SWITCH3) & 0xffff;
 
@@ -1164,7 +1166,7 @@ nv4_img_index_data(nv4_t *nv4, nv4_gr_chan_t *ch, uint32_t data)
         return;
     ok = nv4_draw_begin(nv4, &d, 0, 1);
     for (int i = 0; i < n && !nv4_img_done(ch); i++) {
-        uint32_t idx = (data >> (i * bits)) & ((1u << bits) - 1);
+        uint32_t idx = i4 ? ((data >> ((i >> 1) * 8 + ((i & 1) ? 0 : 4))) & 0xf) : ((data >> (i * 8)) & 0xff);
         uint32_t c   = 0;
 
         if (lut)
@@ -1280,6 +1282,25 @@ nv4_sifm_fetch(nv4_t *nv4, nv4_gr_chan_t *ch, int cfmt, uint32_t dma, int32_t u,
     }
 }
 
+/* a + (b - a) * f / 256 in each byte */
+static uint32_t
+nv4_lerp8888(uint32_t a, uint32_t b, uint32_t f)
+{
+    uint32_t r = 0;
+
+    for (int s = 0; s < 32; s += 8) {
+        uint32_t ca = (a >> s) & 0xff;
+        uint32_t cb = (b >> s) & 0xff;
+
+        r |= ((ca * (256 - f) + cb * f) >> 8) << s;
+    }
+    return r;
+}
+
+/* IMAGE_IN_FORMAT: pitch 15:0, origin 23:16 (1 the centre of each
+   output pixel samples, 2 its corner), interpolator 31:24 (0 nearest
+   texel, 1 bilinear). The Windows driver asks for centre + bilinear,
+   so stretched DIBs come out filtered, as on the real card. */
 static void
 nv4_sifm_draw(nv4_t *nv4, nv4_gr_chan_t *ch, uint32_t point)
 {
@@ -1287,27 +1308,47 @@ nv4_sifm_draw(nv4_t *nv4, nv4_gr_chan_t *ch, uint32_t point)
     uint32_t   dma  = GR(NV4_PGRAPH_CTX_SWITCH3) & 0xffff;
     int        cfmt = nv4_src_fmt(nv4);
     int        center = ((ch->sifm_in_fmt >> 16) & 0xff) == 1;
+    int        foh    = (ch->sifm_in_fmt >> 24) == 1;
+    /* the point is 12.4; positions are 12.20 */
     int64_t    u0 = (int64_t) (point & 0xffff) << 16;
     int64_t    v0 = (int64_t) (point >> 16) << 16;
 
     if (!dma || !nv4_draw_begin(nv4, &d, 1, 1))
         return;
     if (center) {
-        u0 += ch->sifm_dudx / 2 - (1 << 19);
-        v0 += ch->sifm_dvdy / 2 - (1 << 19);
+        u0 += ch->sifm_dudx / 2;
+        v0 += ch->sifm_dvdy / 2;
+        /* bilinear weights are measured from texel centres */
+        if (foh) {
+            u0 -= 1 << 19;
+            v0 -= 1 << 19;
+        }
     }
     for (uint32_t oy = 0; oy < ch->sifm_h; oy++) {
-        int64_t v = v0 + (int64_t) oy * ch->sifm_dvdy;
+        int64_t v  = v0 + (int64_t) oy * ch->sifm_dvdy;
+        int32_t iv = (int32_t) (v >> 20);
+        uint32_t fv = (uint32_t) (v >> 12) & 0xff;
 
         if ((ch->sifm_y + (int32_t) oy < d.cy0) || (ch->sifm_y + (int32_t) oy >= d.cy1))
             continue;
         for (uint32_t ox = 0; ox < ch->sifm_w; ox++) {
-            int64_t u = u0 + (int64_t) ox * ch->sifm_dudx;
+            int64_t  u  = u0 + (int64_t) ox * ch->sifm_dudx;
+            int32_t  iu = (int32_t) (u >> 20);
+            uint32_t fu = (uint32_t) (u >> 12) & 0xff;
+            nv4_px_t p;
 
             if ((ch->sifm_x + (int32_t) ox < d.cx0) || (ch->sifm_x + (int32_t) ox >= d.cx1))
                 continue;
-            nv4_put_color(&d, ch->sifm_x + ox, ch->sifm_y + oy,
-                          nv4_sifm_fetch(nv4, ch, cfmt, dma, (int32_t) (u >> 20), (int32_t) (v >> 20)));
+            p = nv4_sifm_fetch(nv4, ch, cfmt, dma, iu, iv);
+            if (foh && (fu || fv)) {
+                uint32_t t0 = nv4_lerp8888(p.argb, nv4_sifm_fetch(nv4, ch, cfmt, dma, iu + 1, iv).argb, fu);
+                uint32_t t1 = nv4_lerp8888(nv4_sifm_fetch(nv4, ch, cfmt, dma, iu, iv + 1).argb,
+                                           nv4_sifm_fetch(nv4, ch, cfmt, dma, iu + 1, iv + 1).argb, fu);
+
+                p.argb = nv4_lerp8888(t0, t1, fv);
+                p.raw  = ((cfmt == CF_Y8) || (cfmt == CF_X24Y8)) ? (p.argb & 0xff) : p.argb;
+            }
+            nv4_put_color(&d, ch->sifm_x + ox, ch->sifm_y + oy, p);
         }
     }
 }
@@ -2449,8 +2490,9 @@ nv4_pgraph_2d_method(nv4_t *nv4, nv4_gr_chan_t *ch, int cls, uint32_t mthd, uint
         case 0x77:
             return nv4_class_sifm(nv4, ch, cls, mthd, data);
         default:
-            /* 3D (0x48, 0x54, 0x55) and DVD (0x38) are not drawn yet */
-            nv4_log("NV4 PGRAPH: class %02x method %04x data %08x ignored\n", cls, mthd, data);
+            /* the DX3 triangle (0x48), DVD subpicture (0x38) and the NV5
+               image classes (0x63-0x66) are not drawn yet */
+            nv4_gap(nv4, cls, mthd, "class not drawn");
             return NV4_GR_OK;
     }
 }
