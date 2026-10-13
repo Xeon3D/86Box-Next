@@ -11,10 +11,20 @@
 
 **86Box-Next is a fork of [86Box](https://github.com/86Box/86Box)**, the low level x86 emulator for IBM PC systems and compatibles from 1981 to the PCI era. It is merged with upstream 86Box every week. Everything 86Box does, this does too; below is what it adds.
 
-Windows x64 builds are on the [releases page](https://github.com/Xeon3D/86Box-Next/releases). They are static: one `86Box-Next.exe` and one `isp-server.exe`, no DLLs. The ROMs are not included: use the [86Box ROM set](https://github.com/86Box/roms).
+Windows x64 builds are on the [releases page](https://github.com/Xeon3D/86Box-Next/releases). They are static: one `86Box-Next.exe` and one `isp-server.exe`, no DLLs. The ROMs are not included: use the [86Box ROM set](https://github.com/86Box/roms). The NVIDIA BIOSes are not in it; they are in [Xeon3D/roms](https://github.com/Xeon3D/roms) (`roms/video/nvidia/nv3` and `nv4`), which is the 86Box set plus those.
 
 Extra features
 --------------
+
+### NVIDIA graphics cards
+* **RIVA 128 and RIVA 128 ZX** (NV3), PCI and AGP:
+  * 2D acceleration, DirectDraw and Direct3D with NVIDIA's own Windows drivers;
+  * the video overlay (YUY2/UYVY, scaled, colour-keyed) used by video players;
+  * VGA, VESA and NVIDIA's extended modes up to 1600x1200, and the RAMDAC's checksum, so NVIDIA's manufacturing test passes.
+* **RIVA TNT and TNT2** (NV4/NV5): ELSA ERAZOR II (TNT, PCI and AGP), ERAZOR III (TNT2), ERAZOR III ULTRA (TNT2 Ultra) and ERAZOR III LT (TNT2 M64), with their own BIOSes:
+  * 2D acceleration up to 1600x1200 in 32-bit colour;
+  * Direct3D (DirectX 5 and 6 triangles, multitexturing) and the **OpenGL ICD**: 3DMark 99 and 2000, Unreal Tournament and Quake III Arena run on NVIDIA's Windows 98 driver;
+  * the 3D is drawn on worker threads (1 to 8), or on the **host's GPU** through Vulkan ("Draw 3D on the host GPU" in the card's settings), with the same pixels either way.
 
 ### Dial-up, telephone lines and voice calls
 * **Modems on COM ports:** Diamond SupraExpress 56e PRO and ELSA MicroLink 56k, with a status bar icon to change the line while the machine runs. The line can be:
@@ -75,6 +85,7 @@ Extra features
 * A new icon set.
 * The release (or build number) in the title bar.
 * Static Windows builds.
+* A debug command file (`BOX86NEXT_DEBUG_CMD`) to drive a running machine from scripts: keys, screenshots, breakpoints, memory and device state.
 
 Licensing
 ---------
