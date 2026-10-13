@@ -536,6 +536,15 @@ typedef struct nv4_s {
     uint32_t      dbg_cls_count[256]; /* methods per class, for the debug hook */
     uint32_t      dbg_trace;          /* methods left to log */
     uint32_t      dbg_vblanks;        /* vertical blanks, for "dev 3d" */
+    uint32_t      vblank_count;       /* vertical blanks since power-on */
+    /* 2D pixels with a plain store gathered into a run on one row, to
+       join the 3D batch as a fill (nv4_pgraph_2d.c) */
+    struct {
+        int      n;
+        uint32_t base, pitch, lim, v;
+        int      bpp;
+        int32_t  y, x0, x1;
+    } run2d;
 
     /* Register files of the units not yet modeled: what the driver
        wrote reads back. */
@@ -657,6 +666,11 @@ extern void nv4_3d_flush(nv4_t *nv4);
 #define NV4_SYNC_VBLANK 258
 #define NV4_SYNC_CAUSES 259
 extern void nv4_3d_sync(nv4_t *nv4, int cause);
+extern void nv4_3d_touch(nv4_t *nv4, uint32_t lo, uint32_t hi, int cause);
+extern int  nv4_3d_joins(nv4_t *nv4, uint32_t base, uint32_t pitch, uint32_t lo, uint32_t hi);
+extern void nv4_pgraph_2d_flush_run(nv4_t *nv4);
+extern int  nv4_3d_fill(nv4_t *nv4, uint32_t base, uint32_t pitch, uint32_t lim, int bpp, int32_t x0, int32_t y0,
+                        int32_t x1, int32_t y1, uint32_t val);
 extern void nv4_3d_vblank(nv4_t *nv4, uint32_t lo, uint32_t hi);
 extern void nv4_3d_init(nv4_t *nv4);
 extern void nv4_3d_close(nv4_t *nv4);

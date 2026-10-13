@@ -73,6 +73,7 @@
 #include <86box/86box.h>
 #include <86box/device.h>
 #include <86box/mem.h>
+#include <86box/agpgart.h>
 #include <86box/pci.h>
 #include <86box/rom.h>
 #include <86box/timer.h>
@@ -205,7 +206,7 @@ nv4_3d_tex_hazard(nv4_t *nv4, const nv4_3d_batch_t *b, const nv4_3d_tex_t *t)
 {
     uint32_t first, last;
 
-    if (!t->on || !b->wr_valid)
+    if (!t->on || !b->nregions)
         return 0;
     first = t->offset & ~0xfffu;
     last  = (t->offset + t->size - 1) & ~0xfffu;
@@ -217,8 +218,10 @@ nv4_3d_tex_hazard(nv4_t *nv4, const nv4_3d_batch_t *b, const nv4_3d_tex_t *t)
 
         if ((nv4_dma_translate(nv4, t->dma, o, 0, &a, &target) == NV4_DMA_OK) && !target) {
             a &= ~0xfffu;
-            if (nv4_3d_meets(a, a + 0xfff, b->wr_c_lo, b->wr_c_hi) || nv4_3d_meets(a, a + 0xfff, b->wr_z_lo, b->wr_z_hi))
-                return 1;
+            for (int r = 0; r < b->nregions; r++)
+                if ((b->regions[r].wlo <= b->regions[r].whi)
+                    && nv4_3d_meets(a, a + 0xfff, b->regions[r].wlo, b->regions[r].whi))
+                    return 1;
         }
         if (o == last)
             break;
@@ -226,19 +229,114 @@ nv4_3d_tex_hazard(nv4_t *nv4, const nv4_3d_batch_t *b, const nv4_3d_tex_t *t)
     return 0;
 }
 
+/* Widen lo..hi to the VRAM pages texture <t> reads. */
+static void
+nv4_3d_tex_range(nv4_t *nv4, const nv4_3d_tex_t *t, uint32_t *lo, uint32_t *hi)
+{
+    uint32_t first, last;
+
+    if (!t->on)
+        return;
+    first = t->offset & ~0xfffu;
+    last  = (t->offset + t->size - 1) & ~0xfffu;
+    if (((last - first) >> 12) >= 1024) {
+        *lo = 0;
+        *hi = 0xffffffff;
+        return;
+    }
+    for (uint32_t o = first;; o += 0x1000) {
+        uint32_t a;
+        int      target;
+
+        if ((nv4_dma_translate(nv4, t->dma, o, 0, &a, &target) == NV4_DMA_OK) && !target) {
+            a &= ~0xfffu;
+            if (a < *lo)
+                *lo = a;
+            if (a + 0xfff > *hi)
+                *hi = a + 0xfff;
+        }
+        if (o == last)
+            break;
+    }
+}
+
+/* The bytes a state can reach through layout base/pitch: its clip's
+   rows, or at least one row's pixels. */
+static void
+nv4_3d_reach(const nv4_3d_state_t *s, uint32_t base, uint32_t pitch, uint32_t *lo, uint32_t *hi)
+{
+    uint32_t rows = (uint32_t) (s->cy1 - s->cy0) * pitch;
+    uint32_t w    = (uint32_t) s->cx1 * s->bpp;
+
+    *lo = base + (uint32_t) s->cy0 * pitch;
+    *hi = *lo + ((rows > w) ? rows : w) - 1;
+}
+
+/* The batch region with layout base/pitch: its index, -1 when a new one
+   can be added, -2 when one would meet another layout's bytes or the
+   table is full. */
+static int
+nv4_3d_region_find(const nv4_3d_batch_t *b, uint32_t base, uint32_t pitch, uint32_t lo, uint32_t hi)
+{
+    int same = -1;
+
+    for (int r = 0; r < b->nregions; r++)
+        if ((b->regions[r].base == base) && (b->regions[r].pitch == pitch)) {
+            same = r;
+            /* the merged region must still keep off the others */
+            if (b->regions[r].lo < lo)
+                lo = b->regions[r].lo;
+            if (b->regions[r].hi > hi)
+                hi = b->regions[r].hi;
+        }
+    for (int r = 0; r < b->nregions; r++)
+        if ((r != same) && nv4_3d_meets(lo, hi, b->regions[r].lo, b->regions[r].hi))
+            return -2;
+    if (same >= 0)
+        return same;
+    return (b->nregions < B3D_REGIONS) ? -1 : -2;
+}
+
+static int
+nv4_3d_region_take(nv4_3d_batch_t *b, uint32_t base, uint32_t pitch, uint32_t lo, uint32_t hi)
+{
+    int r = nv4_3d_region_find(b, base, pitch, lo, hi);
+
+    if (r < 0) {
+        r                  = b->nregions++;
+        b->regions[r].base = base;
+        b->regions[r].pitch = pitch;
+        b->regions[r].lo   = lo;
+        b->regions[r].hi   = hi;
+        b->regions[r].wlo  = 0xffffffff;
+        b->regions[r].whi  = 0;
+    } else {
+        if (lo < b->regions[r].lo)
+            b->regions[r].lo = lo;
+        if (hi > b->regions[r].hi)
+            b->regions[r].hi = hi;
+    }
+    return r;
+}
+
 /* Put a derived state into the batch, flushing first when it cannot
    share the batch with what is there: the table is full, or, with
-   worker threads, its rows map to other bytes or its textures read
-   bytes the batch writes. */
+   worker threads or the GPU, its rows would meet another layout's bytes
+   or its textures read bytes the batch writes. */
 static int
-nv4_3d_place_state(nv4_t *nv4, nv4_3d_batch_t *b, const nv4_3d_state_t *s)
+nv4_3d_place_state(nv4_t *nv4, nv4_3d_batch_t *b, nv4_3d_state_t *s)
 {
-    int flush = b->nstates >= B3D_STATES;
+    int      flush = b->nstates >= B3D_STATES;
+    uint32_t clo = 0, chi = 0, zlo = 0, zhi = 0;
 
+    s->rc = -1;
+    s->rz = -1;
     if (b->parallel) {
-        if (b->rt_valid
-            && ((s->col_base != b->rt_col_base) || (s->col_pitch != b->rt_col_pitch) || (s->bpp != b->rt_bpp)
-                || ((s->z_on || b->rt_z_on) && ((s->z_base != b->rt_z_base) || (s->z_pitch != b->rt_z_pitch)))))
+        nv4_3d_reach(s, s->col_base, s->col_pitch, &clo, &chi);
+        nv4_3d_reach(s, s->z_base, s->z_pitch, &zlo, &zhi);
+        if (nv4_3d_region_find(b, s->col_base, s->col_pitch, clo, chi) == -2)
+            flush = 1;
+        if (s->z_on && (nv4_3d_region_find(b, s->z_base, s->z_pitch, zlo, zhi) == -2))
             flush = 1;
         if (nv4_3d_tex_hazard(nv4, b, &s->tex[0]) || nv4_3d_tex_hazard(nv4, b, &s->tex[1]))
             flush = 1;
@@ -249,14 +347,13 @@ nv4_3d_place_state(nv4_t *nv4, nv4_3d_batch_t *b, const nv4_3d_state_t *s)
     if (b->parallel) {
         uint32_t w = (uint32_t) s->cx1 * s->bpp;
 
-        if (!b->rt_valid) {
-            b->rt_valid     = 1;
-            b->rt_col_base  = s->col_base;
-            b->rt_col_pitch = s->col_pitch;
-            b->rt_bpp       = s->bpp;
-            b->rt_z_on      = s->z_on;
-            b->rt_z_base    = s->z_base;
-            b->rt_z_pitch   = s->z_pitch;
+        s->rc = nv4_3d_region_take(b, s->col_base, s->col_pitch, clo, chi);
+        if (s->z_on) {
+            /* depth meeting its own color rows: one thread, below */
+            if (nv4_3d_region_find(b, s->z_base, s->z_pitch, zlo, zhi) == -2)
+                b->serial = 1;
+            else
+                s->rz = nv4_3d_region_take(b, s->z_base, s->z_pitch, zlo, zhi);
         }
         /* rows that share bytes must stay on one thread */
         if (!s->col_pitch || (s->col_pitch < w))
@@ -269,38 +366,41 @@ nv4_3d_place_state(nv4_t *nv4, nv4_3d_batch_t *b, const nv4_3d_state_t *s)
                 b->serial = 1;
         }
     }
+    if (b->parallel) {
+        nv4_3d_tex_range(nv4, &s->tex[0], &b->tex_lo, &b->tex_hi);
+        nv4_3d_tex_range(nv4, &s->tex[1], &b->tex_lo, &b->tex_hi);
+    }
     b->states[b->nstates] = *s;
     return b->nstates++;
 }
 
-/* Record the rows a triangle may write (or, for depth, read). */
+/* Record the rows a triangle may write (or, for depth, read: the GPU
+   lane uploads those too). */
+static void
+nv4_3d_region_touch(nv4_3d_region_t *g, uint32_t lo, uint32_t hi)
+{
+    if (lo < g->wlo)
+        g->wlo = lo;
+    if (hi > g->whi)
+        g->whi = hi;
+}
+
 static void
 nv4_3d_written(nv4_3d_batch_t *b, const nv4_3d_state_t *s, int32_t y0, int32_t y1)
 {
-    uint32_t clo = s->col_base + (uint32_t) y0 * s->col_pitch;
-    uint32_t chi = s->col_base + (uint32_t) (y1 + 1) * s->col_pitch - 1;
-    uint32_t zlo = s->z_base + (uint32_t) y0 * s->z_pitch;
-    uint32_t zhi = s->z_base + (uint32_t) (y1 + 1) * s->z_pitch - 1;
+    uint32_t w = (uint32_t) s->cx1 * s->bpp;
 
-    if (!b->wr_valid) {
-        b->wr_valid = 1;
-        b->wr_c_lo  = clo;
-        b->wr_c_hi  = chi;
-        /* empty until a triangle uses depth */
-        b->wr_z_lo = 0xffffffff;
-        b->wr_z_hi = 0;
-    } else {
-        if (clo < b->wr_c_lo)
-            b->wr_c_lo = clo;
-        if (chi > b->wr_c_hi)
-            b->wr_c_hi = chi;
+    if (s->rc >= 0) {
+        uint32_t lo = s->col_base + (uint32_t) y0 * s->col_pitch;
+        uint32_t n  = (uint32_t) (y1 + 1 - y0) * s->col_pitch;
+
+        nv4_3d_region_touch(&b->regions[s->rc], lo, lo + ((n > w) ? n : w) - 1);
     }
-    /* depth read only counts too: the GPU lane uploads this range */
-    if (s->z_on) {
-        if (zlo < b->wr_z_lo)
-            b->wr_z_lo = zlo;
-        if (zhi > b->wr_z_hi)
-            b->wr_z_hi = zhi;
+    if (s->rz >= 0) {
+        uint32_t lo = s->z_base + (uint32_t) y0 * s->z_pitch;
+        uint32_t n  = (uint32_t) (y1 + 1 - y0) * s->z_pitch;
+
+        nv4_3d_region_touch(&b->regions[s->rz], lo, lo + ((n > w) ? n : w) - 1);
     }
 }
 
@@ -427,9 +527,11 @@ nv4_swizzle(uint32_t u, uint32_t v, int wl, int hl)
 }
 
 typedef struct {
-    uint32_t page;   /* DMA offset of the cached page, ~0: none */
-    uint32_t addr;   /* its address */
-    int      target; /* 0 VRAM, else bus */
+    uint32_t       page;   /* DMA offset of the cached page, ~0: none */
+    uint32_t       addr;   /* its address */
+    int            target; /* 0 VRAM, else bus */
+    const uint8_t *host;   /* a bus page in system memory, NULL: read it
+                              through the bus */
 } nv4_3d_tcache_t;
 
 static uint32_t
@@ -438,11 +540,32 @@ nv4_3d_tex_read(nv4_t *nv4, const nv4_3d_tex_t *t, nv4_3d_tcache_t *tc, uint32_t
     uint32_t a;
 
     if ((off & ~0xfffu) != tc->page) {
+        uint32_t ra;
+
         if (nv4_dma_translate(nv4, t->dma, off & ~0xfffu, 0, &tc->addr, &tc->target) != NV4_DMA_OK)
             return 0;
         tc->page = off & ~0xfffu;
+        tc->host = NULL;
+        if (tc->target) {
+            /* system memory, through the AGP aperture if it points
+               there: read it in place */
+            ra = tc->addr & ~0xfffu;
+            if (!agpgart_resolve(ra, &ra))
+                ra = tc->addr & ~0xfffu;
+            if ((ra >= 0x100000) && ((uint64_t) ra + 0x1000 <= (uint64_t) mem_size * 1024))
+                tc->host = ram + ra;
+        }
     }
     a = tc->addr + (off & 0xfff);
+    if (tc->host && (((tc->addr & 0xfff) + (off & 0xfff) + bytes) <= 0x1000)) {
+        const uint8_t *h = tc->host + (tc->addr & 0xfff) + (off & 0xfff);
+
+        if (bytes == 1)
+            return h[0];
+        if (bytes == 2)
+            return h[0] | (h[1] << 8);
+        return h[0] | (h[1] << 8) | (h[2] << 16) | ((uint32_t) h[3] << 24);
+    }
     if (!tc->target) {
         uint8_t *v = nv4->svga.vram;
         uint32_t m = nv4->vram_mask;
@@ -931,6 +1054,14 @@ nv4_3d_span(nv4_t *nv4, const nv4_3d_batch_t *b, const nv4_3d_span_t *sp)
 
         if (ca + s->bpp - 1 > s->col_lim)
             continue;
+        if (s->fill) {
+            uint32_t fv;
+
+            memcpy(&fv, &t->c[0], 4);
+            for (int i = 0; i < s->bpp; i++)
+                vram[(ca + i) & vm] = fv >> (i * 8);
+            continue;
+        }
         for (int i = 0; i < AT_COUNT; i++)
             at[i] = t->c[i] + t->dx[i] * px + t->dy[i] * py;
         if (at[AT_Q] <= 0.0f)
@@ -1255,6 +1386,8 @@ nv4_3d_flush(nv4_t *nv4)
     nv4_3d_batch_t *b = nv4->batch3d;
     uint64_t        t0;
 
+    /* 2D pixels waiting to join come first */
+    nv4_pgraph_2d_flush_run(nv4);
     if (!b || (!b->nspans && !b->ntris && !b->nstates))
         return;
     t0 = nv4_3d_now_us();
@@ -1275,9 +1408,10 @@ nv4_3d_flush(nv4_t *nv4)
     b->nspans   = 0;
     b->ntris    = 0;
     b->nstates  = 0;
-    b->rt_valid = 0;
-    b->wr_valid = 0;
+    b->nregions = 0;
     b->serial   = 0;
+    b->tex_lo   = 0xffffffff;
+    b->tex_hi   = 0;
     for (int c = 0; c < NV4_CHANNELS; c++)
         nv4->d3d[c].state = -1;
 }
@@ -1512,6 +1646,124 @@ nv4_3d_triangle(nv4_t *nv4, int chid, int cls, int i0, int i1, int i2)
     if (b->parallel && (ymin <= ymax))
         nv4_3d_written(b, s, ymin, ymax);
     b->ntris++;
+    b->had3d  = 1;
+    b->last3d = nv4->vblank_count;
+}
+
+/* Would a 2D draw into the rows lo..hi of layout base/pitch join the
+   batch: does the batch already draw into that layout, with room? */
+int
+nv4_3d_joins(nv4_t *nv4, uint32_t base, uint32_t pitch, uint32_t lo, uint32_t hi)
+{
+    nv4_3d_batch_t *b = nv4->batch3d;
+
+    return b && (b->nspans > 0) && (!b->parallel || (nv4_3d_region_find(b, base, pitch, lo, hi) >= 0));
+}
+
+/* The CPU is about to read or write VRAM bytes lo..hi (a 2D draw):
+   draw the batch first if it reaches them (its rows, or textures it
+   samples), and wait for the GPU's batch in flight if its rows do.
+   Other bytes need neither. */
+void
+nv4_3d_touch(nv4_t *nv4, uint32_t lo, uint32_t hi, int cause)
+{
+    nv4_3d_batch_t *b = nv4->batch3d;
+    int             hit = 0;
+
+    if (!b)
+        return;
+    if (b->nspans || b->ntris) {
+        if (!b->parallel || b->serial)
+            hit = 1; /* rows are not (all) tracked */
+        for (int r = 0; !hit && (r < b->nregions); r++)
+            hit = nv4_3d_meets(lo, hi, b->regions[r].lo, b->regions[r].hi);
+        if (!hit && (b->tex_lo <= b->tex_hi))
+            hit = nv4_3d_meets(lo, hi, b->tex_lo, b->tex_hi);
+        if (hit)
+            nv4_3d_flush(nv4);
+    }
+    if (b->gpu && nv4_gpu_pending_overlaps(b->gpu, lo, hi))
+        nv4_3d_gpu_wait(nv4, cause);
+}
+
+/* A 2D rectangle fill with a plain store of <val> (the 2D engine's
+   clipping done, rows y0..y1-1, pixels x0..x1-1 of the layout
+   base/pitch, bytes past <lim> left alone), queued with the 3D work
+   instead of drawn now: when it draws into rows the batch already
+   draws into (whatever its size: the HUD), or when it is large while
+   3D is being drawn (a frame's color and depth clears). Returns 0 when
+   the caller must draw it. */
+int
+nv4_3d_fill(nv4_t *nv4, uint32_t base, uint32_t pitch, uint32_t lim, int bpp, int32_t x0, int32_t y0, int32_t x1,
+            int32_t y1, uint32_t val)
+{
+    nv4_3d_batch_t *b = nv4->batch3d;
+    nv4_3d_state_t  st;
+    nv4_3d_tri_t   *t;
+    uint32_t        lo, hi;
+    int             si = -1, joins, big;
+
+    if (!b || (x0 >= x1) || (y0 >= y1) || (x0 < 0) || (y0 < 0) || (x1 > 4096) || (y1 > 4096)
+        || ((bpp != 1) && (bpp != 2) && (bpp != 4)))
+        return 0;
+
+    memset(&st, 0, sizeof(st));
+    st.fill      = 1;
+    st.col_base  = base;
+    st.col_pitch = pitch;
+    st.col_lim   = lim;
+    st.bpp       = bpp;
+    st.cx0       = x0;
+    st.cy0       = y0;
+    st.cx1       = x1;
+    st.cy1       = y1;
+    nv4_3d_reach(&st, base, pitch, &lo, &hi);
+
+    big   = b->had3d && ((nv4->vblank_count - b->last3d) <= 2) && ((int64_t) (x1 - x0) * (y1 - y0) >= 65536);
+    joins = (b->nspans > 0) && (!b->parallel || (nv4_3d_region_find(b, base, pitch, lo, hi) >= 0));
+    if (!big && !joins)
+        return 0;
+    if ((b->ntris >= B3D_TRIS) || (b->nspans + (y1 - y0) > B3D_SPANS))
+        nv4_3d_flush(nv4);
+
+    /* one state serves every fill into the same surface */
+    for (int i = 0; i < b->nstates; i++) {
+        const nv4_3d_state_t *o = &b->states[i];
+
+        if (o->fill && (o->col_base == base) && (o->col_pitch == pitch) && (o->col_lim == lim) && (o->bpp == bpp)) {
+            si = i;
+            break;
+        }
+    }
+    if ((si >= 0) && b->parallel) {
+        if (nv4_3d_region_find(b, base, pitch, lo, hi) < 0)
+            si = -1; /* it would grow into another layout: a new state flushes */
+        else
+            nv4_3d_region_take(b, base, pitch, lo, hi);
+    }
+    if (si < 0)
+        si = nv4_3d_place_state(nv4, b, &st);
+
+    t = &b->tris[b->ntris];
+    memset(t, 0, sizeof(*t));
+    t->state = si;
+    memcpy(&t->c[0], &val, 4);
+    for (int32_t y = y0; y < y1; y++) {
+        b->spans[b->nspans].y   = (int16_t) y;
+        b->spans[b->nspans].x0  = (int16_t) x0;
+        b->spans[b->nspans].x1  = (int16_t) x1;
+        b->spans[b->nspans].tri = (uint16_t) b->ntris;
+        b->nspans++;
+    }
+    if (b->parallel) {
+        /* the rows of this rectangle, whatever the state's first one was */
+        nv4_3d_state_t tmp = b->states[si];
+
+        tmp.cx1 = x1;
+        nv4_3d_written(b, &tmp, y0, y1 - 1);
+    }
+    b->ntris++;
+    return 1;
 }
 
 /* A DrawPrimitive word: two triangles by vertex index. */
@@ -1698,9 +1950,10 @@ nv4_3d_reset(nv4_t *nv4)
         nv4->batch3d->nspans   = 0;
         nv4->batch3d->ntris    = 0;
         nv4->batch3d->nstates  = 0;
-        nv4->batch3d->rt_valid = 0;
-        nv4->batch3d->wr_valid = 0;
+        nv4->batch3d->nregions = 0;
         nv4->batch3d->serial   = 0;
+        nv4->batch3d->tex_lo   = 0xffffffff;
+        nv4->batch3d->tex_hi   = 0;
     }
     memset(nv4->d3d, 0, sizeof(nv4->d3d));
     for (int c = 0; c < NV4_CHANNELS; c++)

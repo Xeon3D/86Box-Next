@@ -60,7 +60,7 @@ struct state_t {
     int   atest, afunc, aref, zen, zfunc, zwrite, zfloat, dither;
     int   wr_a, wr_r, wr_g, wr_b;
     int   sten, sfunc, sref, smask_r, smask_w, sop_fail, sop_zfail, sop_zpass, swrite;
-    uint  pad;
+    int   fill;     /* 2D rectangle fills: store the triangle's c[0] bits */
     tex_t tex[2];
 };
 
@@ -676,6 +676,10 @@ shade(int x, int y)
 
     if (ca + uint(bpp) - 1u > S.col_lim)
         return;
+    if (S.fill != 0) {
+        vwrite(ca, bpp, floatBitsToUint(T.c[0]));
+        return;
+    }
     for (int i = 0; i < 14; i++)
         at[i] = T.c[i] + T.dx[i] * px + T.dy[i] * py;
     if (at[AT_Q] <= 0.0)

@@ -46,6 +46,7 @@
 #include <86box/device.h>
 #include <86box/dma.h>
 #include <86box/mem.h>
+#include <86box/agpgart.h>
 #include <86box/pci.h>
 #include <86box/rom.h>
 #include <86box/timer.h>
@@ -127,7 +128,7 @@ typedef struct {
     int32_t       atest, afunc, aref, zen, zfunc, zwrite, zfloat, dither;
     int32_t       wr_a, wr_r, wr_g, wr_b;
     int32_t       sten, sfunc, sref, smask_r, smask_w, sop_fail, sop_zfail, sop_zpass, swrite;
-    uint32_t      pad;
+    int32_t       fill;
     nv4_gpu_tex_t tex[2];
 } nv4_gpu_state_t;
 
@@ -219,10 +220,14 @@ enum {
     B_COUNT
 };
 
-/* Textures gathered for the batch being shaded */
+/* A texture in the arena: where its bytes came from, a hash of them,
+   and where they are */
 typedef struct {
     uint32_t dma, offset, size, base;
+    uint64_t hash;
 } gpu_texent_t;
+
+#    define GPU_TEX_CACHE 1024
 
 typedef struct nv4_gpu_s {
     void                     *lib;
@@ -247,9 +252,17 @@ typedef struct nv4_gpu_s {
     gpu_buf_t             b[B_COUNT];
 
     uint32_t      vram_size;
-    gpu_texent_t  texes[B3D_STATES * 2];
-    int           ntex;
-    uint32_t      tex_used;
+    /* The texture arena keeps textures across batches: each batch hashes
+       its textures' bytes where they are, and copies only the ones that
+       are new or changed. */
+    gpu_texent_t  cache[GPU_TEX_CACHE];
+    int           ncache;
+    uint32_t      tex_used;           /* arena bytes taken */
+    int           flush_tex[B3D_STATES * 2]; /* cache entries this batch checked */
+    int           nflush_tex;
+    VkBufferCopy  tcopy[B3D_STATES * 2];     /* arena regions to upload */
+    int           ntcopy;
+    uint64_t      hash_bytes;
     uint32_t      row_count[4096];
     uint32_t      row_first[4096];
     uint64_t      batches, fallbacks;
@@ -262,9 +275,8 @@ typedef struct nv4_gpu_s {
 
     /* the batch in flight */
     int           pending;
-    VkBufferCopy  pdown[2]; /* its rows, to copy back */
+    VkBufferCopy  pdown[B3D_REGIONS]; /* its rows, to copy back */
     int           pndown;
-    uint32_t      pc_lo, pc_hi; /* its color rows */
     int           p_spans, p_chunks;
     uint32_t      p_rows;
     uint64_t      p_px;
@@ -631,13 +643,14 @@ nv4_gpu_counts(struct nv4_gpu_s *g, uint64_t *batches, uint64_t *fallbacks)
 {
     *batches   = g->batches;
     *fallbacks = g->fallbacks;
-    pclog("nv4 3D: GPU gather %llu us (%llu KB), row copies %llu us, waiting %llu us\n",
-          (unsigned long long) g->us_gather, (unsigned long long) (g->tex_bytes >> 10),
+    pclog("nv4 3D: GPU textures %llu us (%llu KB hashed, %llu KB copied), row copies %llu us, waiting %llu us\n",
+          (unsigned long long) g->us_gather, (unsigned long long) (g->hash_bytes >> 10),
+          (unsigned long long) (g->tex_bytes >> 10),
           (unsigned long long) g->us_copy, (unsigned long long) g->us_wait);
     pclog("nv4 3D: GPU rows %llu KB in and out; on the GPU: uploads %llu us, kernel %llu us, download %llu us\n",
           (unsigned long long) (g->row_bytes >> 10), (unsigned long long) (g->ts_ns[0] / 1000),
           (unsigned long long) (g->ts_ns[1] / 1000), (unsigned long long) (g->ts_ns[2] / 1000));
-    g->us_gather = g->us_copy = g->us_wait = g->tex_bytes = g->row_bytes = 0;
+    g->us_gather = g->us_copy = g->us_wait = g->tex_bytes = g->row_bytes = g->hash_bytes = 0;
     g->ts_ns[0] = g->ts_ns[1] = g->ts_ns[2] = 0;
 }
 
@@ -653,46 +666,146 @@ nv4_gpu_close(struct nv4_gpu_s *g)
     gpu_destroy(g);
 }
 
-/* Copy one texture's bytes, as the CPU span shader reads them through
-   its DMA object, into the arena. Returns its arena offset, or
-   UINT32_MAX when the arena is full. */
-static uint32_t
-gpu_gather_tex(nv4_gpu_t *g, nv4_t *nv4, const nv4_3d_tex_t *t)
+/* <len> bytes of a texture at DMA offset <off> (within one page) as
+   the CPU span shader reads them: a pointer into VRAM or system memory,
+   or <tmp> filled. */
+static const uint8_t *
+gpu_tex_bytes(nv4_t *nv4, const nv4_3d_tex_t *t, uint32_t off, uint32_t len, uint8_t *tmp)
 {
-    uint8_t *dst;
-    uint32_t base;
+    uint32_t addr;
+    int      target;
 
-    for (int i = 0; i < g->ntex; i++)
-        if ((g->texes[i].dma == t->dma) && (g->texes[i].offset == t->offset) && (g->texes[i].size == t->size))
-            return g->texes[i].base;
-    if (!t->size || (t->size > GPU_TEX_ARENA - g->tex_used))
-        return UINT32_MAX;
-    base = g->tex_used;
-    dst  = (uint8_t *) g->b[B_TSTAGE].map + base;
+    if (nv4_dma_translate(nv4, t->dma, off & ~0xfffu, 0, &addr, &target) != NV4_DMA_OK) {
+        memset(tmp, 0, len);
+        return tmp;
+    }
+    if (!target) {
+        uint32_t va = (addr + (off & 0xfff)) & nv4->vram_mask;
+
+        if (va + len <= nv4->vram_size)
+            return nv4->svga.vram + va;
+        for (uint32_t i = 0; i < len; i++)
+            tmp[i] = nv4->svga.vram[(va + i) & nv4->vram_mask];
+        return tmp;
+    }
+    {
+        uint32_t pa = addr + (off & 0xfff);
+        uint32_t ra;
+
+        /* through the AGP aperture to the page behind it (len stays
+           within one page) */
+        if (((pa & 0xfff) + len) > 0x1000) {
+            dma_bm_read(pa, tmp, len, 1);
+            return tmp;
+        }
+        if (agpgart_resolve(pa, &ra))
+            pa = ra;
+        /* system memory above 1 MB is one flat array */
+        if ((pa >= 0x100000) && ((uint64_t) pa + len <= (uint64_t) mem_size * 1024))
+            return ram + pa;
+        dma_bm_read(pa, tmp, len, 1);
+        return tmp;
+    }
+}
+
+/* A 64-bit hash of a texture's bytes, read where they are. */
+static uint64_t
+gpu_tex_hash(nv4_gpu_t *g, nv4_t *nv4, const nv4_3d_tex_t *t)
+{
+    uint8_t  tmp[0x1000];
+    uint64_t h = 0x9e3779b97f4a7c15ull ^ t->size;
+
     for (uint32_t done = 0; done < t->size;) {
-        uint32_t off   = t->offset + done;
-        uint32_t chunk = 0x1000 - (off & 0xfff);
-        uint32_t addr;
-        int      target;
+        uint32_t       off   = t->offset + done;
+        uint32_t       chunk = 0x1000 - (off & 0xfff);
+        const uint8_t *p;
+        uint32_t       i = 0;
 
         if (chunk > t->size - done)
             chunk = t->size - done;
-        if (nv4_dma_translate(nv4, t->dma, off & ~0xfffu, 0, &addr, &target) != NV4_DMA_OK)
-            memset(dst + done, 0, chunk);
-        else if (!target) {
-            for (uint32_t i = 0; i < chunk; i++)
-                dst[done + i] = nv4->svga.vram[(addr + (off & 0xfff) + i) & nv4->vram_mask];
-        } else
-            dma_bm_read(addr + (off & 0xfff), dst + done, chunk, 1);
+        p = gpu_tex_bytes(nv4, t, off, chunk, tmp);
+        for (; i + 8 <= chunk; i += 8) {
+            uint64_t w;
+
+            memcpy(&w, p + i, 8);
+            h = (h ^ w) * 0x100000001b3ull;
+            h ^= h >> 29;
+        }
+        for (; i < chunk; i++)
+            h = (h ^ p[i]) * 0x100000001b3ull;
         done += chunk;
     }
-    g->tex_used = (base + t->size + 3) & ~3u;
-    g->texes[g->ntex].dma    = t->dma;
-    g->texes[g->ntex].offset = t->offset;
-    g->texes[g->ntex].size   = t->size;
-    g->texes[g->ntex].base   = base;
-    g->ntex++;
-    return base;
+    g->hash_bytes += t->size;
+    return h;
+}
+
+/* Copy a texture's bytes into the arena's staging at <base>, to upload. */
+static void
+gpu_tex_copy(nv4_gpu_t *g, nv4_t *nv4, const nv4_3d_tex_t *t, uint32_t base)
+{
+    uint8_t *dst = (uint8_t *) g->b[B_TSTAGE].map + base;
+
+    for (uint32_t done = 0; done < t->size;) {
+        uint32_t off   = t->offset + done;
+        uint32_t chunk = 0x1000 - (off & 0xfff);
+
+        if (chunk > t->size - done)
+            chunk = t->size - done;
+        {
+            const uint8_t *src = gpu_tex_bytes(nv4, t, off, chunk, dst + done);
+
+            if (src != dst + done)
+                memcpy(dst + done, src, chunk);
+        }
+        done += chunk;
+    }
+    g->tcopy[g->ntcopy].srcOffset = base;
+    g->tcopy[g->ntcopy].dstOffset = base;
+    g->tcopy[g->ntcopy].size      = t->size;
+    g->ntcopy++;
+    g->tex_bytes += t->size;
+}
+
+/* A texture's place in the arena for this batch: from the cache when
+   its bytes have not changed, else copied in. UINT32_MAX when the arena
+   is full. */
+static uint32_t
+gpu_gather_tex(nv4_gpu_t *g, nv4_t *nv4, const nv4_3d_tex_t *t)
+{
+    uint64_t      h;
+    gpu_texent_t *e = NULL;
+
+    for (int i = 0; i < g->nflush_tex; i++) {
+        gpu_texent_t *c = &g->cache[g->flush_tex[i]];
+
+        if ((c->dma == t->dma) && (c->offset == t->offset) && (c->size == t->size))
+            return c->base;
+    }
+    if (!t->size)
+        return UINT32_MAX;
+    h = gpu_tex_hash(g, nv4, t);
+    for (int i = 0; i < g->ncache; i++)
+        if ((g->cache[i].dma == t->dma) && (g->cache[i].offset == t->offset) && (g->cache[i].size == t->size)) {
+            e = &g->cache[i];
+            break;
+        }
+    if (!e) {
+        if ((g->ncache >= GPU_TEX_CACHE) || (t->size > GPU_TEX_ARENA - g->tex_used))
+            return UINT32_MAX;
+        e         = &g->cache[g->ncache++];
+        e->dma    = t->dma;
+        e->offset = t->offset;
+        e->size   = t->size;
+        e->base   = g->tex_used;
+        e->hash   = ~h; /* not there yet */
+        g->tex_used = (e->base + t->size + 3) & ~3u;
+    }
+    if (e->hash != h) {
+        gpu_tex_copy(g, nv4, t, e->base);
+        e->hash = h;
+    }
+    g->flush_tex[g->nflush_tex++] = (int) (e - g->cache);
+    return e->base;
 }
 
 static void
@@ -767,6 +880,7 @@ gpu_pack_state(nv4_gpu_state_t *o, const nv4_3d_state_t *s)
     o->sop_zfail = s->sop_zfail;
     o->sop_zpass = s->sop_zpass;
     o->swrite    = s->swrite;
+    o->fill      = s->fill;
 }
 
 static void
@@ -811,8 +925,9 @@ gpu_complete(nv4_gpu_t *g, nv4_t *nv4)
         memcpy(nv4->svga.vram + g->pdown[i].srcOffset, stage + g->pdown[i].srcOffset, g->pdown[i].size);
         g->row_bytes += g->pdown[i].size;
     }
-    for (uint32_t a = g->pc_lo & ~0xfffu; a <= g->pc_hi; a += 0x1000)
-        nv4->svga.changedvram[a >> 12] = nv4->svga.monitor->mon_changeframecount;
+    for (int i = 0; i < g->pndown; i++)
+        for (uint32_t a = g->pdown[i].srcOffset & ~0xfffu; a < g->pdown[i].srcOffset + g->pdown[i].size; a += 0x1000)
+            nv4->svga.changedvram[a >> 12] = nv4->svga.monitor->mon_changeframecount;
     g->us_copy += gpu_now_us() - t1;
     g->pending = 0;
 }
@@ -841,40 +956,51 @@ nv4_gpu_shade(struct nv4_gpu_s *g, nv4_t *nv4, const nv4_3d_batch_t *b)
     nv4_gpu_span_t  *gsp   = (nv4_gpu_span_t *) g->b[B_SPANS_H].map;
     nv4_gpu_row_t   *gr    = (nv4_gpu_row_t *) g->b[B_ROWS_H].map;
     uint8_t         *stage = (uint8_t *) g->b[B_VSTAGE].map;
-    VkBufferCopy     up[3], down[2];
+    VkBufferCopy     up[B3D_REGIONS], down[B3D_REGIONS];
     int              nup = 0, ndown = 0;
     uint32_t         nrows = 0;
     int              xmax  = 0;
     uint32_t         pc[2];
-    int              zrange;
     uint64_t         t0, t1, t2;
 
     /* the batch in flight first: this one reads its rows and textures,
        and its staging buffers are reused */
     gpu_complete(g, nv4);
-    if (!b->wr_valid || (b->wr_c_hi >= g->vram_size) || (b->wr_c_lo > b->wr_c_hi))
+    if (!b->nregions)
         goto fallback;
-    zrange = b->wr_z_lo <= b->wr_z_hi;
-    if (zrange && (b->wr_z_hi >= g->vram_size))
-        goto fallback;
+    for (int r = 0; r < b->nregions; r++)
+        if ((b->regions[r].wlo <= b->regions[r].whi) && (b->regions[r].whi >= g->vram_size))
+            goto fallback;
 
-    /* draw states and their textures */
-    t0          = gpu_now_us();
-    g->ntex     = 0;
-    g->tex_used = 0;
-    for (int i = 0; i < b->nstates; i++) {
-        const nv4_3d_state_t *s = &b->states[i];
+    /* draw states and their textures; a full arena is emptied once and
+       the batch's textures gathered again */
+    t0 = gpu_now_us();
+    for (int pass = 0;; pass++) {
+        int full = 0;
 
-        gpu_pack_state(&gs[i], s);
-        for (int n = 0; n < 2; n++) {
-            uint32_t base = 0;
+        g->nflush_tex = 0;
+        g->ntcopy     = 0;
+        for (int i = 0; (i < b->nstates) && !full; i++) {
+            const nv4_3d_state_t *s = &b->states[i];
 
-            if (s->tex[n].on && ((base = gpu_gather_tex(g, nv4, &s->tex[n])) == UINT32_MAX))
-                goto fallback;
-            gpu_pack_tex(&gs[i].tex[n], &s->tex[n], base);
+            gpu_pack_state(&gs[i], s);
+            for (int n = 0; n < 2; n++) {
+                uint32_t base = 0;
+
+                if (s->tex[n].on && ((base = gpu_gather_tex(g, nv4, &s->tex[n])) == UINT32_MAX)) {
+                    full = 1;
+                    break;
+                }
+                gpu_pack_tex(&gs[i].tex[n], &s->tex[n], base);
+            }
         }
+        if (!full)
+            break;
+        g->ncache   = 0;
+        g->tex_used = 0;
+        if (pass)
+            goto fallback;
     }
-    g->tex_bytes += g->tex_used;
     t1 = gpu_now_us();
     g->us_gather += t1 - t0;
     memcpy(g->b[B_TRIS_H].map, b->tris, sizeof(nv4_3d_tri_t) * b->ntris);
@@ -911,16 +1037,18 @@ nv4_gpu_shade(struct nv4_gpu_s *g, nv4_t *nv4, const nv4_3d_batch_t *b)
         goto fallback;
 
     /* rows in */
-    up[nup].srcOffset = up[nup].dstOffset = b->wr_c_lo;
-    up[nup].size                          = b->wr_c_hi - b->wr_c_lo + 1;
-    memcpy(stage + b->wr_c_lo, nv4->svga.vram + b->wr_c_lo, up[nup].size);
-    down[ndown++] = up[nup++];
-    if (zrange) {
-        up[nup].srcOffset = up[nup].dstOffset = b->wr_z_lo;
-        up[nup].size                          = b->wr_z_hi - b->wr_z_lo + 1;
-        memcpy(stage + b->wr_z_lo, nv4->svga.vram + b->wr_z_lo, up[nup].size);
+    for (int r = 0; r < b->nregions; r++) {
+        const nv4_3d_region_t *rg = &b->regions[r];
+
+        if (rg->wlo > rg->whi)
+            continue;
+        up[nup].srcOffset = up[nup].dstOffset = rg->wlo;
+        up[nup].size                          = rg->whi - rg->wlo + 1;
+        memcpy(stage + rg->wlo, nv4->svga.vram + rg->wlo, up[nup].size);
         down[ndown++] = up[nup++];
     }
+    if (!nup)
+        goto fallback;
 
     t2 = gpu_now_us();
     g->us_copy += t2 - t1;
@@ -949,11 +1077,8 @@ nv4_gpu_shade(struct nv4_gpu_s *g, nv4_t *nv4, const nv4_3d_batch_t *b)
                 if (rc[i].size)
                     g->vkCmdCopyBuffer(g->cb, g->b[B_STATES_H + i].buf, g->b[B_STATES + i].buf, 1, &rc[i]);
         }
-        if (g->tex_used) {
-            VkBufferCopy tc = { 0, 0, g->tex_used };
-
-            g->vkCmdCopyBuffer(g->cb, g->b[B_TSTAGE].buf, g->b[B_TEX].buf, 1, &tc);
-        }
+        if (g->ntcopy)
+            g->vkCmdCopyBuffer(g->cb, g->b[B_TSTAGE].buf, g->b[B_TEX].buf, g->ntcopy, g->tcopy);
         gpu_barrier(g, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT,
                     VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_HOST_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                     VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
@@ -988,8 +1113,6 @@ nv4_gpu_shade(struct nv4_gpu_s *g, nv4_t *nv4, const nv4_3d_batch_t *b)
     g->pndown  = ndown;
     for (int i = 0; i < ndown; i++)
         g->pdown[i] = down[i];
-    g->pc_lo     = b->wr_c_lo;
-    g->pc_hi     = b->wr_c_hi;
     g->p_spans   = b->nspans;
     g->p_rows    = nrows;
     g->p_chunks  = (xmax + 63) / 64;

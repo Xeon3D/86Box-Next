@@ -150,10 +150,26 @@ From Bash with MSYS2 UCRT64 first on PATH:
     a full batch (16K triangles / 256K spans). Not when the FIFO runs dry:
     the driver moves PUT every few triangles.
   - `nv4_3d_flush` draws (with the GPU: submits); `nv4_3d_sync` also waits
-    for the GPU's pixels and is what LFB, VGA window and 2D methods call.
-    Vertical blank waits only when the batch in flight draws into the
-    displayed bytes. Anything new that reads or writes VRAM from the CPU
-    must call `nv4_3d_sync` first.
+    for the GPU's pixels (LFB, VGA window, the 2D classes that read VRAM:
+    blit, scaled image, M2MF). `nv4_3d_touch(lo, hi)` flushes/waits only if
+    the batch (its regions or textures) or the batch in flight reaches
+    those bytes. Vertical blank waits only when the batch in flight draws
+    into the displayed bytes. Anything new that reads or writes VRAM from
+    the CPU must call `nv4_3d_sync` or `nv4_3d_touch` first.
+  - **Regions:** a batch holds up to 4 row layouts (base, pitch) whose bytes
+    don't meet (e.g. back buffer + Z buffer); rows stay on their own
+    bytes, so threads/GPU stay correct. A state whose layout would meet
+    another layout's bytes flushes first.
+  - **2D joining the batch:** the classes that only write their
+    destination (lines, triangles, rectangles 0x1e/0x5e, GDI 0x4a/0x4b,
+    image from CPU) don't sync at method entry; `nv4_draw_begin` decides.
+    A plain store (SRCCOPY / ROP 0xCC, no chroma, no pattern, linear
+    surface) into a layout the batch already draws, or a large fill (64K+
+    pixels while 3D is active), becomes fill spans in the batch (a fill
+    state per surface; each fill's triangle record carries the packed
+    pixel in the bits of `c[0]`); `nv4_put` gathers such pixels into
+    one-row runs (`nv4->run2d`), queued at the next method or flush.
+    Anything else calls `nv4_3d_touch` before its first pixel.
   - Both of these are hardware methods on the TNT (trapping them loops the
     resman):
     - SetContextSurface (0x18c) of the D3D classes.
@@ -176,6 +192,10 @@ From Bash with MSYS2 UCRT64 first on PATH:
     sets the score).
   - 3DMark on this VM is slower to start (~35 s splash after the card
     change); the scripts now wait 80 s for the desktop and 40 s for 3DMark.
+- **AGP textures:** both the CPU span shader and the GPU gather read system
+  memory in place (`ram`), resolving AGP aperture addresses with
+  `agpgart_resolve()` (added to `src/video/agpgart.c`, shared code). Before
+  that every texel went through the aperture's mapping byte by byte.
 - **Render threads** (option 1-8, default 2):
   - Each worker shades rows y mod n, in submission order, so output is
     bit-exact with one thread.
@@ -196,8 +216,12 @@ From Bash with MSYS2 UCRT64 first on PATH:
       of range).
   - A flush submits and returns:
     1. Wait for the batch still in flight, if any, and copy its rows back.
-    2. Gather the batch's textures through their DMA objects into a 32 MB
-       arena; copy the touched colour/Z rows and the records to the GPU.
+    2. Textures: the 32 MB arena is a cache keyed by (DMA object, offset,
+       size). Each batch hashes its textures' bytes where they are (VRAM,
+       or system memory, through the AGP aperture via `agpgart_resolve`)
+       and copies only new or changed ones. A full arena is emptied and the
+       batch gathered again. Then copy the touched colour/Z rows and the
+       records to the GPU.
     3. Dispatch; copy the rows to a staging buffer.
     The rows reach VRAM at the next flush or sync point.
   - The GPU stays in P5/P8 (~700 MHz) under this bursty load (nvidia-smi), so
@@ -226,14 +250,17 @@ From Bash with MSYS2 UCRT64 first on PATH:
 
 ## Next (in rough order)
 1. **GPU lane speed.**
-   - The remaining waits are the 2D rectangle clear (class 0x5e). A
-     rectangle fill on the GPU (or a wait only when the rectangle overlaps
-     the batch's rows) would let the batch stay in flight.
+   - Waits over a whole 3DMark run: 37 s -> 12 s after regions, fills and
+     2D runs; ~10 s of the rest is a flush waiting for the batch still in
+     flight (one in flight at a time). Two slots (own records, command
+     buffer, fence; rows that a batch in flight owns aren't uploaded from
+     VRAM) would remove most of it.
    - The submit side (~2.4 s per 40 s) is gather + row copies + grouping
      spans by row; it could move to a worker thread.
-   - Cache gathered textures across flushes. Over a whole 3DMark run the
-     GPU lane re-gathered 34 GB of textures (20 s), mostly in the texture
-     speed tests; the frame clears made it wait 26 s.
+   - Over a whole 3DMark run (TNT, GPU lane): submit side 12.8 s
+     (textures 6 s: 34 GB hashed, 127 MB copied), waits 27 s, almost all
+     on the frame clear (class 0x5e). Hashing could be skipped for VRAM
+     pages nothing wrote since (needs write tracking on every VRAM writer).
      Invalidate on LFB writes, M2MF and 2D writes into their VRAM ranges;
      textures in system/AGP memory need a checksum or always-regather.
    - Avoid re-uploading unchanged rows.
@@ -294,6 +321,10 @@ From Bash with MSYS2 UCRT64 first on PATH:
     3DMarks (2620 on the CPU path).
   - TNT2 brought up: strap layout and real-mode window fixed so the ELSA
     BIOS finds 32 MB; work-tnt2 VM.
+  - GPU texture cache (hash, copy only changed textures) and AGP textures
+    read in place: texture step over a full run 49 s -> 6 s.
+  - Batch regions, 2D fills/runs joining the batch, range-based waits
+    (`nv4_3d_touch`): GPU waits over a full run 37 s -> 12 s.
   - Mishap: bench.sh started a VM while the previous one hung at shutdown;
     two instances shared the disk for ~8 min. Win98 came back clean. tnt.sh
     now refuses a second instance.

@@ -227,6 +227,33 @@ nv4_pgraph_state_only(int cls)
     }
 }
 
+/* Classes whose only VRAM access is drawing into the destination
+   surface through nv4_draw_begin: lines, triangles, rectangles, GDI,
+   image from CPU (plain, stretched from the FIFO, indexed). Blits,
+   scaled images from memory and M2MF read VRAM and sync up front. */
+static int
+nv4_pgraph_draws_only(int cls)
+{
+    switch (cls) {
+        case 0x1c:
+        case 0x5c:
+        case 0x1d:
+        case 0x5d:
+        case 0x1e:
+        case 0x5e:
+        case 0x4a:
+        case 0x4b:
+        case 0x21:
+        case 0x61:
+        case 0x36:
+        case 0x76:
+        case 0x60:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 nv4_mthd_result_t
 nv4_pgraph_method(nv4_t *nv4, int chid, int subc, uint32_t mthd, uint32_t data)
 {
@@ -272,10 +299,14 @@ nv4_pgraph_method(nv4_t *nv4, int chid, int subc, uint32_t mthd, uint32_t data)
         nv4->dbg_trace--;
         pclog("nv4 trace: ch %d sub %d class %02x mthd %04x data %08x\n", chid, subc, cls, mthd, data);
     }
+    /* 2D pixels waiting to join the 3D batch go before this method */
+    nv4_pgraph_2d_flush_run(nv4);
     /* a 3D batch is drawn before anything else touches memory; the
        classes that only hold state (surfaces, ROP, beta, chroma,
-       pattern, clip) do not, and draw states are snapshots */
-    if (!nv4_pgraph_state_only(cls))
+       pattern, clip) do not, and draw states are snapshots. The classes
+       that only write their destination decide when they draw
+       (nv4_draw_begin): join the batch or wait for what reaches it. */
+    if (!nv4_pgraph_state_only(cls) && !nv4_pgraph_draws_only(cls))
         nv4_3d_sync(nv4, cls);
     r = nv4_pgraph_common_method(nv4, mthd, data);
     if (r < 0) {

@@ -83,6 +83,11 @@ typedef struct {
     int      cull, dither;
     int      wr_a, wr_r, wr_g, wr_b;
     int      sten, sfunc, sref, smask_r, smask_w, sop_fail, sop_zfail, sop_zpass, swrite;
+    /* 2D rectangle fills queued with the 3D work: col_* is their
+       destination, each fill's triangle record carries its packed pixel
+       in the bits of c[0] */
+    int      fill;
+    int      rc, rz; /* its color and depth regions in the batch, -1: none */
 } nv4_3d_state_t;
 
 typedef struct {
@@ -97,6 +102,16 @@ typedef struct {
 } nv4_3d_span_t;
 
 #define B3D_MAX_WORKERS 8
+#define B3D_REGIONS     4
+
+/* A row layout in the batch: row y at base + y * pitch. A batch can hold
+   several when their bytes do not meet (a back buffer and its depth
+   buffer), since rows are then still each on their own bytes. */
+typedef struct {
+    uint32_t base, pitch;
+    uint32_t lo, hi;   /* the bytes its states can reach */
+    uint32_t wlo, whi; /* the bytes touched so far; wlo > whi: none */
+} nv4_3d_region_t;
 
 typedef struct {
     nv4_t    *nv4;
@@ -112,15 +127,17 @@ typedef struct nv4_3d_batch_s {
     nv4_3d_span_t  spans[B3D_SPANS];
     int            nstates, ntris, nspans;
 
-    /* Row layout every state of the batch shares (threaded only) */
-    int      rt_valid;
-    uint32_t rt_col_base, rt_col_pitch, rt_z_base, rt_z_pitch;
-    int      rt_bpp, rt_z_on;
-    int      serial; /* rows alias: shade on one thread */
-    /* VRAM the batch writes, color and depth kept apart (depth also
-       when only read) */
-    int      wr_valid;
-    uint32_t wr_c_lo, wr_c_hi, wr_z_lo, wr_z_hi;
+    /* The row layouts the batch draws into (threads and GPU only), with
+       the bytes each has touched (depth also when only read) */
+    nv4_3d_region_t regions[B3D_REGIONS];
+    int             nregions;
+    uint32_t        tex_lo, tex_hi; /* VRAM its textures read; lo > hi: none */
+    int             serial; /* rows alias: shade on one thread */
+
+    /* 3D seen lately (vertical blank count of the last triangle): large
+       2D fills then join the batch instead of waiting for it */
+    int      had3d;
+    uint32_t last3d;
 
     int             nthreads;
     int             run;

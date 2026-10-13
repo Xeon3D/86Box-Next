@@ -448,6 +448,10 @@ typedef struct {
     uint32_t   pat_ram[64];
     uint32_t   beta;
     uint32_t   beta4;
+    int        plain; /* every pixel a plain store of the source */
+    int        defer; /* plain stores into rows the 3D batch draws: join it */
+    int        touch; /* wait for the 3D work reaching lo..hi before the first pixel */
+    uint32_t   lo, hi;
 } nv4_draw_t;
 
 static int32_t
@@ -531,7 +535,91 @@ nv4_draw_begin(nv4_t *nv4, nv4_draw_t *d, int oclip, int use_uclip)
     }
     d->beta  = (GR(NV4_PGRAPH_BETA_AND) >> 23) & 0xff;
     d->beta4 = GR(NV4_PGRAPH_BETA_PREMULT);
+
+    /* The bytes it can reach: its clip's rows. Plain stores into rows
+       the 3D batch already draws join it; anything else waits for the
+       3D work only if that reaches these bytes. */
+    {
+        uint32_t lo = d->dst.base + d->dst.off;
+        uint32_t hi = d->dst.base + d->dst.limit;
+
+        if (!d->dst.swz) {
+            uint32_t rhi = lo + (uint32_t) d->cy1 * d->dst.pitch - 1;
+
+            lo += (uint32_t) d->cy0 * d->dst.pitch;
+            if (rhi < hi)
+                hi = rhi;
+        }
+        d->plain = !d->dst.swz && !d->chroma && !d->rop_d && !d->rop_p
+            && (((d->op != 1) && (d->op != 2) && (d->op != 4) && (d->op != 5)) || ((d->op == 1) && (d->rop == 0xcc)));
+        d->defer = d->plain && nv4_3d_joins(nv4, d->dst.base + d->dst.off, d->dst.pitch, lo, hi);
+        d->lo    = lo;
+        d->hi    = hi;
+        /* a plain store may still join as a large fill (nv4_fill): the
+           wait, if any, comes with the first pixel drawn here */
+        d->touch = !d->defer;
+        if (d->touch && !d->plain) {
+            nv4_3d_touch(nv4, lo, hi, GR(NV4_PGRAPH_CTX_SWITCH1) & 0xff);
+            d->touch = 0;
+        }
+    }
     return 1;
+}
+
+/* The pending run of plain-store pixels: into the 3D batch, or drawn
+   here when it cannot join any more. */
+void
+nv4_pgraph_2d_flush_run(nv4_t *nv4)
+{
+    uint32_t base, pitch, lim, v;
+    int      bpp;
+    int32_t  y, x0, x1;
+
+    if (!nv4->run2d.n)
+        return;
+    nv4->run2d.n = 0;
+    base         = nv4->run2d.base;
+    pitch        = nv4->run2d.pitch;
+    lim          = nv4->run2d.lim;
+    bpp          = nv4->run2d.bpp;
+    v            = nv4->run2d.v;
+    y            = nv4->run2d.y;
+    x0           = nv4->run2d.x0;
+    x1           = nv4->run2d.x1;
+    if (nv4_3d_fill(nv4, base, pitch, lim, bpp, x0, y, x1, y + 1, v))
+        return;
+    nv4_3d_touch(nv4, base + (uint32_t) y * pitch + (uint32_t) x0 * bpp, base + (uint32_t) y * pitch + (uint32_t) x1 * bpp - 1,
+                 GR(NV4_PGRAPH_CTX_SWITCH1) & 0xff);
+    for (int32_t x = x0; x < x1; x++) {
+        uint32_t a = base + (uint32_t) y * pitch + (uint32_t) x * bpp;
+
+        if (a + bpp - 1 <= lim)
+            nv4_vram_wr(nv4, a, bpp, v);
+    }
+}
+
+/* A plain-store pixel joining the run, or starting the next one. */
+static void
+nv4_run_put(nv4_draw_t *d, int32_t x, int32_t y, uint32_t s)
+{
+    nv4_t   *nv4  = d->nv4;
+    uint32_t base = d->dst.base + d->dst.off;
+
+    if (nv4->run2d.n && (nv4->run2d.y == y) && (nv4->run2d.x1 == x) && (nv4->run2d.v == s) && (nv4->run2d.base == base)
+        && (nv4->run2d.pitch == d->dst.pitch) && (nv4->run2d.bpp == d->dst.bpp)) {
+        nv4->run2d.x1++;
+        return;
+    }
+    nv4_pgraph_2d_flush_run(nv4);
+    nv4->run2d.n     = 1;
+    nv4->run2d.base  = base;
+    nv4->run2d.pitch = d->dst.pitch;
+    nv4->run2d.lim   = d->dst.base + d->dst.limit;
+    nv4->run2d.bpp   = d->dst.bpp;
+    nv4->run2d.v     = s;
+    nv4->run2d.y     = y;
+    nv4->run2d.x0    = x;
+    nv4->run2d.x1    = x + 1;
 }
 
 static uint32_t
@@ -570,6 +658,14 @@ nv4_put(nv4_draw_t *d, int32_t x, int32_t y, nv4_px_t sp, uint32_t s)
         return;
     if (d->chroma && ((s & d->cmask) == d->chroma_val))
         return;
+    if (d->defer) {
+        nv4_run_put(d, x, y, s);
+        return;
+    }
+    if (d->touch) {
+        nv4_3d_touch(nv4, d->lo, d->hi, GR(NV4_PGRAPH_CTX_SWITCH1) & 0xff);
+        d->touch = 0;
+    }
     if (d->dst.swz)
         rel = d->dst.off + nv4_swz_offset(x, y, d->dst.wl, d->dst.hl) * d->dst.bpp;
     else
@@ -629,7 +725,8 @@ nv4_put_color(nv4_draw_t *d, int32_t x, int32_t y, nv4_px_t sp)
 static void
 nv4_fill(nv4_draw_t *d, int32_t x0, int32_t y0, int32_t x1, int32_t y1, nv4_px_t sp)
 {
-    uint32_t s = nv4_pack(sp, d->dst.fmt);
+    nv4_t   *nv4 = d->nv4;
+    uint32_t s   = nv4_pack(sp, d->dst.fmt);
 
     if (x0 < d->cx0)
         x0 = d->cx0;
@@ -639,6 +736,14 @@ nv4_fill(nv4_draw_t *d, int32_t x0, int32_t y0, int32_t x1, int32_t y1, nv4_px_t
         x1 = d->cx1;
     if (y1 > d->cy1)
         y1 = d->cy1;
+    /* a plain store (SRCCOPY, no chroma key) into a linear surface can
+       join the 3D batch; anything else is drawn here, after it */
+    if (!d->dst.swz && !d->chroma && (((d->op != 1) && (d->op != 2) && (d->op != 4) && (d->op != 5)) || ((d->op == 1) && (d->rop == 0xcc)))
+        && nv4_3d_fill(nv4, d->dst.base + d->dst.off, d->dst.pitch, d->dst.base + d->dst.limit, d->dst.bpp, x0, y0, x1, y1,
+                       s))
+        return;
+    /* (nv4_draw_begin waited for the 3D work if it reaches these bytes,
+       or the pixels join the batch as runs) */
     for (int32_t y = y0; y < y1; y++)
         for (int32_t x = x0; x < x1; x++)
             nv4_put(d, x, y, sp, s);
