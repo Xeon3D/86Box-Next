@@ -24,7 +24,16 @@ clipboard on and off.
     86BOXGT /uninstall   stop it and remove it
     86BOXGT /quiet       no messages (with the above too)
 
-No driver is installed: the agent talks to the emulator through two I/O
+Windows 3.1 and Windows for Workgroups 3.11
+------------------------------------------
+Run GTWIN.EXE from this disk (File > Run in Program Manager) and answer
+Yes to install it: it copies itself into the Windows directory and adds
+itself to the load= line of WIN.INI. It runs as an icon; its window menu
+turns mouse integration and the shared clipboard on and off.
+
+    GTWIN /install, /uninstall, /quiet   as above
+
+No driver is installed: the agents talk to the emulator through two I/O
 ports that 86Box-Next opens to programs while the tools are enabled.
 
 Notes
@@ -34,5 +43,8 @@ Notes
   through that mouse.
 - A program that confines the pointer (many games) gets the mouse to
   itself: the emulator then captures the mouse on a click, as usual.
-- Clipboard: text only, up to 512K characters. Windows 9x/ME keeps text
-  in its ANSI code page, so characters outside it arrive as "?".
+- Clipboard: text only, up to 512K characters (16000 under Windows 3.x).
+  Windows 3.x and 9x/ME keep text in an ANSI code page (Windows 3.x:
+  Windows-1252), so characters outside it arrive as "?".
+- Windows 3.x checks the pointer every 55 ms while it rests and keeps
+  checking as fast as it can while it moves.

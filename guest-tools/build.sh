@@ -2,7 +2,7 @@
 # Build 86Box Guest Tools and pack them as a floppy image and a CD image.
 #
 # Needs (Debian/Ubuntu, e.g. WSL): gcc-mingw-w64-i686, binutils-mingw-w64-i686,
-# mtools, xorriso, python3-pil.
+# mtools, xorriso, python3-pil, and Open Watcom (WATCOM, default ~/ow).
 #
 #   guest-tools/build.sh            -> guest-tools/out/
 #
@@ -35,18 +35,33 @@ cp "$here/windows/gtagent.rc" "$here/windows/gtagent.h" "$obj/"
     "$here/windows/gtagent.c" "$obj/gtagent_res.o" \
     -lkernel32 -luser32 -ladvapi32 -lshell32 -lwinmm -lgcc
 
+# ---- Windows 3.x agent (Open Watcom; WATCOM defaults to ~/ow) ----
+WATCOM=${WATCOM:-$HOME/ow}
+export WATCOM
+PATH="$WATCOM/binl64:$WATCOM/binl:$PATH"
+INCLUDE="$WATCOM/h:$WATCOM/h/win"
+export PATH INCLUDE
+python3 "$here/windows/mkicon.py" "$icon" "$obj/gtwin.ico" --win16
+cp "$here/win16/gtwin.rc" "$obj/"
+wcc -q -bt=windows -zW -ms -2 -os -s -wx -we -i="$proto" -fo="$obj/gtwin.obj" "$here/win16/gtwin.c"
+(cd "$obj" && wrc -q -r -bt=windows -fo=gtwin.res gtwin.rc)
+wlink option quiet system windows name "$out/GTWIN.EXE" file "$obj/gtwin.obj" \
+    option resource="$obj/gtwin.res" option stack=8k option heapsize=4k
+
 # ---- Disk images ----
 readme="$obj/README.TXT"
 sed 's/$/\r/' "$here/README.TXT" > "$readme"
+files="$out/86BOXGT.EXE $out/GTWIN.EXE $readme"
 
 rm -f "$out/86box-guest-tools.img"
 mformat -C -f 1440 -v GUESTTOOLS -i "$out/86box-guest-tools.img" ::
-mcopy -i "$out/86box-guest-tools.img" "$out/86BOXGT.EXE" "$readme" ::
+mcopy -i "$out/86box-guest-tools.img" $files ::
 
 rm -f "$out/86box-guest-tools.iso"
+rm -rf "$obj/iso"
 mkdir -p "$obj/iso"
-cp "$out/86BOXGT.EXE" "$readme" "$obj/iso/"
+cp $files "$obj/iso/"
 xorriso -as mkisofs -quiet -iso-level 1 -J -V GUESTTOOLS \
     -o "$out/86box-guest-tools.iso" "$obj/iso"
 
-ls -l "$out/86BOXGT.EXE" "$out/86box-guest-tools.img" "$out/86box-guest-tools.iso"
+ls -l "$out/86BOXGT.EXE" "$out/GTWIN.EXE" "$out/86box-guest-tools.img" "$out/86box-guest-tools.iso"

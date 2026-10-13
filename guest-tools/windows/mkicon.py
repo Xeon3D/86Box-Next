@@ -3,7 +3,9 @@
 32 bits per pixel), which Windows 95 and NT 4.0 can read -- the emulator's
 own .ico files hold PNG images only.
 
-    mkicon.py <86Box .ico with PNG images> <out .ico>
+    mkicon.py <86Box .ico with PNG images> <out .ico> [--win16]
+
+--win16: one 32x32 16-colour image, all Windows 3.x reads.
 """
 import io
 import struct
@@ -94,7 +96,10 @@ def bmp_image(img, bpp):
 def main():
     src = source_images(sys.argv[1])
     entries = []
-    for size, bpp in ((32, 4), (16, 4), (32, 8), (16, 8), (48, 32), (32, 32), (16, 32)):
+    formats = ((32, 4), (16, 4), (32, 8), (16, 8), (48, 32), (32, 32), (16, 32))
+    if '--win16' in sys.argv[3:]:
+        formats = ((32, 4),)
+    for size, bpp in formats:
         img = src[size] if size in src else src[max(src)].resize((size, size), Image.LANCZOS)
         entries.append((size, bpp, bmp_image(img, bpp)))
     out = bytearray(struct.pack('<HHH', 0, 1, len(entries)))

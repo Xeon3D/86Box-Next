@@ -301,9 +301,18 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   Windows 95 / NT 4.0 and later, no C runtime (KERNEL32/USER32/ADVAPI32/SHELL32/WINMM only,
   subsystem 4.0), tray icon, `/install` (copies itself to the Windows directory + Run key) /
   `/uninstall` / `/quiet`; stops following when a program confines the pointer (ClipCursor).
-  `mkicon.py` makes its BMP-format icon (Windows 95 reads no PNG icons). Tested in Windows 95 and
-  NT 4.0 (pointer, both clipboard directions, autostart). debug_cmd `gt pointer x y` / `gt clip
-  text` (`|` = new line; switches to a stand-in host clipboard and logs the guest's) / `gt state`.
+  `mkicon.py` makes its BMP-format icon (Windows 95 reads no PNG icons; `--win16`: one 32x32
+  16-colour image). `win16/gtwin.c`: GTWIN.EXE for Windows 3.1 / WfW 3.11 (Open Watcom, WATCOM
+  defaults to WSL's ~/ow), 16-bit port I/O, an icon window with the toggles in its window menu,
+  Windows-1252 clipboard text (16000 chars), `/install` copies it to the Windows directory and adds
+  it to WIN.INI `load=`; polls on a 55 ms timer and from the message loop (PeekMessage) for 1 s
+  after a move. Tested in Windows 95, 98 SE, NT 4.0, 2000 and WfW 3.11 (pointer, clicks, both
+  clipboard directions, autostart). A DOS agent was tried and shelved at the owner's request
+  (source kept outside the repo, `F:\Claude\86Box-Next\guest-tools-dos-wip`; notes: INT 33h
+  function 04h raises no motion event, so event-driven programs like EDIT need a real motion
+  packet; a hook must `iret`, not `retf 2`, or the caller keeps interrupts off). debug_cmd
+  `gt pointer x y` / `gt buttons mask` / `gt motion dx dy` / `gt clip text` (`|` = new line;
+  switches to a stand-in host clipboard and logs the guest's) / `gt state`.
 - Upstream's CI workflows and Dependabot are disabled/removed in this repo; only
   `sync-upstream.yml` runs.
 - Build number in the title bar / About box: `.build-number` (git-ignored, repo root)
