@@ -30,13 +30,12 @@ log at the bottom). Last updated: 2026-10-14.
   CR1F/CR2C per call). Not the GPU lane (same with NV4_GPU=0). A host
   sample (tools/nv4/sampler.py: suspends threads, symbolizes RIP with
   nm) shows 76% of the emulation thread in codegen_block_init: the
-  dynarec keeps recompiling. The owner sees no slowdown on another board
-  at 266 MHz. Suspects: the VIA Apollo Pro 133A's shadow RAM state for
-  C0000-C9FFF during POST (the ELSA BIOS is 40 KB and writes into its own
-  segment: c000:101e/1022 via DS = C000 -- self-modifying code when the
-  shadow is writable). Next: `cpu` (now with SS/CR0) and `map c1000` /
-  `map c3000` during the slow phase; compare an Intel 440BX board with the
-  same card and CPU.
+  dynarec keeps recompiling. Same board and card at 266 MHz
+  (work-post: a POST-only copy, no disk, BIOS defaults or work-q3's CMOS)
+  stays at 100% through the same screen, and the owner sees no slowdown
+  on other boards at 266: it comes with the Celeron 466. **The owner caps
+  test CPUs at a Celeron 266** (their PC can't run faster ones), so this
+  is parked: not an NV4 bug, and not hit under the cap.
 - Debug aids (4c499c8e7): `speedlog 1|0` (speed + CS:EIP each second),
   `dev trace N` counts every line (it ran unbounded on a NOP-only channel
   and wrote a 9 GB log), user-area writes show the guest address.
@@ -507,4 +506,5 @@ them with `dev 3d` before optimising.
   - Quake III works on the TNT2 (OpenGL ICD): 2D pitch clip removed
     (5b120b5de); debug aids speedlog / bounded trace (4c499c8e7).
   - POST slowdown on work-q3 reproduced and profiled (dynarec
-    recompiling in the ELSA BIOS's text output); cause still open.
+    recompiling in the ELSA BIOS's text output); only at 466 MHz, gone
+    at 266 on the same board. Owner: no test CPU above a Celeron 266.
