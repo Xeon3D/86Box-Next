@@ -18,7 +18,7 @@ bash "$T" cmd "key 1c,9c"; sleep 4; bash "$T" cmd "key 1c,9c"
 sleep 40
 bash "$T" cmd "dev 3d"; sleep 40; bash "$T" cmd "dev 3d"; sleep 1
 bash "$T" shot "bench_$1_$2"
-grep "nv4 3D:" "$W/86box.log" | tail -2
+grep "nv4 3D:" "$W/86box.log" | tail -8
 # Esc aborts the run and Esc closes the "aborted" box (Enter there can
 # land on the Result Browser, whose save prompt blocks the shutdown)
 bash "$T" cmd "key 01,81"; sleep 5; bash "$T" cmd "key 01,81"; sleep 1

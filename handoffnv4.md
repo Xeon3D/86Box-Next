@@ -102,7 +102,8 @@ From Bash with MSYS2 UCRT64 first on PATH:
   A stray Enter can open the Result Browser, whose "save?" prompt then blocks
   Windows' shutdown ("not responding" box): `key 12,92` (End Task).
 - **3DMark's score** (2620 at 800x600x16) is in guest time, so it does not move
-  with host speed. Compare µs per span from `dev 3d` instead.
+  with host speed. Compare `dev 3d`'s emulation speed (guest CPU time over host
+  time) and µs per span instead.
 - **Environment switches:**
   - `NV4_GPU=0/1` overrides the "Draw 3D on the host GPU" option.
   - `NV4_3D_VERIFY=1` shades every parallel batch twice and logs any byte that
@@ -187,7 +188,9 @@ From Bash with MSYS2 UCRT64 first on PATH:
   | 8 threads | 0.54 |
   | GPU (async) | 0.23 |
 
-  The GPU figure is submit time plus waits. Before this work, 1 thread spent
+  Emulation speed in the same window ("dev 3d" prints guest time over host
+  time): GPU 96%, 8 threads 68%, 1 thread ~15%. The GPU figure above is
+  submit time plus waits. Before this work, 1 thread spent
   34 s of the 40 s on 3D.
 - **GPU waits:** `dev 3d` lists them by cause. State-only classes (surfaces,
   ROP, beta, chroma, pattern, clip) neither flush nor wait

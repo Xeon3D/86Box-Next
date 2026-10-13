@@ -29,7 +29,7 @@ shot)
     mkdir -p "$SHOTS"
     bash "$0" cmd "shot $WW\\$2.bmp"
     sleep 0.5
-    py -c "from PIL import Image; Image.open(r'$WW\\$2.bmp').save(r'$(cygpath -w "$SHOTS")\\$2.png')" 2>/dev/null || echo "no PIL; bmp at $W/$2.bmp" ;;
+    py -c "from PIL import Image; Image.open(r'$WW\\$2.bmp').save(r'$(cygpath -w "$SHOTS")\\$2.png')" 2>/dev/null && rm -f "$W/$2.bmp" || echo "no PIL; bmp at $W/$2.bmp" ;;
 running)
     powershell -NoProfile -Command "@(Get-CimInstance Win32_Process -Filter \"Name='86Box-Next.exe'\" | Where-Object { \$_.CommandLine -like '*work-tnt*' }).Count" ;;
 stop)

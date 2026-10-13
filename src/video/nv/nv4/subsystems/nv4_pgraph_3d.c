@@ -1215,10 +1215,21 @@ nv4_3d_now_us(void)
 void
 nv4_3d_stats(nv4_t *nv4)
 {
-    nv4_3d_batch_t *b = nv4->batch3d;
+    static uint64_t t_last, tsc_last;
+    nv4_3d_batch_t *b   = nv4->batch3d;
+    uint64_t        now = nv4_3d_now_us();
 
     if (!b)
         return;
+    /* emulation speed: guest time (CPU cycles) over host time; and the
+       guest's frames per host second */
+    if (t_last && (now > t_last))
+        pclog("nv4 3D: speed %.0f%%, %u vertical blanks in %llu ms (%.1f per second)\n",
+              100.0 * ((double) (tsc - tsc_last) / cpuclock) / ((double) (now - t_last) / 1e6), nv4->dbg_vblanks,
+              (unsigned long long) ((now - t_last) / 1000), nv4->dbg_vblanks * 1e6 / (double) (now - t_last));
+    t_last           = now;
+    tsc_last         = tsc;
+    nv4->dbg_vblanks = 0;
     pclog("nv4 3D: %d threads%s, %llu flushes, %llu spans, %llu us shading\n", b->nthreads, b->gpu ? " + GPU" : "",
           (unsigned long long) b->st_flushes, (unsigned long long) b->st_spans, (unsigned long long) b->st_us);
     if (b->gpu) {

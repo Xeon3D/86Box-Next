@@ -535,6 +535,7 @@ typedef struct nv4_s {
     int           gpu_raster;         /* 3D span shading on the host GPU */
     uint32_t      dbg_cls_count[256]; /* methods per class, for the debug hook */
     uint32_t      dbg_trace;          /* methods left to log */
+    uint32_t      dbg_vblanks;        /* vertical blanks, for "dev 3d" */
 
     /* Register files of the units not yet modeled: what the driver
        wrote reads back. */
