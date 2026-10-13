@@ -61,11 +61,29 @@ nv4_pfb_clamp_boot_0(const nv4_t *nv4, uint32_t val)
 
 /* The straps: SUB_VENDOR (subsystem ids from the ROM), the RAM type and
    width, the bus, the crystal, and TV out disabled. AGP boards also
-   strap the 66 MHz bus. */
+   strap the 66 MHz bus.
+
+   The TNT2 moved them about (envytools' nv4_straps): bits 5:2 are a
+   memory configuration the video BIOS looks up in a table of PFB_BOOT_0
+   values, the bus type is bit 14 and bits 13:12 are the low device id
+   bits. The ELSA ERAZOR III BIOSes' table starts with 32 MB SDRAM at
+   128 bits (0) and at 64 bits (1); PFB_BOOT_0 is held to the fitted
+   memory, and their probe then finds it. */
 uint32_t
 nv4_straps(const nv4_t *nv4)
 {
     uint32_t straps = 0x02 | (3u << 7);
+
+    if (nv4->chip == NV4_CHIP_TNT2) {
+        if (nv4->board->mem_64bit)
+            straps |= 1u << 2;
+        if (nv4->board->crystal_14m)
+            straps |= 0x40;
+        straps |= (nv4->board->device_id & 3) << 12;
+        if (nv4->is_agp)
+            straps |= 1u << 14;
+        return straps;
+    }
 
     if (nv4->is_agp)
         straps |= 0x01 | 0x20;
@@ -132,6 +150,7 @@ nv4_pfb_write(nv4_t *nv4, uint32_t addr, uint32_t val)
     switch (addr) {
         case NV4_PFB_BOOT_0:
             nv4->pfb_boot_0 = nv4_pfb_clamp_boot_0(nv4, val & 0xf13f);
+            nv4_log("NV4 PFB: BOOT_0 = %08x -> %08x\n", val, nv4->pfb_boot_0);
             break;
         case NV4_PFB_DEBUG_0:
             nv4->pfb_debug_0 = val;
@@ -169,5 +188,6 @@ void
 nv4_pextdev_write(nv4_t *nv4, uint32_t addr, uint32_t val)
 {
     if (addr == NV4_PEXTDEV_BOOT_0)
-        nv4->straps_ovr = (val & 0x800) ? (val & 0xfff) : 0;
+        /* bits 15:12 are not overwritten */
+        nv4->straps_ovr = (val & 0x800) ? ((val & 0xfff) | (nv4_straps(nv4) & 0xf000)) : 0;
 }

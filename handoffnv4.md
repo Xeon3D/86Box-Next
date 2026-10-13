@@ -40,7 +40,9 @@ spans) intact.
   | ERAZOR III ULTRA | E3G30500.AUN | TNT2 Ultra (0029) |
   | ERAZOR III LT | E3230500.AMN | TNT2 M64 (002D) |
 
-  TNT2 boards are listed but not yet tested in a guest.
+  The driver on `nv4drv.iso` (4.11.01.0115) lists only 0020 (TNT), 0028
+  (TNT2) and 002C (Vanta), so with it only the ERAZOR III (0028) can be
+  tested; the ULTRA (0029) and LT (002D) need a later driver.
 
 ## Rules (from the owner)
 - Never open PRs/issues against 86Box/86Box. All PRs target Xeon3D/86Box-Next.
@@ -71,6 +73,13 @@ From Bash with MSYS2 UCRT64 first on PATH:
   regenerated header.
 
 ## Testing
+- **TNT2 VM:** `F:\Claude\86Box-Next\work-tnt2`, a copy of work-tnt with
+  `gfxcard = nv5_erazor3` and `nv4drv.iso` in the CD drive; Windows found
+  the TNT2 and installed the same driver by itself. Point the scripts at
+  it with `TNT_DIR=/f/Claude/86Box-Next/work-tnt2`. When copying a VM:
+  delete `uuid` from the copy's `[General]` (or 86Box asks "moved or
+  copied?" in a dialog), and recreate `roms` as a junction
+  (`New-Item -ItemType Junction`), since `cp` copies its 731 MB.
 - **VM:** `F:\Claude\86Box-Next\work-tnt`, a private copy of a Win98 SE rig.
   - Machine: p6bap, Celeron 233, ELSA ERAZOR II AGP, 512 MB.
   - HDD on IDE 0:0, CD on ATAPI 1:0. The Adaptec was removed at the owner's
@@ -95,6 +104,8 @@ From Bash with MSYS2 UCRT64 first on PATH:
   - `dev` (state dump)
   - `dev trace N` (log the next N methods)
   - `dev 3d` (3D flush count, spans and host shading time; then resets them)
+- **`tools/nv4/fullrun.sh THREADS GPU [SHOTS]`:** a whole 3DMark run, a shot
+  every 30 s, `dev 3d` at the end, shutdown.
 - **`tools/nv4/bench.sh THREADS GPU`:** boots, starts 3DMark's benchmark, times
   40 s of 3D shading, shuts down. If the owner is using the guest at the same
   time, the keystrokes go astray: check with `shot`.
@@ -149,6 +160,22 @@ From Bash with MSYS2 UCRT64 first on PATH:
     - Writes through a swizzled-surface object (CTX_SWITCH1 bit 14) into
       surface 5.
   - DxDiag's D3D test passes. 3DMark 99 Max runs fully and correctly.
+- **TNT2 (ERAZOR III, 0028):**
+  - Its straps follow envytools' nv4_straps: bits 5:2 are a memory
+    configuration the ELSA BIOS looks up in a table of PFB_BOOT_0 values
+    (entry 0: 32 MB SDRAM, 128-bit; 1: 64-bit), bus type in bit 14, device
+    id low bits in 13:12. The TNT keeps the layout its BIOS expects (RAM
+    type 3:2, width 4, AGP 5).
+  - The BIOS probes 32 MB through the real-mode window (3D0-3D3): the
+    pointer is 26 bits on the TNT2, and framebuffer byte = pointer - 16 MB.
+  - With those, BOOT_0 reads 0x24 and the driver uses 32 MB (it showed 16
+    MB before).
+  - Win98 + 4.11: desktop at 1024x768x32, DxDiag shows DirectDraw and
+    Direct3D accelerated, 3DMark 99 Max completes on the GPU lane with
+    every test rendered (2620 3DMarks, as the TNT: the emulated Celeron
+    sets the score).
+  - 3DMark on this VM is slower to start (~35 s splash after the card
+    change); the scripts now wait 80 s for the desktop and 40 s for 3DMark.
 - **Render threads** (option 1-8, default 2):
   - Each worker shades rows y mod n, in submission order, so output is
     bit-exact with one thread.
@@ -204,7 +231,9 @@ From Bash with MSYS2 UCRT64 first on PATH:
      the batch's rows) would let the batch stay in flight.
    - The submit side (~2.4 s per 40 s) is gather + row copies + grouping
      spans by row; it could move to a worker thread.
-   - Cache gathered textures across flushes (~40 MB/s of re-gathering now).
+   - Cache gathered textures across flushes. Over a whole 3DMark run the
+     GPU lane re-gathered 34 GB of textures (20 s), mostly in the texture
+     speed tests; the frame clears made it wait 26 s.
      Invalidate on LFB writes, M2MF and 2D writes into their VRAM ranges;
      textures in system/AGP memory need a checksum or always-regather.
    - Avoid re-uploading unchanged rows.
@@ -218,8 +247,8 @@ From Bash with MSYS2 UCRT64 first on PATH:
    - Must stay bit-exact with the GPU kernel; change both together.
 3. **Rendering into a swizzled 3D colour surface** (SURFACE type 2): not
    handled.
-4. **TNT2 boards:** test the ERAZOR III / ULTRA / LT in a guest with a TNT2
-   driver.
+4. **TNT2 boards:** the ERAZOR III works in Win98 with 4.11 (see status).
+   ULTRA and LT need a driver that lists 0029/002D (a 1999 Detonator).
 5. **The rest of the plan:**
    - PVIDEO overlay (stub register file now).
    - InstallShield's register-page banner glitch (some 2D stretch path).
@@ -263,6 +292,8 @@ From Bash with MSYS2 UCRT64 first on PATH:
     (a27854013).
   - Full 3DMark 99 run on the async GPU lane: every test renders, 2616
     3DMarks (2620 on the CPU path).
+  - TNT2 brought up: strap layout and real-mode window fixed so the ELSA
+    BIOS finds 32 MB; work-tnt2 VM.
   - Mishap: bench.sh started a VM while the previous one hung at shutdown;
     two instances shared the disk for ~8 min. Win98 came back clean. tnt.sh
     now refuses a second instance.

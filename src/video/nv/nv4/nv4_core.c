@@ -828,6 +828,7 @@ nv4_debug_hook(const char *args)
     bytes = svga->hdisp * svga->dispend * ((svga->bpp + 7) >> 3);
     for (uint32_t i = 0; i < bytes; i++)
         nonzero += (svga->vram[(start + i) & nv4->vram_mask] != 0);
+    pclog("nv4: vram %u MB, pfb boot_0 %08x\n", nv4->vram_size >> 20, nv4_pfb_read(nv4, NV4_PFB_BOOT_0));
     pclog("nv4: mode %dx%d bpp %d start %06x pcrtc_start %08x rowoffset %d CR28 %02x nonzero %u/%u\n",
           svga->hdisp, svga->dispend, svga->bpp, start, nv4->pcrtc_start, svga->rowoffset, svga->crtc[0x28], nonzero, bytes);
     pclog("nv4: pmc intr %08x en %08x enable %08x | pfifo intr %08x en %08x caches %08x mode %08x dma %08x\n",

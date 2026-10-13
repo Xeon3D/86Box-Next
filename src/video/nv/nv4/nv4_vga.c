@@ -196,12 +196,20 @@ nv4_vga_update_mapping(nv4_t *nv4)
    are: the id code, the pointer, the data port at the pointer, or the
    data port that collects a dword and writes it when byte 3 is
    written. The pointer reaches the registers below 16 MB and the
-   framebuffer above. */
+   framebuffer above, at pointer - 16 MB: 25 bits on the TNT, 26 on the
+   TNT2, whose video BIOS probes 32 MB through it. */
+static uint32_t
+nv4_rma_ptr_mask(const nv4_t *nv4)
+{
+    return (nv4->chip == NV4_CHIP_TNT2) ? 0x03fffffc : 0x01fffffc;
+}
+
+
 static uint32_t
 nv4_rma_space_read(nv4_t *nv4, uint32_t addr, int len)
 {
-    if (addr & 0x01000000) {
-        uint32_t off = addr & nv4->vram_mask;
+    if (addr >= 0x01000000) {
+        uint32_t off = (addr - 0x01000000) & nv4->vram_mask;
         uint32_t ret = 0;
         for (int i = 0; i < len; i++)
             ret |= (uint32_t) nv4->svga.vram[(off + i) & nv4->vram_mask] << (i * 8);
@@ -213,8 +221,8 @@ nv4_rma_space_read(nv4_t *nv4, uint32_t addr, int len)
 static void
 nv4_rma_space_write(nv4_t *nv4, uint32_t addr, uint32_t val, int len)
 {
-    if (addr & 0x01000000) {
-        uint32_t off = addr & nv4->vram_mask;
+    if (addr >= 0x01000000) {
+        uint32_t off = (addr - 0x01000000) & nv4->vram_mask;
         for (int i = 0; i < len; i++)
             nv4->svga.vram[(off + i) & nv4->vram_mask] = val >> (i * 8);
         nv4->svga.changedvram[off >> 12] = nv4->svga.monitor->mon_changeframecount;
@@ -256,7 +264,7 @@ nv4_rma_write(nv4_t *nv4, uint16_t port, uint32_t val, int len)
         case 0:
             break;
         case 1:
-            nv4->rma_ptr = ((nv4->rma_ptr & ~mask) | ((val << (off * 8)) & mask)) & 0x01fffffc;
+            nv4->rma_ptr = ((nv4->rma_ptr & ~mask) | ((val << (off * 8)) & mask)) & nv4_rma_ptr_mask(nv4);
             break;
         case 2:
             nv4_rma_space_write(nv4, nv4->rma_ptr + off, val, len);
@@ -349,7 +357,7 @@ nv4_prmio_write(nv4_t *nv4, uint32_t addr, uint32_t val)
 {
     switch (addr) {
         case NV4_PRMIO_RMA_PTR:
-            nv4->rma_ptr = val & 0x01fffffc;
+            nv4->rma_ptr = val & nv4_rma_ptr_mask(nv4);
             break;
         case NV4_PRMIO_RMA_DATA:
         case NV4_PRMIO_RMA_DATA32:

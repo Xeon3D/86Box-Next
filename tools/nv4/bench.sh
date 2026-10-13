@@ -11,9 +11,9 @@ W=${TNT_DIR:-/f/Claude/86Box-Next/work-tnt}
 CFG=$W/86box.cfg
 sed -i "s/^render_threads = .*/render_threads = $1/" "$CFG"
 NV4_GPU=$2 bash "$T" start || exit 1
-sleep 58
+sleep 80
 bash "$T" cmd "key 1d,01,81,9d"; sleep 1; bash "$T" cmd "type p"; sleep 1.5
-bash "$T" cmd "key 1c,9c"; sleep 1; bash "$T" cmd "key 1c,9c"; sleep 12
+bash "$T" cmd "key 1c,9c"; sleep 1; bash "$T" cmd "key 1c,9c"; sleep 40
 bash "$T" cmd "key 1c,9c"; sleep 4; bash "$T" cmd "key 1c,9c"
 sleep 40
 bash "$T" cmd "dev 3d"; sleep 40; bash "$T" cmd "dev 3d"; sleep 1
