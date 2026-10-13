@@ -15,7 +15,7 @@ for src in *.c; do
     MSYS_NO_PATHCONV=1 wsl -e i686-w64-mingw32-gcc -Os -ffreestanding -fno-builtin -fno-stack-protector \
         -mno-stack-arg-probe -nostdlib -mwindows -Wl,-e,_entry \
         -Wl,--major-subsystem-version,4,--minor-subsystem-version,0,--major-os-version,4,--minor-os-version,0 \
-        -o "$(wp "$stage/$exe")" "$src" -luser32 -lgdi32 -lkernel32
+        -o "$(wp "$stage/$exe")" "$src" -luser32 -lgdi32 -lshell32 -lcomctl32 -lkernel32
     echo "built $exe"
 done
 [ -n "$NV4_ISO_EXTRA" ] && cp -r "$NV4_ISO_EXTRA"/. "$stage"/

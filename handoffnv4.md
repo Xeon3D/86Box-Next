@@ -1,11 +1,58 @@
 # Handoff: NVIDIA RIVA TNT / TNT2 (NV4/NV5) emulation
 
 Living document: whoever works on the TNT updates it as they go (status, the
-log at the bottom). Last updated: 2026-10-13.
+log at the bottom). Last updated: 2026-10-14.
 
-**In progress:** the InstallShield banner glitch (3DMark 99 setup's
-register page, on `nv4test.iso`: `d:\3dmark99\3dmark99max.exe`), a 2D
-stretch path. Everything before it is committed (latest `feee6a8d0`).
+**In progress (2026-10-14):**
+- B5 done: 3DMark 2000 1.1 full default run on the TNT (work-tnt,
+  1024x768x16, Celeron 233): every test renders, **1050 3DMarks**; the only
+  unmodeled thing hit is DVD subpicture 0x38's context methods. A3 (3D into
+  a swizzled surface) is NOT needed by it. UT demo 348 (D3D) installed in
+  work-tnt and played by the owner: "ran fine" (slow on 2 CPU threads; turn
+  on gpu_raster for it).
+- **B4 OpenGL / Quake III: works** (5b120b5de). VM
+  `F:\Claude\86Box-Next\work-q3` (TNT2 ERAZOR III, p6bap, Celeron 466,
+  4 threads + gpu_raster, DX7 + Quake III 1.11; the owner gave the CD key
+  in chat 2026-10-14 and it was typed into Q3 as scancodes -- never write
+  it into a file). Menus and demo001 (q3dm1, timedemo) render correctly;
+  29% emulation speed on the CPU 3D path. The bug: 2D drawing into a
+  linear surface was clipped to pitch / bpp; the ICD writes a progress
+  word with a 1x1 rect (0x5e) at x = 8 of an 8-pixel Y32 surface (VRAM
+  0x12c000, pitch 32) after each texture upload through its staging ring
+  and spins (padding the pushbuffer with 17-word NOP runs) until it reads
+  it back -- the "all-zero pushbuffer" was that NOP padding, not lost
+  writes. Next for B4: a timedemo figure with the GPU lane, GLQuake /
+  Quake II, the TNT (ERAZOR II) with the same ICD.
+- **POST slowdown (owner report, confirmed 2026-10-14):** on work-q3 the
+  speed drops to 0-3% for ~15 s while the Award logo screen prints (the
+  memory count): the guest is in the ELSA BIOS's planar-mode character
+  output (c000:3a86 loop, INT 10h wrapper c000:1890 that unlocks/relocks
+  CR1F/CR2C per call). Not the GPU lane (same with NV4_GPU=0). A host
+  sample (scratchpad sampler.py: suspends threads, symbolizes RIP with
+  nm) shows 76% of the emulation thread in codegen_block_init: the
+  dynarec keeps recompiling. The owner sees no slowdown on another board
+  at 266 MHz. Suspects: the VIA Apollo Pro 133A's shadow RAM state for
+  C0000-C9FFF during POST (the ELSA BIOS is 40 KB and writes into its own
+  segment: c000:101e/1022 via DS = C000 -- self-modifying code when the
+  shadow is writable). Next: `cpu` (now with SS/CR0) and `map c1000` /
+  `map c3000` during the slow phase; compare an Intel 440BX board with the
+  same card and CPU.
+- Debug aids (4c499c8e7): `speedlog 1|0` (speed + CS:EIP each second),
+  `dev trace N` counts every line (it ran unbounded on a NOP-only channel
+  and wrote a 9 GB log), user-area writes show the guest address.
+- **Desktop shortcut arrows** (owner report) were broken on work-tnt and
+  work-q3; tools/nv4/guest/icons.exe (DrawIconEx + image lists with
+  overlays at every depth) draws them correctly and identically to GDI's
+  own engine on the current build, so it is most likely a stale
+  C:\WINDOWS\ShellIconCache built before c59c71997 (4-bit index order).
+  To do: delete it (restart in MS-DOS mode, `attrib -h -s` + `del
+  c:\windows\shelli~1`) and check the desktop again.
+- **POST memory count "corruption"** (owner report): the same with a plain
+  VGA card (work-q3 booted once with gfxcard = vga, restored): Award
+  4.51PG prints "OK" while still counting and frames catch digits
+  mid-update. The slowness is NOT host load: see "POST slowdown" above.
+- Uncommitted: tools/nv4/guest/icons.c, build.sh (links shell32 and
+  comctl32), this file.
 
 ## The goal
 The owner asked for RIVA TNT/TNT2 emulation done "the way skiretic did the ATI
@@ -127,6 +174,27 @@ From Bash with MSYS2 UCRT64 first on PATH:
   - `NV4_GPU_PROFILE=N` logs the next N GPU batches one by one: spans,
     pixels, and GPU time for uploads, kernel and download.
 - **Screenshot seams** are the shot catching a half-drawn frame, not tearing.
+- **`tools/nv4/cycle.sh [WAIT]`:** Start > Shut Down in the guest, waits for
+  the emulator to exit, copies `build-static`'s exe into the VM and boots it
+  (minimized), then waits WAIT s (60). Use it after every build.
+- **Changing CDs while the VM runs:** debug line `cdrom 0 F:\path\x.iso`
+  (`cdrom 0` empties the drive). The UI does the mount, and saves it in
+  the cfg.
+- **Guest test programs:** `tools/nv4/guest/*.c` are Win9x programs built
+  without the C runtime by `tools/nv4/guest/build.sh` (WSL's
+  `i686-w64-mingw32-gcc`, `genisoimage`), which puts them on
+  `work-tnt/nv4tools.iso`; `NV4_ISO_EXTRA=<folder>` adds that folder's
+  files. `stretch.exe [ref] [bw]` draws a banner from 8/4/16/24/32 bpp
+  DIBs and a device bitmap at six scales; `ref` draws through GDI's own
+  engine for comparison.
+- **Test software** (downloaded 2026-10-13, owner OK'd them and their
+  EULAs; in `F:\Claude\86Box-Next\dl`, gathered in `dl\iso-extra`, all
+  on the current `nv4tools.iso`): DirectX 7.0 (`DX7\dx70eng.exe`,
+  installed on work-tnt), 3DMark 2000 1.1 (`3DM2000`, installed on
+  work-tnt, registered as Pro: user `Futuremark`, code
+  `6VZTY-SDZ75-KA9V7`, from the owner), UT demo 348 (`UTDEMO`), NVIDIA
+  9x drivers 8.05 and 71.84 unpacked (`NV805`, `NV7184`; both list the
+  TNT2 ULTRA/M64/Vanta).
 
 ## Status (what works)
 - **Boot/VGA/VESA/display:** modes up to 1600x1200 at 16/32 bpp. Lines past
@@ -279,13 +347,14 @@ Work that touches separate files can run in parallel sessions: overlay
 took, and commit only your own paths.
 
 ### A. Close what is open
-1. **InstallShield banner glitch** (in progress, see top): a 2D stretch
-   path (SIFC 0x76 / SIFM 0x77). Finish and commit.
-2. **Unhandled-object counter:** the class switch's `default:` and the
-   3D paths that are known gaps (swizzled 3D colour surface, class 0x48,
-   0x38) only log with `ENABLE_NV4_LOG`. Count them per class/method and
-   show the counts in `dev`, so every test run below reports what it hit
-   that we don't draw. Cheap, and it drives the order of C.
+1. ~~InstallShield banner glitch~~ done (c59c71997): a 4 bpp DIB drawn
+   1:1 goes through the indexed image class with 4-bit indexes, high
+   nibble first; we took the low one. Same commit: SIFM bilinear (FOH)
+   filtering, which the driver asks for on every stretched DIB.
+2. ~~Unhandled-object counter~~ done (411712ac9): `nv4_gap()` logs
+   "nv4: not modeled: ..." once per case and `dev` lists the counts.
+   First catch: 3DMark 2000's startup sets up a DVD subpicture object
+   (0x38; context methods only so far).
 3. **Rendering into a swizzled 3D colour surface** (SURFACE type 2,
    render to texture): implement when A2 shows a program using it
    (3DMark 2000 and DX6/7 demos do). Rows in the swizzled layout break
@@ -434,3 +503,8 @@ them with `dev 3d` before optimising.
   - Plan for the next steps written ("Next" above): coverage first
     (OpenGL ICD, more D3D, Detonator, Win2000/NT4), then overlay and the
     missing classes, variants, speed, integration.
+- 2026-10-14:
+  - Quake III works on the TNT2 (OpenGL ICD): 2D pitch clip removed
+    (5b120b5de); debug aids speedlog / bounded trace (4c499c8e7).
+  - POST slowdown on work-q3 reproduced and profiled (dynarec
+    recompiling in the ELSA BIOS's text output); cause still open.

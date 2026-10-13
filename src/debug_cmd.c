@@ -146,8 +146,8 @@ debug_cmd_cpu(void)
         else
             snprintf(code + 3 * i, 4, " %02x", mem_readb_phys((uint32_t) phys));
     }
-    always_log("debug_cmd: cpu %04x:%08x (lin %08x) flags %04x eax %08x ebx %08x ecx %08x edx %08x esi %08x edi %08x ebp %08x esp %08x ds %04x es %04x\n",
-               CS, cpu_state.pc, lin, cpu_state.flags, EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP, DS, ES);
+    always_log("debug_cmd: cpu %04x:%08x (lin %08x) flags %04x eax %08x ebx %08x ecx %08x edx %08x esi %08x edi %08x ebp %08x esp %08x ss %04x ds %04x es %04x cr0 %08x\n",
+               CS, cpu_state.pc, lin, cpu_state.flags, EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP, SS, DS, ES, cr0);
     always_log("debug_cmd: code%s\n", code);
 }
 
