@@ -70,8 +70,9 @@ compilation on GPU"). Keep the CPU/GPU record seam (draw states, triangles,
 spans) intact.
 
 ## Where the work is
-- Branch `tnt` in worktree `F:\Claude\86Box-Next\wt-tnt`. It is local only (not
-  pushed); ask the owner before pushing.
+- Branch `tnt` in worktree `F:\Claude\86Box-Next\wt-tnt`. Merged into master
+  and pushed on 2026-10-14 (owner's request), shipped in Release 2.1.4.8;
+  keep working on `tnt` and fast-forward master when the owner asks.
 - Code:
   - `src/video/nv/nv4/` (`nv4_core.c`, `nv4_vga.c`, `subsystems/*`).
   - Header `src/include/86box/nv/vid_nv4.h`.
@@ -503,6 +504,9 @@ them with `dev 3d` before optimising.
     (OpenGL ICD, more D3D, Detonator, Win2000/NT4), then overlay and the
     missing classes, variants, speed, integration.
 - 2026-10-14:
+  - Master merged into tnt (6d143bdd9), tnt fast-forwarded into master,
+    README section for the NVIDIA cards, Release 2.1.4.8 published and
+    staged in every rig (AVM-ISDN-RIG kept its own isdn-fritz exe).
   - Quake III works on the TNT2 (OpenGL ICD): 2D pitch clip removed
     (5b120b5de); debug aids speedlog / bounded trace (4c499c8e7).
   - POST slowdown on work-q3 reproduced and profiled (dynarec
