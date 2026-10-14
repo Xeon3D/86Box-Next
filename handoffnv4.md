@@ -1,7 +1,7 @@
 # Handoff: NVIDIA RIVA TNT / TNT2 (NV4/NV5) emulation
 
 Living document: whoever works on the TNT updates it as they go (status, the
-log at the bottom). Last updated: 2026-10-14.
+log at the bottom). Last updated: 2026-10-15.
 
 **In progress (2026-10-14):**
 - B5 done: 3DMark 2000 1.1 full default run on the TNT (work-tnt,
@@ -353,6 +353,55 @@ note), so expect slow runs rather than raising the CPU.
 
 Recommended order: 4, then 7, then 5.
 
+**GLQuake / Quake II on the TNT (2026-10-15, later session).** VM
+work-tnt (ERAZOR II AGP, 4.11 ICD, Celeron 233, 2 threads + GPU lane,
+640x480x16 fullscreen):
+- GLQuake (C:\GLQUAKE, `glquake.exe -basedir c:\glquake`): windowed
+  (`-window`) renders correctly at once. Fullscreen showed the old
+  desktop and drew nothing (0 spans): **not an emulation bug.** GLQuake
+  minimizes its fullscreen window on WM_KILLFOCUS (its WndProc,
+  0x4151e0, case 8 -> ShowWindow SW_SHOWMINNOACTIVE), and with the
+  shareware PAK0 Quake's file system never opens loose files in
+  subdirectories, so `id1\glquake\15to8.pal` is never read back: every
+  start regenerates it behind a topmost progress dialog (template 0x6d)
+  that takes the focus. The ICD then sees an iconic window (USER: 3000,3000,
+  client 0x0) and sends every frame to a dummy target (colour = its 8 px
+  fence surface, Z at the top of VRAM with pitch 32, clip x=8 width 0).
+  Restoring the window (`c:\winlist.exe r 10 <cmd>`, see below) makes
+  it render: **timedemo demo1 = 969 frames, 11.7 s, 82.7 fps**, ~80%
+  emulation speed; console, particles, models all correct. A real
+  install with the registered PAK1 would not hit it.
+- **Quake II 3.05** (C:\QUAKE2, `quake2.exe +set basedir c:\quake2 +set
+  vid_ref gl`; the owner's config has vid_ref soft): fullscreen OpenGL
+  correct (textures, lightmaps, models, HUD). **timedemo 1 / demomap
+  demo1.dm2 = 689 frames, 17.9 s, 38.5 fps**, 87% speed; GPU waits 12.4 s
+  on class 5f and 4.5 s on class 77 per ~100 s (speed leads).
+- Alt+Tab out of fullscreen GLQuake and back crashed the 4.11 ICD
+  (NV40GL.DLL 0167:695925bd: IDirectDraw::CreateSurface through a stale
+  DDraw pointer 0x1800, after the mode was restored and set again), then
+  the process spun forever on the ICD's global lock (0x695d1e70) and
+  Windows could not shut down (hard stop; Win98 came back normally).
+  Probably the 1999 driver's own alt-tab bug; not chased.
+- The TNT traps class 0x53 0x2f8/0x2fc (clip horizontal/vertical); the
+  resman emulates them by writing PGRAPH ABS_UCLIP min/max with
+  CTX_SWITCH1 parked on a dummy object (NV4 forces the clip minimum to 0
+  for the 3D surface class). The ICD sends them from its clip rects
+  (x = left + offset, w = right - left). Our ILLEGAL return + the RM
+  write path is right.
+- New aids: `dev` prints the user clip / image clip registers.
+  `tools/nv4/guest/winlist.c` (on nv4tools.iso as WINLIST.EXE; copy it
+  to C:): `winlist [r] [N] [cmd]` starts cmd and logs every 5 s to
+  C:\WINLIST.TXT the screen mode, foreground window and each top-level
+  window's class/title/styles/rects/IsIconic/GDI clip box; `r` restores
+  a minimized window of cmd from the 5th snapshot. Read the file back
+  with the VM down: the disks are dynamic VHDs -- convert in WSL
+  (`python3 tools/nv4/vhd2raw.py X.vhd /tmp/x.raw`, sparse, in
+  WSL), partition at sector 2048, `mtype -i raw@@1048576 ::WINLIST.TXT`.
+  nv4ogl.dll disassembles fine with capstone + pefile (py), as does
+  GLQUAKE.EXE.
+- Still to do from this list: DOS/VESA on work-dos-tnt; GLQuake/Quake II
+  on the TNT2 with registered data if wanted.
+
 **Where the 2026-10-15 session stopped (read this first).** The owner
 asked for items 1-4 and 6 of the list they were given (= here: 71.84,
 NT4, the NV5 classes 0x64-0x66, Quake III/GLQuake/Quake II, DOS/VESA).
@@ -427,9 +476,9 @@ NT4, the NV5 classes 0x64-0x66, Quake III/GLQuake/Quake II, DOS/VESA).
    same on work-tnt if its arrows are missing).
 2. POST slowdown at 466 MHz (see In progress): parked, not hit at 266.
 3. Quake III follow-ups: ~~timedemo with the GPU lane~~ (39.0 fps,
-   48% vs 29% emulation speed; see the session note above); still to
-   do: GLQuake and Quake II on the TNT (games.iso ready), Quake III on
-   the TNT if wanted (needs installing on work-tnt).
+   48% vs 29% emulation speed; see the session note above); ~~GLQuake
+   and Quake II on the TNT~~ done (82.7 / 38.5 fps, see above); Quake
+   III on the TNT if wanted (needs installing on work-tnt).
 
 **More software and drivers**
 4. Later NVIDIA drivers (B6): 8.05 and 71.84 are already unpacked in
@@ -775,3 +824,7 @@ them with `dev 3d` before optimising.
   aids). NT4 overlay + 43.45, Win2000 TNT2 + 71.84, Quake III timedemo,
   work-q3 icon cache; games.iso and work-dos-tnt prepared (see "Where
   the 2026-10-15 session stopped").
+- 2026-10-15 (later): GLQuake (82.7 fps) and Quake II (38.5 fps) run
+  fullscreen on the TNT; GLQuake's "draws nothing" was its own
+  minimize-on-focus-loss + shareware 15to8.pal dialog, not the card.
+  `dev` shows the clip registers; guest probe winlist.exe.

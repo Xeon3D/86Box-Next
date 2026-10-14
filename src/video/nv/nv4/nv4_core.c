@@ -914,6 +914,11 @@ nv4_debug_hook(const char *args)
         pclog("nv4: surf %d base %08x off %08x pitch %04x limit %08x fmt %x\n", i, NV4_GR(nv4, NV4_PGRAPH_BBASE + i * 4),
               NV4_GR(nv4, NV4_PGRAPH_BOFFSET + i * 4), NV4_GR(nv4, NV4_PGRAPH_BPITCH + i * 4),
               NV4_GR(nv4, NV4_PGRAPH_BLIMIT + i * 4), (NV4_GR(nv4, NV4_PGRAPH_BPIXEL) >> (i * 4)) & 0xf);
+    pclog("nv4: uclip x %05x..%05x y %05x..%05x | image clip x %05x..%05x y %05x..%05x\n",
+          NV4_GR(nv4, NV4_PGRAPH_UCLIP_MIN), NV4_GR(nv4, NV4_PGRAPH_UCLIP_MAX),
+          NV4_GR(nv4, NV4_PGRAPH_UCLIP_MIN + 4), NV4_GR(nv4, NV4_PGRAPH_UCLIP_MAX + 4),
+          NV4_GR(nv4, NV4_PGRAPH_UCLIPA_MIN), NV4_GR(nv4, NV4_PGRAPH_UCLIPA_MAX),
+          NV4_GR(nv4, NV4_PGRAPH_UCLIPA_MIN + 4), NV4_GR(nv4, NV4_PGRAPH_UCLIPA_MAX + 4));
     for (int i = 0; i < 256; i++)
         if (nv4->dbg_cls_count[i])
             pclog("nv4: class %02x: %u methods\n", i, nv4->dbg_cls_count[i]);
