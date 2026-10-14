@@ -1585,7 +1585,14 @@ plat_cdrom_mount_queued(uint8_t id, const char *fn)
 {
     QString name(fn);
 
-    QMetaObject::invokeMethod(MediaMenu::ptr.get(), [id, name] { MediaMenu::ptr->cdromMount(id, name); },
+    /* an empty name ejects (as the menu's Eject): mounting "" would try
+       to open it as an image */
+    QMetaObject::invokeMethod(MediaMenu::ptr.get(), [id, name] {
+                                  if (name.isEmpty())
+                                      MediaMenu::ptr->cdromEject(id);
+                                  else
+                                      MediaMenu::ptr->cdromMount(id, name);
+                              },
                               Qt::QueuedConnection);
 }
 
