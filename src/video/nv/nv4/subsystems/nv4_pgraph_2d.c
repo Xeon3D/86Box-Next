@@ -2441,6 +2441,181 @@ nv4_class_sifm(nv4_t *nv4, nv4_gr_chan_t *ch, int cls, uint32_t mthd, uint32_t d
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* DVD subpicture.                                                     */
+/* ------------------------------------------------------------------ */
+/* 0x38 blends a subpicture (the "overlay": alpha + YUV) over a 4:2:2
+   image, each scaled from its own DMA object, into a 4:2:2 surface
+   (surface 4, its own DMA object). Video drivers also use it as a
+   scaled YUV copy with the overlay transparent: NVIDIA's later Win9x
+   drivers put every DirectDraw overlay frame into the overlay buffer
+   this way. Sources are sampled at pixel centres, nearest. Formats:
+   image/output 1 = YUY2 (Y0 U Y1 V), 2 = UYVY (U Y0 V Y1); overlay
+   1 = A8V8U8Y8 per pixel, 2 = A4V6Y6A4U6Y6 per pixel pair (the high
+   half the second pixel's), 3 = transparent. */
+#define DVD_IMG 0
+#define DVD_OV  1
+
+static void
+nv4_dvd_sample(nv4_t *nv4, const nv4_gr_chan_t *ch, int which, uint32_t dma, int32_t ox, int32_t oy, int yuva[4])
+{
+    uint32_t pitch = ch->dvd[which].fmt & 0xffff;
+    int      fmt   = (ch->dvd[which].fmt >> 16) & 3;
+    int32_t  w     = ch->dvd[which].size & 0xffff;
+    int32_t  h     = ch->dvd[which].size >> 16;
+    /* the point is 12.4, the steps 12.20 */
+    int64_t  u     = ((int64_t) (int16_t) ch->dvd[which].point * 65536) + ch->dvd[which].dudx / 2 + (int64_t) ox * ch->dvd[which].dudx;
+    int64_t  v     = ((int64_t) (int16_t) (ch->dvd[which].point >> 16) * 65536) + ch->dvd[which].dvdy / 2 + (int64_t) oy * ch->dvd[which].dvdy;
+    int32_t  iu    = (int32_t) (u >> 20);
+    int32_t  iv    = (int32_t) (v >> 20);
+    uint8_t  b[4]  = { 0 };
+
+    yuva[3] = 0;
+    if ((which == DVD_OV) && ((fmt == 0) || (fmt == 3)))
+        return;
+    if (iu >= w)
+        iu = w - 1;
+    if (iu < 0)
+        iu = 0;
+    if (iv >= h)
+        iv = h - 1;
+    if (iv < 0)
+        iv = 0;
+    if ((which == DVD_OV) && (fmt == 1)) {
+        nv4_dma_read(nv4, dma, ch->dvd[which].off + (uint32_t) iv * pitch + (uint32_t) iu * 4, b, 4);
+        yuva[0] = b[0];
+        yuva[1] = b[1];
+        yuva[2] = b[2];
+        yuva[3] = b[3];
+        return;
+    }
+    nv4_dma_read(nv4, dma, ch->dvd[which].off + (uint32_t) iv * pitch + (uint32_t) (iu & ~1) * 2, b, 4);
+    if (which == DVD_OV) {
+        uint32_t p  = b[0] | (b[1] << 8) | (b[2] << 16) | ((uint32_t) b[3] << 24);
+        uint32_t y  = (iu & 1) ? ((p >> 16) & 0x3f) : (p & 0x3f);
+        uint32_t cu = (p >> 6) & 0x3f;
+        uint32_t cv = (p >> 22) & 0x3f;
+
+        yuva[0] = (int) ((y << 2) | (y >> 4));
+        yuva[1] = (int) ((cu << 2) | (cu >> 4));
+        yuva[2] = (int) ((cv << 2) | (cv >> 4));
+        yuva[3] = (int) (((iu & 1) ? (p >> 28) : ((p >> 12) & 0xf)) * 17);
+    } else if (fmt == 2) {
+        yuva[0] = (iu & 1) ? b[3] : b[1];
+        yuva[1] = b[0];
+        yuva[2] = b[2];
+    } else {
+        yuva[0] = (iu & 1) ? b[2] : b[0];
+        yuva[1] = b[1];
+        yuva[2] = b[3];
+    }
+}
+
+static void
+nv4_dvd_draw(nv4_t *nv4, const nv4_gr_chan_t *ch)
+{
+    uint32_t dma_img = GR(NV4_PGRAPH_CTX_SWITCH3) & 0xffff;
+    uint32_t dma_ov  = GR(NV4_PGRAPH_CTX_SWITCH3) >> 16;
+    uint32_t base    = GR(NV4_PGRAPH_BBASE + 4 * 4) + GR(NV4_PGRAPH_BOFFSET + 4 * 4);
+    uint32_t lim     = GR(NV4_PGRAPH_BBASE + 4 * 4) + (GR(NV4_PGRAPH_BLIMIT + 4 * 4) & 0x7fffffff);
+    uint32_t pitch   = GR(NV4_PGRAPH_BPITCH + 4 * 4) & 0xffff;
+    int      uyvy    = nv4_surf_fmt(nv4, 4) == 0xf;
+
+    if (!dma_img || (GR(NV4_PGRAPH_BLIMIT + 4 * 4) & 0x80000000))
+        return;
+    for (uint32_t oy = 0; oy < ch->dvd_h; oy++) {
+        uint32_t row = base + (uint32_t) (ch->dvd_y + (int32_t) oy) * pitch;
+
+        /* the output is written in pixel pairs: one U and V for both */
+        for (uint32_t ox = 0; ox < ch->dvd_w; ox += 2) {
+            uint32_t a = row + (uint32_t) (ch->dvd_x + (int32_t) ox) * 2;
+            int      px[2][4];
+            int      cu, cv;
+
+            for (int k = 0; k < 2; k++) {
+                int ov[4];
+
+                nv4_dvd_sample(nv4, ch, DVD_IMG, dma_img, (int32_t) (ox + k), (int32_t) oy, px[k]);
+                nv4_dvd_sample(nv4, ch, DVD_OV, dma_ov, (int32_t) (ox + k), (int32_t) oy, ov);
+                for (int c = 0; ov[3] && (c < 3); c++)
+                    px[k][c] += ((ov[c] - px[k][c]) * ov[3] + 127) / 255;
+            }
+            cu = (px[0][1] + px[1][1] + 1) >> 1;
+            cv = (px[0][2] + px[1][2] + 1) >> 1;
+            if (a + 3 > lim)
+                continue;
+            if (uyvy)
+                nv4_vram_wr(nv4, a, 4, (uint32_t) cu | (px[0][0] << 8) | (cv << 16) | ((uint32_t) px[1][0] << 24));
+            else
+                nv4_vram_wr(nv4, a, 4, (uint32_t) px[0][0] | (cu << 8) | (px[1][0] << 16) | ((uint32_t) cv << 24));
+        }
+    }
+}
+
+static int
+nv4_class_dvd(nv4_t *nv4, nv4_gr_chan_t *ch, uint32_t mthd, uint32_t data)
+{
+    int which = (mthd >= 0x328) ? DVD_OV : DVD_IMG;
+
+    switch (mthd) {
+        case 0x184: /* the overlay's DMA */
+            nv4_pgraph_set_grobj(nv4, 2, 16, 16, data);
+            return NV4_GR_OK;
+        case 0x188: /* the image's */
+            nv4_pgraph_set_grobj(nv4, 2, 0, 16, data);
+            return NV4_GR_OK;
+        case 0x18c: /* the output surface's */
+            nv4_dma_surf(nv4, 4, data);
+            return NV4_GR_OK;
+        case 0x300:
+            ch->dvd_x = (int16_t) data;
+            ch->dvd_y = (int16_t) (data >> 16);
+            return NV4_GR_OK;
+        case 0x304:
+            ch->dvd_w = data & 0xffff;
+            ch->dvd_h = data >> 16;
+            return NV4_GR_OK;
+        case 0x308:
+            GR(NV4_PGRAPH_BPITCH + 4 * 4) = data & 0xfff0;
+            nv4_set_surf_fmt(nv4, 4, (((data >> 16) & 0xf) == 2) ? 0xf : 0xe);
+            return NV4_GR_OK;
+        case 0x30c:
+            GR(NV4_PGRAPH_BOFFSET + 4 * 4) = data & nv4_offset_mask(nv4);
+            return NV4_GR_OK;
+        case 0x310:
+        case 0x328:
+            ch->dvd[which].dudx = (int32_t) data;
+            return NV4_GR_OK;
+        case 0x314:
+        case 0x32c:
+            ch->dvd[which].dvdy = (int32_t) data;
+            return NV4_GR_OK;
+        case 0x318:
+        case 0x330:
+            ch->dvd[which].size = data;
+            return NV4_GR_OK;
+        case 0x31c:
+        case 0x334:
+            ch->dvd[which].fmt = data;
+            return NV4_GR_OK;
+        case 0x320:
+        case 0x338:
+            ch->dvd[which].off = data;
+            return NV4_GR_OK;
+        case 0x324:
+            ch->dvd[DVD_IMG].point = data;
+            return NV4_GR_OK;
+        case 0x33c: /* the overlay's point draws */
+            ch->dvd[DVD_OV].point = data;
+            nv4_dvd_draw(nv4, ch);
+            return NV4_GR_OK;
+        case 0x200:
+            return NV4_GR_MISSING;
+        default:
+            return NV4_GR_ILLEGAL;
+    }
+}
+
 int
 nv4_pgraph_2d_method(nv4_t *nv4, nv4_gr_chan_t *ch, int cls, uint32_t mthd, uint32_t data)
 {
@@ -2508,6 +2683,8 @@ nv4_pgraph_2d_method(nv4_t *nv4, nv4_gr_chan_t *ch, int cls, uint32_t mthd, uint
         case 0x4a:
         case 0x4b:
             return nv4_class_gdi(nv4, ch, cls, mthd, data);
+        case 0x38:
+            return nv4_class_dvd(nv4, ch, mthd, data);
         case 0x39:
             return nv4_class_m2mf(nv4, ch, mthd, data);
         case 0x37:
@@ -2516,7 +2693,7 @@ nv4_pgraph_2d_method(nv4_t *nv4, nv4_gr_chan_t *ch, int cls, uint32_t mthd, uint
         default:
             break;
     }
-    /* the DX3 triangle (0x48) and DVD subpicture (0x38) are not drawn yet */
+    /* the DX3 triangle (0x48) is not drawn yet */
     nv4_gap(nv4, cls, mthd, "class not drawn");
     return NV4_GR_OK;
 }

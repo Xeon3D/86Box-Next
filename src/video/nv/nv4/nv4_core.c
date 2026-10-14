@@ -905,7 +905,7 @@ nv4_init(const device_t *info)
 
     svga_init(info, &nv4->svga, nv4, nv4->vram_size,
               nv4_recalctimings, nv4_vga_in, nv4_vga_out,
-              nv4_hwcursor_draw, NULL);
+              nv4_hwcursor_draw, nv4_pvideo_draw);
     nv4->svga.vblank_start      = nv4_vblank_start;
     nv4->svga.hwcursor.cur_xsize = 32;
     nv4->svga.hwcursor.cur_ysize = 32;

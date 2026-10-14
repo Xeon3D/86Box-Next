@@ -125,6 +125,7 @@ nv4_vblank_start(svga_t *svga)
 
         nv4_3d_vblank(nv4, lo, lo + len);
     }
+    nv4_pvideo_vblank(nv4);
     nv4->dbg_vblanks++;
     nv4->vblank_count++;
     nv4->pcrtc_intr |= 1;

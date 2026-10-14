@@ -8,9 +8,9 @@
  *
  *          NVIDIA RIVA TNT / TNT2 -- units not yet modeled.
  *
- *          PVIDEO and PME as register files: what is
- *          written reads back and nothing raises an interrupt. Each
- *          moves to its own file when it is modeled.
+ *          PME as a register file: what is written reads back and
+ *          nothing raises an interrupt. It moves to its own file when
+ *          it is modeled.
  *
  * Authors: Marcos Alves, <xeon4d@gmail.com>
  *
@@ -31,31 +31,6 @@
 #include <86box/vid_svga.h>
 #include <86box/plat_unused.h>
 #include <86box/nv/vid_nv4.h>
-
-/* PVIDEO */
-void
-nv4_pvideo_reset(nv4_t *nv4)
-{
-    memset(nv4->pvideo_regs, 0, sizeof(nv4->pvideo_regs));
-}
-
-uint32_t
-nv4_pvideo_read(nv4_t *nv4, uint32_t addr)
-{
-    return nv4->pvideo_regs[((addr - NV4_PVIDEO_START) >> 2) % (sizeof(nv4->pvideo_regs) / 4)];
-}
-
-void
-nv4_pvideo_write(nv4_t *nv4, uint32_t addr, uint32_t val)
-{
-    nv4->pvideo_regs[((addr - NV4_PVIDEO_START) >> 2) % (sizeof(nv4->pvideo_regs) / 4)] = val;
-}
-
-uint32_t
-nv4_pvideo_pending(UNUSED(nv4_t *nv4))
-{
-    return 0;
-}
 
 /* PME */
 void

@@ -387,6 +387,15 @@ typedef struct nv4_gr_chan_s {
     uint32_t sifm_w, sifm_h;
     int32_t  sifm_dudx, sifm_dvdy;
     uint32_t sifm_in_size, sifm_in_fmt, sifm_in_off;
+
+    /* DVD subpicture: the output rectangle, then the image and the
+       overlay, each a scaled source in its own DMA object */
+    int32_t  dvd_x, dvd_y;
+    uint32_t dvd_w, dvd_h;
+    struct {
+        int32_t  dudx, dvdy;
+        uint32_t size, fmt, off, point;
+    } dvd[2];
 } nv4_gr_chan_t;
 
 /* The 3D classes' state, as the methods gave it, per channel: the
@@ -558,9 +567,14 @@ typedef struct nv4_s {
         int32_t  y, x0, x1;
     } run2d;
 
-    /* Register files of the units not yet modeled: what the driver
-       wrote reads back. */
+    /* PVIDEO (nv4_pvideo.c): the overlay's registers, its interrupt
+       and the buffer being scanned out */
     uint32_t pvideo_regs[0x300 / 4];
+    uint32_t pvideo_intr, pvideo_intr_en;
+    uint32_t pvideo_shown;
+
+    /* Register file of the unit not yet modeled: what the driver wrote
+       reads back. */
     uint32_t pme_regs[0x1000 / 4];
 } nv4_t;
 
@@ -699,6 +713,8 @@ extern void     nv4_pvideo_reset(nv4_t *nv4);
 extern uint32_t nv4_pvideo_read(nv4_t *nv4, uint32_t addr);
 extern void     nv4_pvideo_write(nv4_t *nv4, uint32_t addr, uint32_t val);
 extern uint32_t nv4_pvideo_pending(nv4_t *nv4);
+extern void     nv4_pvideo_vblank(nv4_t *nv4);
+extern void     nv4_pvideo_draw(svga_t *svga, int displine);
 extern void     nv4_pme_reset(nv4_t *nv4);
 extern uint32_t nv4_pme_read(nv4_t *nv4, uint32_t addr);
 extern void     nv4_pme_write(nv4_t *nv4, uint32_t addr, uint32_t val);
