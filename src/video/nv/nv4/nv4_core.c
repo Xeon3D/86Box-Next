@@ -904,6 +904,11 @@ nv4_debug_hook(const char *args)
             pclog("nv4: user ch %d: %u reads, %u writes, last %04x = %08x%s\n", i, nv4->dbg_user[i].reads,
                   nv4->dbg_user[i].writes, nv4->dbg_user[i].last_off, nv4->dbg_user[i].last_val,
                   (nv4->pfifo.mode & (1u << i)) ? " (DMA)" : "");
+    pclog("nv4: pvideo overlay %08x point %08x size %08x scale %08x start %06x/%06x pitch %x/%x key %08x shown %u intr %x/%x\n",
+          nv4->pvideo_regs[0x244 >> 2], nv4->pvideo_regs[0x230 >> 2], nv4->pvideo_regs[0x234 >> 2],
+          nv4->pvideo_regs[0x200 >> 2], nv4->pvideo_regs[0x20c >> 2], nv4->pvideo_regs[0x210 >> 2],
+          nv4->pvideo_regs[0x214 >> 2], nv4->pvideo_regs[0x218 >> 2], nv4->pvideo_regs[0x240 >> 2],
+          nv4->pvideo_shown, nv4->pvideo_intr, nv4->pvideo_intr_en);
     pclog("nv4: dma to system memory: %u writes, %u through not-present PTEs (last inst %04x offset %08x pte %08x)\n",
           nv4->dbg_sysw_n, nv4->dbg_dma_np, nv4->dbg_np_inst, nv4->dbg_np_offset, nv4->dbg_np_pte);
     for (uint32_t i = 0; (i < 8) && (i < nv4->dbg_sysw_n); i++) {
