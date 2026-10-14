@@ -906,6 +906,18 @@ nv4_pfifo_write(nv4_t *nv4, uint32_t addr, uint32_t val)
             break;
         case PFIFO_CACHE1_DMA_CTL:
             p->c1_dma_ctl = val & 0x80033ffc;
+            /* Clearing AT_INFO (bit 31) makes the pusher fetch the push
+               buffer's DMA object again: adjust, page table and target
+               into CTL, its limit into LIMIT, the TLB invalidated. The
+               fetch is immediate here; the resman spins until bit 31 is
+               set again after a channel switch. */
+            if (!(val & 0x80000000)) {
+                uint32_t w0 = nv4_ramin_read32(nv4, p->c1_dma_instance << 4);
+
+                p->c1_dma_ctl     = 0x80000000 | ((w0 >> 20) & 0xffc) | (w0 & 0x33000);
+                p->c1_dma_limit   = nv4_ramin_read32(nv4, (p->c1_dma_instance << 4) + 4) & 0x1ffffffc;
+                p->c1_dma_tlb_tag &= ~1u;
+            }
             break;
         case PFIFO_CACHE1_DMA_LIMIT:
             p->c1_dma_limit = val & 0x1ffffffc;

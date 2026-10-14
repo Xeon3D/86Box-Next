@@ -21,7 +21,7 @@ Extra features
   * 2D acceleration, DirectDraw and Direct3D with NVIDIA's own Windows drivers;
   * the video overlay (YUY2/UYVY, scaled, colour-keyed) used by video players;
   * VGA, VESA and NVIDIA's extended modes up to 1600x1200, and the RAMDAC's checksum, so NVIDIA's manufacturing test passes.
-* **RIVA TNT and TNT2** (NV4/NV5): ELSA ERAZOR II (TNT, PCI and AGP), ERAZOR III (TNT2), ERAZOR III ULTRA (TNT2 Ultra) and ERAZOR III LT (TNT2 M64), with their own BIOSes:
+* **RIVA TNT, TNT2 and TNT2 Ultra** (NV4/NV5), PCI and AGP, with 18 boards' own BIOSes as the card's Model: ELSA ERAZOR II/III/III Pro/III LT/III ULTRA and Synergy II-32, Diamond Viper V550/V770, Creative Graphics Blaster RIVA TNT, STB Velocity 4400, ASUS AGP-V3400TNT and Leadtek WinFast 3D S320 II:
   * 2D acceleration up to 1600x1200 in 32-bit colour;
   * Direct3D (DirectX 5 and 6 triangles, multitexturing) and the **OpenGL ICD**: 3DMark 99 and 2000, Unreal Tournament and Quake III Arena run on NVIDIA's Windows 98 driver;
   * the 3D is drawn on worker threads (1 to 8), or on the **host's GPU** through Vulkan ("Draw 3D on the host GPU" in the card's settings), with the same pixels either way.

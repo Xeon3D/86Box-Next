@@ -680,6 +680,27 @@ load_machine(void)
     cpu_dyn_accurate_fpu_env = ini_section_get_int(cat, "cpu_dyn_accurate_fpu_env", 0);
 }
 
+/* A card that became a BIOS choice of another device: its settings move to
+   that device's section (unless the configuration already has one). */
+static void
+config_video_old_section(const device_t *dev, char *old_internal_name)
+{
+    const char   *old = video_get_old_section_name(old_internal_name);
+    char          name[512];
+    ini_section_t sec;
+
+    if (old == NULL)
+        return;
+    /* the card's own section is "<name> #1"; device_set_context() numbers
+       an unnumbered one */
+    snprintf(name, sizeof(name), "%s #1", dev->name);
+    if ((ini_find_section(config, dev->name) != NULL) || (ini_find_section(config, name) != NULL))
+        return;
+    snprintf(name, sizeof(name), "%s #1", old);
+    if (((sec = ini_find_section(config, name)) != NULL) || ((sec = ini_find_section(config, old)) != NULL))
+        ini_rename_section(sec, dev->name);
+}
+
 /* Load "Video" section. */
 static void
 load_video(void)
@@ -759,6 +780,7 @@ load_video(void)
                 }
             }
         } else {
+            config_video_old_section(gfx_dev, p);
             device_video_config_migrate(gfx_dev, p, 0);
             gfxcard[0] = video_get_video_from_internal_name((char *) gfx_dev->internal_name);
         }
@@ -798,6 +820,7 @@ load_video(void)
         if (gfx_dev == NULL)
             gfxcard[i] = config_known(video_get_video_from_internal_name(p), STRING_UNSUPPORTED_VIDEO, p);
         else {
+            config_video_old_section(gfx_dev, p);
             device_video_config_migrate(gfx_dev, p, 0);
             gfxcard[i] = video_get_video_from_internal_name((char *) gfx_dev->internal_name);
         }

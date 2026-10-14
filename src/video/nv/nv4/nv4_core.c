@@ -928,7 +928,11 @@ nv4_init(const device_t *info)
     nv4_t *nv4 = calloc(1, sizeof(nv4_t));
     int    mb;
 
-    nv4->board  = (const nv4_board_t *) info->local;
+    /* the chosen model, else the device's own board */
+    nv4->board = nv4_board_find(device_get_config_bios("bios"));
+    if (nv4->board == NULL)
+        nv4->board = (const nv4_board_t *) info->local;
+    pclog("nv4: %s, board %s (%s)\n", info->name, nv4->board->name, nv4->board->rom_path);
     nv4->chip   = nv4->board->chip;
     nv4->is_agp = !!(info->flags & DEVICE_AGP);
 
@@ -1029,99 +1033,96 @@ nv4_force_redraw(void *priv)
 /* ------------------------------------------------------------------ */
 /* Boards.                                                             */
 /* ------------------------------------------------------------------ */
-#define ROM_ERAZOR2_PCI   "roms/video/nvidia/nv4/elsa_erazor_ii_pci_2.03.01.rom"
-#define ROM_ERAZOR2_AGP   "roms/video/nvidia/nv4/elsa_erazor_ii_agp_2.05.00.rom"
-#define ROM_ERAZOR3       "roms/video/nvidia/nv4/elsa_erazor_iii_3.05.00.rom"
-#define ROM_ERAZOR3_ULTRA "roms/video/nvidia/nv4/elsa_erazor_iii_ultra_3.05.00.rom"
-#define ROM_ERAZOR3_LT    "roms/video/nvidia/nv4/elsa_erazor_iii_lt_3.05.00.rom"
-/* Other makers' boards: their BIOSes in the same folder (Xeon3D/roms) */
-#define ROM_VIPER_V550     "roms/video/nvidia/nv4/195c0550.rom"
-#define ROM_CREATIVE_TNT   "roms/video/nvidia/nv4/nv4-creative.rom"
-#define ROM_VELOCITY_4400  "roms/video/nvidia/nv4/nv4-stbvelocity4400-110.rom"
-#define ROM_ASUS_V3400TNT  "roms/video/nvidia/nv4/v3400tnt.rom"
-#define ROM_VIPER_V770     "roms/video/nvidia/nv4/diamond-viper-v770.BIN"
-#define ROM_WINFAST_S320II "roms/video/nvidia/nv4/rivatnt2leadteks320ii.BIN"
+/* One device per chip and bus, as the RIVA 128 has; the board is its
+   "bios" option, whose values are the names the boards had as devices of
+   their own (vid_table.c moves old configurations over). The BIOSes are
+   in roms/video/nvidia/nv4 (Xeon3D/roms). */
+static const nv4_board_t board_nv4_erazor2_pci = { .name = "nv4_erazor2_pci", .rom_path = "roms/video/nvidia/nv4/elsa_erazor_ii_pci_2.03.01.rom", .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1 };
+static const nv4_board_t board_nv4_erazor2_agp_203 = { .name = "nv4_erazor2_agp_203", .rom_path = "roms/video/nvidia/nv4/ER220300.ATN", .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1, .sgram = 1 };
+static const nv4_board_t board_nv4_erazor2_agp = { .name = "nv4_erazor2_agp", .rom_path = "roms/video/nvidia/nv4/elsa_erazor_ii_agp_2.05.00.rom", .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1 };
+static const nv4_board_t board_nv4_viper_v550_193 = { .name = "nv4_viper_v550_193", .rom_path = "roms/video/nvidia/nv4/nv4-diamond-reva.rom", .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1 };
+static const nv4_board_t board_nv4_viper_v550_195e = { .name = "nv4_viper_v550_195e", .rom_path = "roms/video/nvidia/nv4/nv4-diamond-revb.rom", .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1 };
+static const nv4_board_t board_nv4_viper_v550 = { .name = "nv4_viper_v550", .rom_path = "roms/video/nvidia/nv4/195c0550.rom", .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1 };
+static const nv4_board_t board_nv4_creative_tnt = { .name = "nv4_creative_tnt", .rom_path = "roms/video/nvidia/nv4/nv4-creative.rom", .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1 };
+static const nv4_board_t board_nv4_velocity_4400_101 = { .name = "nv4_velocity_4400_101", .rom_path = "roms/video/nvidia/nv4/nv4-stb-velocity.rom", .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1 };
+static const nv4_board_t board_nv4_velocity_4400 = { .name = "nv4_velocity_4400", .rom_path = "roms/video/nvidia/nv4/nv4-stbvelocity4400-110.rom", .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1 };
+static const nv4_board_t board_nv4_asus_v3400tnt = { .name = "nv4_asus_v3400tnt", .rom_path = "roms/video/nvidia/nv4/v3400tnt.rom", .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1, .sgram = 1 };
+static const nv4_board_t board_nv5_erazor3 = { .name = "nv5_erazor3", .rom_path = "roms/video/nvidia/nv4/elsa_erazor_iii_3.05.00.rom", .device_id = NV4_PCI_DEVICE_TNT2, .chip = NV4_CHIP_TNT2, .revision = 0x11, .crystal_14m = 1 };
+static const nv4_board_t board_nv5_erazor3_pro = { .name = "nv5_erazor3_pro", .rom_path = "roms/video/nvidia/nv4/E3230500.APN", .device_id = NV4_PCI_DEVICE_TNT2, .chip = NV4_CHIP_TNT2, .revision = 0x11, .crystal_14m = 1, .sgram = 1 };
+static const nv4_board_t board_nv5_erazor3_pro_oem = { .name = "nv5_erazor3_pro_oem", .rom_path = "roms/video/nvidia/nv4/E3230500.AON", .device_id = NV4_PCI_DEVICE_TNT2, .chip = NV4_CHIP_TNT2, .revision = 0x11, .crystal_14m = 1, .sgram = 1 };
+static const nv4_board_t board_nv5_erazor3_lt = { .name = "nv5_erazor3_lt", .rom_path = "roms/video/nvidia/nv4/elsa_erazor_iii_lt_3.05.00.rom", .device_id = NV4_PCI_DEVICE_TNT2_M64, .chip = NV4_CHIP_TNT2, .revision = 0x15, .crystal_14m = 1, .mem_64bit = 1 };
+static const nv4_board_t board_nv5_synergy2_32 = { .name = "nv5_synergy2_32", .rom_path = "roms/video/nvidia/nv4/ELSA Synergy II-32 PCI.BIN", .device_id = NV4_PCI_DEVICE_TNT2, .chip = NV4_CHIP_TNT2, .revision = 0x11, .crystal_14m = 1 };
+static const nv4_board_t board_nv5_viper_v770 = { .name = "nv5_viper_v770", .rom_path = "roms/video/nvidia/nv4/diamond-viper-v770.BIN", .device_id = NV4_PCI_DEVICE_TNT2, .chip = NV4_CHIP_TNT2, .revision = 0x11, .crystal_14m = 1 };
+static const nv4_board_t board_nv5_winfast_s320ii = { .name = "nv5_winfast_s320ii", .rom_path = "roms/video/nvidia/nv4/rivatnt2leadteks320ii.BIN", .device_id = NV4_PCI_DEVICE_TNT2, .chip = NV4_CHIP_TNT2, .revision = 0x11, .crystal_14m = 1 };
+static const nv4_board_t board_nv5_erazor3_ultra = { .name = "nv5_erazor3_ultra", .rom_path = "roms/video/nvidia/nv4/elsa_erazor_iii_ultra_3.05.00.rom", .device_id = NV4_PCI_DEVICE_TNT2_U, .chip = NV4_CHIP_TNT2, .revision = 0x11, .crystal_14m = 1, .sgram = 1 };
 
-static const nv4_board_t board_erazor2_pci   = { .rom_path = ROM_ERAZOR2_PCI, .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1 };
-static const nv4_board_t board_erazor2_agp   = { .rom_path = ROM_ERAZOR2_AGP, .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1 };
-static const nv4_board_t board_erazor3       = { .rom_path = ROM_ERAZOR3, .device_id = NV4_PCI_DEVICE_TNT2, .chip = NV4_CHIP_TNT2, .revision = 0x11, .crystal_14m = 1 };
-static const nv4_board_t board_erazor3_ultra = { .rom_path = ROM_ERAZOR3_ULTRA, .device_id = NV4_PCI_DEVICE_TNT2_U, .chip = NV4_CHIP_TNT2, .revision = 0x11, .crystal_14m = 1, .sgram = 1 };
-static const nv4_board_t board_erazor3_lt    = { .rom_path = ROM_ERAZOR3_LT, .device_id = NV4_PCI_DEVICE_TNT2_M64, .chip = NV4_CHIP_TNT2, .revision = 0x15, .crystal_14m = 1, .mem_64bit = 1 };
-static const nv4_board_t board_nv4_viper_v550 = { .rom_path = ROM_VIPER_V550, .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1 };
-static const nv4_board_t board_nv4_creative_tnt = { .rom_path = ROM_CREATIVE_TNT, .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1 };
-static const nv4_board_t board_nv4_velocity_4400 = { .rom_path = ROM_VELOCITY_4400, .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1 };
-static const nv4_board_t board_nv4_asus_v3400tnt = { .rom_path = ROM_ASUS_V3400TNT, .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1, .sgram = 1 };
-static const nv4_board_t board_nv5_viper_v770 = { .rom_path = ROM_VIPER_V770, .device_id = NV4_PCI_DEVICE_TNT2, .chip = NV4_CHIP_TNT2, .revision = 0x11, .crystal_14m = 1 };
-static const nv4_board_t board_nv5_winfast_s320ii = { .rom_path = ROM_WINFAST_S320II, .device_id = NV4_PCI_DEVICE_TNT2, .chip = NV4_CHIP_TNT2, .revision = 0x11, .crystal_14m = 1 };
+static const nv4_board_t *const nv4_boards[] = {
+    &board_nv4_erazor2_pci,
+    &board_nv4_erazor2_agp_203,
+    &board_nv4_erazor2_agp,
+    &board_nv4_viper_v550_193,
+    &board_nv4_viper_v550_195e,
+    &board_nv4_viper_v550,
+    &board_nv4_creative_tnt,
+    &board_nv4_velocity_4400_101,
+    &board_nv4_velocity_4400,
+    &board_nv4_asus_v3400tnt,
+    &board_nv5_erazor3,
+    &board_nv5_erazor3_pro,
+    &board_nv5_erazor3_pro_oem,
+    &board_nv5_erazor3_lt,
+    &board_nv5_synergy2_32,
+    &board_nv5_viper_v770,
+    &board_nv5_winfast_s320ii,
+    &board_nv5_erazor3_ultra,
+    NULL
+};
 
-static int
-nv4_erazor2_pci_available(void)
+const nv4_board_t *
+nv4_board_find(const char *name)
 {
-    return rom_present(ROM_ERAZOR2_PCI);
-}
-
-static int
-nv4_erazor2_agp_available(void)
-{
-    return rom_present(ROM_ERAZOR2_AGP);
-}
-
-static int
-nv4_erazor3_available(void)
-{
-    return rom_present(ROM_ERAZOR3);
-}
-
-static int
-nv4_erazor3_ultra_available(void)
-{
-    return rom_present(ROM_ERAZOR3_ULTRA);
-}
-
-static int
-nv4_erazor3_lt_available(void)
-{
-    return rom_present(ROM_ERAZOR3_LT);
-}
-
-static int
-nv4_viper_v550_available(void)
-{
-    return rom_present(ROM_VIPER_V550);
-}
-
-static int
-nv4_creative_tnt_available(void)
-{
-    return rom_present(ROM_CREATIVE_TNT);
-}
-
-static int
-nv4_velocity_4400_available(void)
-{
-    return rom_present(ROM_VELOCITY_4400);
-}
-
-static int
-nv4_asus_v3400tnt_available(void)
-{
-    return rom_present(ROM_ASUS_V3400TNT);
-}
-
-static int
-nv5_viper_v770_available(void)
-{
-    return rom_present(ROM_VIPER_V770);
-}
-
-static int
-nv5_winfast_s320ii_available(void)
-{
-    return rom_present(ROM_WINFAST_S320II);
+    for (int i = 0; (name != NULL) && (nv4_boards[i] != NULL); i++) {
+        if (!strcmp(nv4_boards[i]->name, name))
+            return nv4_boards[i];
+    }
+    return NULL;
 }
 
 /* clang-format off */
-static const device_config_t nv4_tnt_config[] = {
+static const device_config_t nv4_tnt_pci_config[] = {
+    {
+        .name           = "bios",
+        .description    = "Model",
+        .type           = CONFIG_BIOS,
+        .default_string = "nv4_erazor2_pci",
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = { { 0 } },
+        .bios           = {
+            { .name = "ELSA ERAZOR II PCI - Version 2.03.01", .internal_name = "nv4_erazor2_pci", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/elsa_erazor_ii_pci_2.03.01.rom", "" } },
+            { .name = "ELSA ERAZOR II AGP (SGRAM) - Version 2.03.00", .internal_name = "nv4_erazor2_agp_203", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/ER220300.ATN", "" } },
+            { .name = "ELSA ERAZOR II AGP - Version 2.05.00", .internal_name = "nv4_erazor2_agp", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/elsa_erazor_ii_agp_2.05.00.rom", "" } },
+            { .name = "Diamond Viper V550 - Version 1.93E", .internal_name = "nv4_viper_v550_193", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/nv4-diamond-reva.rom", "" } },
+            { .name = "Diamond Viper V550 - Version 1.95E5802", .internal_name = "nv4_viper_v550_195e", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/nv4-diamond-revb.rom", "" } },
+            { .name = "Diamond Viper V550 - Version 1.95C0550", .internal_name = "nv4_viper_v550", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/195c0550.rom", "" } },
+            { .name = "Creative Graphics Blaster RIVA TNT - Version 2.04.6.18", .internal_name = "nv4_creative_tnt", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/nv4-creative.rom", "" } },
+            { .name = "STB Velocity 4400 - Version 1.01", .internal_name = "nv4_velocity_4400_101", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/nv4-stb-velocity.rom", "" } },
+            { .name = "STB Velocity 4400 - Version 1.10", .internal_name = "nv4_velocity_4400", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/nv4-stbvelocity4400-110.rom", "" } },
+            { .name = "ASUS AGP-V3400TNT - Version 2.04.20", .internal_name = "nv4_asus_v3400tnt", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/v3400tnt.rom", "" } },
+            { .files_no = 0 }
+        }
+    },
     {
         .name           = "memory",
         .description    = "Memory size",
@@ -1131,9 +1132,9 @@ static const device_config_t nv4_tnt_config[] = {
         .file_filter    = NULL,
         .spinner        = { 0 },
         .selection      = {
-            { .description = "8 MB",  .value = 8  },
+            { .description = "8 MB", .value = 8 },
             { .description = "16 MB", .value = 16 },
-            { .description = ""                   }
+            { .description = "" }
         },
         .bios           = { { 0 } }
     },
@@ -1152,7 +1153,7 @@ static const device_config_t nv4_tnt_config[] = {
             { .description = "4", .value = 4 },
             { .description = "6", .value = 6 },
             { .description = "8", .value = 8 },
-            { .description = ""              }
+            { .description = "" }
         },
         .bios           = { { 0 } }
     },
@@ -1170,7 +1171,116 @@ static const device_config_t nv4_tnt_config[] = {
     { .name = "", .description = "", .type = CONFIG_END }
 };
 
-static const device_config_t nv4_tnt2_config[] = {
+static const device_config_t nv4_tnt_agp_config[] = {
+    {
+        .name           = "bios",
+        .description    = "Model",
+        .type           = CONFIG_BIOS,
+        .default_string = "nv4_erazor2_agp",
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = { { 0 } },
+        .bios           = {
+            { .name = "ELSA ERAZOR II PCI - Version 2.03.01", .internal_name = "nv4_erazor2_pci", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/elsa_erazor_ii_pci_2.03.01.rom", "" } },
+            { .name = "ELSA ERAZOR II AGP (SGRAM) - Version 2.03.00", .internal_name = "nv4_erazor2_agp_203", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/ER220300.ATN", "" } },
+            { .name = "ELSA ERAZOR II AGP - Version 2.05.00", .internal_name = "nv4_erazor2_agp", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/elsa_erazor_ii_agp_2.05.00.rom", "" } },
+            { .name = "Diamond Viper V550 - Version 1.93E", .internal_name = "nv4_viper_v550_193", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/nv4-diamond-reva.rom", "" } },
+            { .name = "Diamond Viper V550 - Version 1.95E5802", .internal_name = "nv4_viper_v550_195e", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/nv4-diamond-revb.rom", "" } },
+            { .name = "Diamond Viper V550 - Version 1.95C0550", .internal_name = "nv4_viper_v550", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/195c0550.rom", "" } },
+            { .name = "Creative Graphics Blaster RIVA TNT - Version 2.04.6.18", .internal_name = "nv4_creative_tnt", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/nv4-creative.rom", "" } },
+            { .name = "STB Velocity 4400 - Version 1.01", .internal_name = "nv4_velocity_4400_101", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/nv4-stb-velocity.rom", "" } },
+            { .name = "STB Velocity 4400 - Version 1.10", .internal_name = "nv4_velocity_4400", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/nv4-stbvelocity4400-110.rom", "" } },
+            { .name = "ASUS AGP-V3400TNT - Version 2.04.20", .internal_name = "nv4_asus_v3400tnt", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/v3400tnt.rom", "" } },
+            { .files_no = 0 }
+        }
+    },
+    {
+        .name           = "memory",
+        .description    = "Memory size",
+        .type           = CONFIG_SELECTION,
+        .default_string = NULL,
+        .default_int    = 16,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = {
+            { .description = "8 MB", .value = 8 },
+            { .description = "16 MB", .value = 16 },
+            { .description = "" }
+        },
+        .bios           = { { 0 } }
+    },
+    {
+        .name           = "render_threads",
+        .description    = "Render threads",
+        .type           = CONFIG_SELECTION,
+        .default_string = NULL,
+        .default_int    = 2,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = {
+            { .description = "1", .value = 1 },
+            { .description = "2", .value = 2 },
+            { .description = "3", .value = 3 },
+            { .description = "4", .value = 4 },
+            { .description = "6", .value = 6 },
+            { .description = "8", .value = 8 },
+            { .description = "" }
+        },
+        .bios           = { { 0 } }
+    },
+    {
+        .name           = "gpu_raster",
+        .description    = "Draw 3D on the host GPU (Vulkan)",
+        .type           = CONFIG_BINARY,
+        .default_string = NULL,
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = { { 0 } },
+        .bios           = { { 0 } }
+    },
+    { .name = "", .description = "", .type = CONFIG_END }
+};
+
+static const device_config_t nv5_tnt2_config[] = {
+    {
+        .name           = "bios",
+        .description    = "Model",
+        .type           = CONFIG_BIOS,
+        .default_string = "nv5_erazor3",
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = { { 0 } },
+        .bios           = {
+            { .name = "ELSA ERAZOR III - Version 3.05.00", .internal_name = "nv5_erazor3", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/elsa_erazor_iii_3.05.00.rom", "" } },
+            { .name = "ELSA ERAZOR III Pro - Version 3.05.00", .internal_name = "nv5_erazor3_pro", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/E3230500.APN", "" } },
+            { .name = "ELSA ERAZOR III Pro OEM - Version 3.05.00", .internal_name = "nv5_erazor3_pro_oem", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/E3230500.AON", "" } },
+            { .name = "ELSA ERAZOR III LT (TNT2 M64) - Version 3.05.00", .internal_name = "nv5_erazor3_lt", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/elsa_erazor_iii_lt_3.05.00.rom", "" } },
+            { .name = "ELSA Synergy II-32 - Version 3.05.00", .internal_name = "nv5_synergy2_32", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/ELSA Synergy II-32 PCI.BIN", "" } },
+            { .name = "Diamond Viper V770 - Version 2.01C4A00", .internal_name = "nv5_viper_v770", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/diamond-viper-v770.BIN", "" } },
+            { .name = "Leadtek WinFast 3D S320 II - Version 99.04.12", .internal_name = "nv5_winfast_s320ii", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/rivatnt2leadteks320ii.BIN", "" } },
+            { .files_no = 0 }
+        }
+    },
     {
         .name           = "memory",
         .description    = "Memory size",
@@ -1182,7 +1292,7 @@ static const device_config_t nv4_tnt2_config[] = {
         .selection      = {
             { .description = "16 MB", .value = 16 },
             { .description = "32 MB", .value = 32 },
-            { .description = ""                   }
+            { .description = "" }
         },
         .bios           = { { 0 } }
     },
@@ -1201,7 +1311,7 @@ static const device_config_t nv4_tnt2_config[] = {
             { .description = "4", .value = 4 },
             { .description = "6", .value = 6 },
             { .description = "8", .value = 8 },
-            { .description = ""              }
+            { .description = "" }
         },
         .bios           = { { 0 } }
     },
@@ -1219,157 +1329,152 @@ static const device_config_t nv4_tnt2_config[] = {
     { .name = "", .description = "", .type = CONFIG_END }
 };
 
-const device_t nv4_erazor2_pci_device = {
-    .name          = "ELSA ERAZOR II PCI (RIVA TNT)",
-    .internal_name = "nv4_erazor2_pci",
+static const device_config_t nv5_tnt2_ultra_config[] = {
+    {
+        .name           = "bios",
+        .description    = "Model",
+        .type           = CONFIG_BIOS,
+        .default_string = "nv5_erazor3_ultra",
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = { { 0 } },
+        .bios           = {
+            { .name = "ELSA ERAZOR III ULTRA - Version 3.05.00", .internal_name = "nv5_erazor3_ultra", .bios_type = BIOS_NORMAL,
+              .files_no = 1, .local = 0, .size = 0, .files = { "roms/video/nvidia/nv4/elsa_erazor_iii_ultra_3.05.00.rom", "" } },
+            { .files_no = 0 }
+        }
+    },
+    {
+        .name           = "memory",
+        .description    = "Memory size",
+        .type           = CONFIG_SELECTION,
+        .default_string = NULL,
+        .default_int    = 32,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = {
+            { .description = "16 MB", .value = 16 },
+            { .description = "32 MB", .value = 32 },
+            { .description = "" }
+        },
+        .bios           = { { 0 } }
+    },
+    {
+        .name           = "render_threads",
+        .description    = "Render threads",
+        .type           = CONFIG_SELECTION,
+        .default_string = NULL,
+        .default_int    = 2,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = {
+            { .description = "1", .value = 1 },
+            { .description = "2", .value = 2 },
+            { .description = "3", .value = 3 },
+            { .description = "4", .value = 4 },
+            { .description = "6", .value = 6 },
+            { .description = "8", .value = 8 },
+            { .description = "" }
+        },
+        .bios           = { { 0 } }
+    },
+    {
+        .name           = "gpu_raster",
+        .description    = "Draw 3D on the host GPU (Vulkan)",
+        .type           = CONFIG_BINARY,
+        .default_string = NULL,
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = { { 0 } },
+        .bios           = { { 0 } }
+    },
+    { .name = "", .description = "", .type = CONFIG_END }
+};
+
+const device_t nv4_tnt_pci_device = {
+    .name          = "nVIDIA RIVA TNT (NV4) PCI",
+    .internal_name = "nv4_tnt_pci",
     .flags         = DEVICE_PCI,
-    .local         = (uintptr_t) &board_erazor2_pci,
+    .local         = (uintptr_t) &board_nv4_erazor2_pci,
     .init          = nv4_init,
     .close         = nv4_close,
     .reset         = nv4_reset,
-    .available     = nv4_erazor2_pci_available,
+    .available     = NULL,
     .speed_changed = nv4_speed_changed,
     .force_redraw  = nv4_force_redraw,
-    .config        = nv4_tnt_config
+    .config        = nv4_tnt_pci_config
 };
 
-const device_t nv4_erazor2_agp_device = {
-    .name          = "ELSA ERAZOR II AGP (RIVA TNT)",
-    .internal_name = "nv4_erazor2_agp",
+const device_t nv4_tnt_agp_device = {
+    .name          = "nVIDIA RIVA TNT (NV4) AGP",
+    .internal_name = "nv4_tnt_agp",
     .flags         = DEVICE_AGP,
-    .local         = (uintptr_t) &board_erazor2_agp,
+    .local         = (uintptr_t) &board_nv4_erazor2_agp,
     .init          = nv4_init,
     .close         = nv4_close,
     .reset         = nv4_reset,
-    .available     = nv4_erazor2_agp_available,
+    .available     = NULL,
     .speed_changed = nv4_speed_changed,
     .force_redraw  = nv4_force_redraw,
-    .config        = nv4_tnt_config
+    .config        = nv4_tnt_agp_config
 };
 
-const device_t nv5_erazor3_device = {
-    .name          = "ELSA ERAZOR III AGP (RIVA TNT2)",
-    .internal_name = "nv5_erazor3",
-    .flags         = DEVICE_AGP,
-    .local         = (uintptr_t) &board_erazor3,
+const device_t nv5_tnt2_pci_device = {
+    .name          = "nVIDIA RIVA TNT2 (NV5) PCI",
+    .internal_name = "nv5_tnt2_pci",
+    .flags         = DEVICE_PCI,
+    .local         = (uintptr_t) &board_nv5_erazor3,
     .init          = nv4_init,
     .close         = nv4_close,
     .reset         = nv4_reset,
-    .available     = nv4_erazor3_available,
+    .available     = NULL,
     .speed_changed = nv4_speed_changed,
     .force_redraw  = nv4_force_redraw,
-    .config        = nv4_tnt2_config
+    .config        = nv5_tnt2_config
 };
 
-const device_t nv5_erazor3_ultra_device = {
-    .name          = "ELSA ERAZOR III ULTRA AGP (RIVA TNT2 Ultra)",
-    .internal_name = "nv5_erazor3_ultra",
+const device_t nv5_tnt2_agp_device = {
+    .name          = "nVIDIA RIVA TNT2 (NV5) AGP",
+    .internal_name = "nv5_tnt2_agp",
     .flags         = DEVICE_AGP,
-    .local         = (uintptr_t) &board_erazor3_ultra,
+    .local         = (uintptr_t) &board_nv5_erazor3,
     .init          = nv4_init,
     .close         = nv4_close,
     .reset         = nv4_reset,
-    .available     = nv4_erazor3_ultra_available,
+    .available     = NULL,
     .speed_changed = nv4_speed_changed,
     .force_redraw  = nv4_force_redraw,
-    .config        = nv4_tnt2_config
+    .config        = nv5_tnt2_config
 };
 
-const device_t nv5_erazor3_lt_device = {
-    .name          = "ELSA ERAZOR III LT AGP (RIVA TNT2 M64)",
-    .internal_name = "nv5_erazor3_lt",
-    .flags         = DEVICE_AGP,
-    .local         = (uintptr_t) &board_erazor3_lt,
+const device_t nv5_tnt2_ultra_pci_device = {
+    .name          = "nVIDIA RIVA TNT2 Ultra (NV5) PCI",
+    .internal_name = "nv5_tnt2_ultra_pci",
+    .flags         = DEVICE_PCI,
+    .local         = (uintptr_t) &board_nv5_erazor3_ultra,
     .init          = nv4_init,
     .close         = nv4_close,
     .reset         = nv4_reset,
-    .available     = nv4_erazor3_lt_available,
+    .available     = NULL,
     .speed_changed = nv4_speed_changed,
     .force_redraw  = nv4_force_redraw,
-    .config        = nv4_tnt2_config
+    .config        = nv5_tnt2_ultra_config
 };
 
-const device_t nv4_viper_v550_device = {
-    .name          = "Diamond Viper V550 AGP (RIVA TNT)",
-    .internal_name = "nv4_viper_v550",
+const device_t nv5_tnt2_ultra_agp_device = {
+    .name          = "nVIDIA RIVA TNT2 Ultra (NV5) AGP",
+    .internal_name = "nv5_tnt2_ultra_agp",
     .flags         = DEVICE_AGP,
-    .local         = (uintptr_t) &board_nv4_viper_v550,
+    .local         = (uintptr_t) &board_nv5_erazor3_ultra,
     .init          = nv4_init,
     .close         = nv4_close,
     .reset         = nv4_reset,
-    .available     = nv4_viper_v550_available,
+    .available     = NULL,
     .speed_changed = nv4_speed_changed,
     .force_redraw  = nv4_force_redraw,
-    .config        = nv4_tnt_config
+    .config        = nv5_tnt2_ultra_config
 };
 
-const device_t nv4_creative_tnt_device = {
-    .name          = "Creative Graphics Blaster RIVA TNT AGP",
-    .internal_name = "nv4_creative_tnt",
-    .flags         = DEVICE_AGP,
-    .local         = (uintptr_t) &board_nv4_creative_tnt,
-    .init          = nv4_init,
-    .close         = nv4_close,
-    .reset         = nv4_reset,
-    .available     = nv4_creative_tnt_available,
-    .speed_changed = nv4_speed_changed,
-    .force_redraw  = nv4_force_redraw,
-    .config        = nv4_tnt_config
-};
-
-const device_t nv4_velocity_4400_device = {
-    .name          = "STB Velocity 4400 AGP (RIVA TNT)",
-    .internal_name = "nv4_velocity_4400",
-    .flags         = DEVICE_AGP,
-    .local         = (uintptr_t) &board_nv4_velocity_4400,
-    .init          = nv4_init,
-    .close         = nv4_close,
-    .reset         = nv4_reset,
-    .available     = nv4_velocity_4400_available,
-    .speed_changed = nv4_speed_changed,
-    .force_redraw  = nv4_force_redraw,
-    .config        = nv4_tnt_config
-};
-
-const device_t nv4_asus_v3400tnt_device = {
-    .name          = "ASUS AGP-V3400TNT (RIVA TNT)",
-    .internal_name = "nv4_asus_v3400tnt",
-    .flags         = DEVICE_AGP,
-    .local         = (uintptr_t) &board_nv4_asus_v3400tnt,
-    .init          = nv4_init,
-    .close         = nv4_close,
-    .reset         = nv4_reset,
-    .available     = nv4_asus_v3400tnt_available,
-    .speed_changed = nv4_speed_changed,
-    .force_redraw  = nv4_force_redraw,
-    .config        = nv4_tnt_config
-};
-
-const device_t nv5_viper_v770_device = {
-    .name          = "Diamond Viper V770 AGP (RIVA TNT2)",
-    .internal_name = "nv5_viper_v770",
-    .flags         = DEVICE_AGP,
-    .local         = (uintptr_t) &board_nv5_viper_v770,
-    .init          = nv4_init,
-    .close         = nv4_close,
-    .reset         = nv4_reset,
-    .available     = nv5_viper_v770_available,
-    .speed_changed = nv4_speed_changed,
-    .force_redraw  = nv4_force_redraw,
-    .config        = nv4_tnt2_config
-};
-
-const device_t nv5_winfast_s320ii_device = {
-    .name          = "Leadtek WinFast 3D S320 II AGP (RIVA TNT2)",
-    .internal_name = "nv5_winfast_s320ii",
-    .flags         = DEVICE_AGP,
-    .local         = (uintptr_t) &board_nv5_winfast_s320ii,
-    .init          = nv4_init,
-    .close         = nv4_close,
-    .reset         = nv4_reset,
-    .available     = nv5_winfast_s320ii_available,
-    .speed_changed = nv4_speed_changed,
-    .force_redraw  = nv4_force_redraw,
-    .config        = nv4_tnt2_config
-};
 /* clang-format on */

@@ -136,7 +136,7 @@ From Bash with MSYS2 UCRT64 first on PATH:
 
 ## Testing
 - **TNT2 VM:** `F:\Claude\86Box-Next\work-tnt2`, a copy of work-tnt with
-  `gfxcard = nv5_erazor3` and `nv4drv.iso` in the CD drive; Windows found
+  `gfxcard = nv5_erazor3` (now `nv5_tnt2_agp`, model ERAZOR III) and `nv4drv.iso` in the CD drive; Windows found
   the TNT2 and installed the same driver by itself. Point the scripts at
   it with `TNT_DIR=/f/Claude/86Box-Next/work-tnt2`. When copying a VM:
   delete `uuid` from the copy's `[General]` (or 86Box asks "moved or
@@ -406,7 +406,25 @@ Recommended order: 4, then 7, then 5.
    desktop; text was missing until 7c1a49089 (its driver sets a glyph's
    size/point through GDI block E and sends the bits through block C);
    Start > Restart reboots cleanly; OVLTEST passes all three phases;
-   Media Player 6.4 plays an MPEG-1 clip in real time. NT4 not tried.
+   Media Player 6.4 plays an MPEG-1 clip in real time.
+   **NT4 done (2026-10-14):** VM `work-nt4-tnt` (copy of work-nt4:
+   p6bap, Celeron 233, `nv4_tnt_agp` ERAZOR II AGP, SCSI CD =
+   `dl/nt4drv2.iso`: `NT2832`, `NT4345` = NVIDIA 28.32 and 43.45 NT4
+   packages from the owner's Downloads, `SP6A` = sp6ai386.exe from
+   `G:\Old OS\Windows NT 4.x\...\Service Pack 6`). The guest was SP1;
+   NVIDIA's setup needs SP4+ ("Internal error 10" otherwise), so SP6a is
+   installed now. 28.32 (setup.exe, pick "NVIDIA RIVA TNT") hung at boot
+   until the DMA_CTL fix: `nvHalFifoContextSwitch_NV04` clears
+   DMA_CTL.AT_INFO (bit 31) and spins until the chip sets it again (the
+   pusher re-reads the push buffer's DMA object) -- now done at once in
+   nv4_pfifo.c. Works: 800x600x16 and 1024x768x32 desktops, mode test
+   bitmap, mode change without reboot, OpenGL (3D Pipes screensaver
+   through nvoglnt.dll, 16 and 32 bpp), Start > Restart through the
+   ERAZOR II BIOS. The NVIDIA tab says "TV Encoder: Conexant Bt868"
+   although no I2C traffic at all reaches CR3E/CR3F during its start
+   (`dev regs`): most likely the panel's default name; not chased.
+   Not tried yet: OVLTEST/DirectDraw on NT4, 43.45. (The VM was left
+   paused with its Settings window open from the desktop at 16:34.)
 6. Linux (B8, optional): XFree86 `nv`, `rivafb`.
 
 **Hardware not modeled yet**
@@ -427,9 +445,24 @@ Recommended order: 4, then 7, then 5.
 **Platforms, speed, docs**
 10. DOS/VESA (D12): VBE tester, VESA games, an AMI board, ERAZOR II PCI
     on Socket 7.
-11. More boards (D13/D14): Creative, Diamond Viper V550/V770, STB,
-    Leadtek, Hercules BIOSes are already in Xeon3D/roms
-    (`video/nvidia/nv4`); check the TNT2's AGP 4x capability.
+11. More boards (D13/D14). **Regrouped (2026-10-14, owner's request):**
+    like NV3, one device per chip and bus -- `nv4_tnt_pci/agp`,
+    `nv5_tnt2_pci/agp`, `nv5_tnt2_ultra_pci/agp` ("nVIDIA RIVA TNT (NV4)
+    AGP" ...) -- and the board is the CONFIG_BIOS option `bios` ("Model",
+    first in the config so ROM availability works). Its values are the old
+    device internal names, so `video_cards_migrate` maps an old `gfxcard =
+    nv4_erazor2_agp` etc. to the new device + model, and its new
+    `old_name` moves the old "<board> #1" section (memory, threads, GPU)
+    over (`config_video_old_section()` in config.c). 18 models, all POST
+    (`tools/nv4/postall.sh` on work-post): TNT -- ERAZOR II PCI 2.03.01,
+    AGP 2.03.00 (SGRAM) and 2.05.00, Viper V550 1.93E/1.95E5802/1.95C0550,
+    Creative 2.04.6.18, Velocity 4400 1.01/1.10, ASUS V3400TNT 2.04.20;
+    TNT2 -- ERAZOR III, III Pro, III Pro OEM (SGRAM), III LT (M64),
+    Synergy II-32, Viper V770, WinFast S320 II; Ultra -- ERAZOR III ULTRA.
+    Left out on purpose: ASUS v3800pro.rom (PCIR says 0029) and
+    v3800ultra.rom (PCIR 0028) contradict their names; the ELSA
+    Video/Panel variants (E3230500.A2V/APV/AUV/A2P) need a video decoder
+    or panel. Still to check: the TNT2's AGP 4x capability.
 12. Speed (E15-E17): fixed-point CPU span stepping, GPU kernel variants,
     a capture/replay harness (more useful under the 266 MHz cap).
 13. Docs (F20): driver notes like NV3's, a test matrix

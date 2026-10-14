@@ -101,8 +101,9 @@ debug_cmd_shot(const char *path)
         always_log("debug_cmd: shot %s: no screen\n", path);
         return;
     }
-    w = mon->mon_xsize + 32;
-    h = mon->mon_ysize + 32;
+    /* the picture and the overscan the monitor shows, nothing past it */
+    w = mon->mon_xsize + mon->mon_overscan_x;
+    h = mon->mon_ysize + mon->mon_overscan_y;
     if (w > bmp->w)
         w = bmp->w;
     if (h > bmp->h)

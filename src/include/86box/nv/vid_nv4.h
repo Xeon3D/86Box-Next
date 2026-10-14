@@ -428,6 +428,7 @@ struct nv4_3d_batch_s;
 /* Board options.                                                      */
 /* ------------------------------------------------------------------ */
 typedef struct nv4_board_s {
+    const char *name;         /* its "bios" option value */
     const char *rom_path;
     uint16_t    device_id;
     nv4_chip_t  chip;
@@ -638,6 +639,7 @@ extern void     nv4_pfb_write(nv4_t *nv4, uint32_t addr, uint32_t val);
 extern uint32_t nv4_pextdev_read(nv4_t *nv4, uint32_t addr);
 extern void     nv4_pextdev_write(nv4_t *nv4, uint32_t addr, uint32_t val);
 extern uint32_t nv4_straps(const nv4_t *nv4);
+extern const nv4_board_t *nv4_board_find(const char *name);
 extern double   nv4_crystal_hz(const nv4_t *nv4);
 
 /* subsystems/nv4_pramdac.c */

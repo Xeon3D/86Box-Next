@@ -46,6 +46,7 @@ typedef struct video_card_t {
 typedef struct video_card_migrate_t {
     const device_t *device;
     const char     *old_internal_name;
+    const char     *old_name; /* the old device's config section, if its settings move over */
 } video_card_migrate_t;
 
 static video_timings_t timing_default = { .type = VIDEO_ISA, .write_b = 8, .write_w = 16, .write_l = 32, .read_b = 8, .read_w = 16, .read_l = 32 };
@@ -189,7 +190,9 @@ video_cards[] = {
     { .device = &mystique_220_device,                           .flags = VIDEO_FLAG_TYPE_SECONDARY },
     { .device = &nv3_device_pci,                                .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &nv3t_device_pci,                               .flags = VIDEO_FLAG_TYPE_NONE      },
-    { .device = &nv4_erazor2_pci_device,                        .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &nv4_tnt_pci_device,                            .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &nv5_tnt2_pci_device,                           .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &nv5_tnt2_ultra_pci_device,                     .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &s3_86c928_pci_device,                          .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &s3_trio32_pci_device,                          .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &s3_trio3d2x_pci_device,                        .flags = VIDEO_FLAG_TYPE_NONE      },
@@ -222,16 +225,9 @@ video_cards[] = {
     { .device = &millennium_ii_agp_device,                      .flags = VIDEO_FLAG_TYPE_SECONDARY },
     { .device = &nv3_device_agp,                                .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &nv3t_device_agp,                               .flags = VIDEO_FLAG_TYPE_NONE      },
-    { .device = &nv4_erazor2_agp_device,                        .flags = VIDEO_FLAG_TYPE_NONE      },
-    { .device = &nv5_erazor3_device,                            .flags = VIDEO_FLAG_TYPE_NONE      },
-    { .device = &nv5_erazor3_lt_device,                         .flags = VIDEO_FLAG_TYPE_NONE      },
-    { .device = &nv5_erazor3_ultra_device,                      .flags = VIDEO_FLAG_TYPE_NONE      },
-    { .device = &nv4_viper_v550_device,                         .flags = VIDEO_FLAG_TYPE_NONE      },
-    { .device = &nv4_creative_tnt_device,                       .flags = VIDEO_FLAG_TYPE_NONE      },
-    { .device = &nv4_velocity_4400_device,                      .flags = VIDEO_FLAG_TYPE_NONE      },
-    { .device = &nv4_asus_v3400tnt_device,                      .flags = VIDEO_FLAG_TYPE_NONE      },
-    { .device = &nv5_viper_v770_device,                         .flags = VIDEO_FLAG_TYPE_NONE      },
-    { .device = &nv5_winfast_s320ii_device,                     .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &nv4_tnt_agp_device,                            .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &nv5_tnt2_agp_device,                           .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &nv5_tnt2_ultra_agp_device,                     .flags = VIDEO_FLAG_TYPE_NONE      },
 #ifdef USE_G100
     { .device = &productiva_g100_device,                        .flags = VIDEO_FLAG_TYPE_SPECIAL   },
 #endif /*USE_G100 */
@@ -381,6 +377,18 @@ video_cards_migrate[] = {
     { .device = &voodoo_3_3500_agp_device,                      .old_internal_name = "voodoo3_3500_se_agp"            },
     { .device = &voodoo_3_3500_agp_device,                      .old_internal_name = "voodoo3_3500_si_agp"            },
     /* End of table */
+    /* RIVA TNT/TNT2 boards: now a "bios" choice of one device per chip and bus */
+    { .device = &nv4_tnt_pci_device,                            .old_internal_name = "nv4_erazor2_pci",               .old_name = "ELSA ERAZOR II PCI (RIVA TNT)" },
+    { .device = &nv4_tnt_agp_device,                            .old_internal_name = "nv4_erazor2_agp",               .old_name = "ELSA ERAZOR II AGP (RIVA TNT)" },
+    { .device = &nv4_tnt_agp_device,                            .old_internal_name = "nv4_viper_v550",                .old_name = "Diamond Viper V550 AGP (RIVA TNT)" },
+    { .device = &nv4_tnt_agp_device,                            .old_internal_name = "nv4_creative_tnt",              .old_name = "Creative Graphics Blaster RIVA TNT AGP" },
+    { .device = &nv4_tnt_agp_device,                            .old_internal_name = "nv4_velocity_4400",             .old_name = "STB Velocity 4400 AGP (RIVA TNT)" },
+    { .device = &nv4_tnt_agp_device,                            .old_internal_name = "nv4_asus_v3400tnt",             .old_name = "ASUS AGP-V3400TNT (RIVA TNT)" },
+    { .device = &nv5_tnt2_agp_device,                           .old_internal_name = "nv5_erazor3",                   .old_name = "ELSA ERAZOR III AGP (RIVA TNT2)" },
+    { .device = &nv5_tnt2_agp_device,                           .old_internal_name = "nv5_erazor3_lt",                .old_name = "ELSA ERAZOR III LT AGP (RIVA TNT2 M64)" },
+    { .device = &nv5_tnt2_agp_device,                           .old_internal_name = "nv5_viper_v770",                .old_name = "Diamond Viper V770 AGP (RIVA TNT2)" },
+    { .device = &nv5_tnt2_agp_device,                           .old_internal_name = "nv5_winfast_s320ii",            .old_name = "Leadtek WinFast 3D S320 II AGP (RIVA TNT2)" },
+    { .device = &nv5_tnt2_ultra_agp_device,                     .old_internal_name = "nv5_erazor3_ultra",             .old_name = "ELSA ERAZOR III ULTRA AGP (RIVA TNT2 Ultra)" },
     { .device = NULL,                                           .old_internal_name = ""                               }
   // clang-format on
 };
@@ -647,6 +655,19 @@ video_get_video_from_internal_name(char *s)
     }
 
     return 0;
+}
+
+/* The config section an old card's settings were in, when they move to
+   the new device's; NULL if none. */
+const char *
+video_get_old_section_name(char *s)
+{
+    for (int c = 0; video_cards_migrate[c].device != NULL; c++) {
+        if (!strcmp(video_cards_migrate[c].old_internal_name, s))
+            return video_cards_migrate[c].old_name;
+    }
+
+    return NULL;
 }
 
 const device_t *

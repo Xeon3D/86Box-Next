@@ -285,6 +285,7 @@ extern const char *video_get_internal_name(int card);
 extern int         video_get_video_from_internal_name(char *s);
 #ifdef EMU_DEVICE_H
 extern const device_t *video_get_video_from_old_internal_name(char *s);
+extern const char     *video_get_old_section_name(char *s);
 #endif
 extern int         video_is_mda(void);
 extern int         video_is_cga(void);
@@ -674,17 +675,12 @@ extern const device_t nv3_device_pci;
 extern const device_t nv3_device_agp;
 extern const device_t nv3t_device_pci;
 extern const device_t nv3t_device_agp;
-extern const device_t nv4_erazor2_pci_device;
-extern const device_t nv4_erazor2_agp_device;
-extern const device_t nv5_erazor3_device;
-extern const device_t nv5_erazor3_ultra_device;
-extern const device_t nv5_erazor3_lt_device;
-extern const device_t nv4_viper_v550_device;
-extern const device_t nv4_creative_tnt_device;
-extern const device_t nv4_velocity_4400_device;
-extern const device_t nv4_asus_v3400tnt_device;
-extern const device_t nv5_viper_v770_device;
-extern const device_t nv5_winfast_s320ii_device;
+extern const device_t nv4_tnt_pci_device;
+extern const device_t nv4_tnt_agp_device;
+extern const device_t nv5_tnt2_pci_device;
+extern const device_t nv5_tnt2_agp_device;
+extern const device_t nv5_tnt2_ultra_pci_device;
+extern const device_t nv5_tnt2_ultra_agp_device;
 
 #endif
 
