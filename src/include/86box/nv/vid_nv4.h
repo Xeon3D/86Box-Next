@@ -557,6 +557,9 @@ typedef struct nv4_s {
     } dbg_user[16];
     uint32_t      dbg_trace;          /* methods left to log */
     uint32_t      dbg_regtrace;       /* register writes left to log */
+    /* "dev reads N": the registers read most over the next N reads */
+    uint32_t      dbg_reads_left;
+    uint32_t      dbg_read_addr[64], dbg_read_count[64];
     uint32_t      dbg_vblanks;        /* vertical blanks, for "dev 3d" */
     uint32_t      vblank_count;       /* vertical blanks since power-on */
     /* DMA into system memory, for the debug hook: the last writes and

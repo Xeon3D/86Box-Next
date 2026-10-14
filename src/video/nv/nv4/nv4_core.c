@@ -287,6 +287,21 @@ nv4_mmio_read(nv4_t *nv4, uint32_t addr, int len)
 {
     addr &= NV4_MMIO_SIZE - 1;
 
+    if (nv4->dbg_reads_left && (addr < NV4_PRAMIN_START)) {
+        int i;
+
+        for (i = 0; (i < 64) && nv4->dbg_read_count[i] && (nv4->dbg_read_addr[i] != addr); i++)
+            ;
+        if (i < 64) {
+            nv4->dbg_read_addr[i] = addr;
+            nv4->dbg_read_count[i]++;
+        }
+        if (!--nv4->dbg_reads_left) {
+            for (i = 0; (i < 64) && nv4->dbg_read_count[i]; i++)
+                pclog("nv4 reads: %06x x%u\n", nv4->dbg_read_addr[i], nv4->dbg_read_count[i]);
+        }
+    }
+
     if (nv4_mmio_byte_wide(addr)) {
         uint32_t ret = 0;
         for (int i = 0; i < len; i++)
@@ -820,6 +835,13 @@ nv4_debug_hook(const char *args)
     if (args && !strncmp(args, "trace", 5)) {
         nv4->dbg_trace = strtoul(args + 5, NULL, 0);
         pclog("nv4: tracing %u methods\n", nv4->dbg_trace);
+        return;
+    }
+    if (args && !strncmp(args, "reads", 5)) {
+        /* reads N: after N register reads, list the registers read */
+        memset(nv4->dbg_read_count, 0, sizeof(nv4->dbg_read_count));
+        nv4->dbg_reads_left = strtoul(args + 5, NULL, 0);
+        pclog("nv4: counting %u register reads\n", nv4->dbg_reads_left);
         return;
     }
     if (args && !strncmp(args, "regs", 4)) {
