@@ -354,9 +354,11 @@ Recommended order: 4, then 7, then 5.
 4. Later NVIDIA drivers (B6): 8.05 and 71.84 are already unpacked in
    `F:\Claude\86Box-Next\dl` (`NV805`, `NV7184`) and list the TNT2 Ultra
    (0029), M64 (002D) and Vanta. They test the ERAZOR III ULTRA and LT,
-   the NV5 classes 0x64-0x66 (13ba43f0b, never run) and probably need
-   0x63 (not written). Install on a copy of work-tnt2 with the board
-   switched, never over the 4.11 VMs.
+   and the NV5 classes 0x64-0x66 (13ba43f0b, never run). There is no
+   0x63 on NV5: envytools lists `sifm_nv5` (0x63) from NV10 on only.
+   VM: `work-ultra` (copy of work-tnt2, ERAZOR III ULTRA, Celeron 233,
+   nv4tools.iso in the CD drive: `NV805`, `NV7184`); 8.05 is an INF
+   install (NVAML.INF), so Windows' new-hardware wizard takes it.
 5. Windows 2000 / NT4 (B7): other resman, several channels; test Start >
    Restart too (the NV3 restart-hang lesson).
 6. Linux (B8, optional): XFree86 `nv`, `rivafb`.
@@ -365,7 +367,7 @@ Recommended order: 4, then 7, then 5.
 7. PVIDEO overlay (C9): register stub in `nv4_stubs.c`; port NV3's
    (wt-nv3) to NV4's layout; Media Player + DxDiag overlay tests.
 8. Classes (C10): 0x38 DVD subpicture (3DMark 2000 sets it up), 0x48 DX3
-   triangle, NV5 0x63; 3D into a swizzled surface (A3) when something
+   triangle; 3D into a swizzled surface (A3) when something
    needs it.
 9. PME / TV encoders (C11): only if a BIOS or driver hangs on them.
 
@@ -426,7 +428,7 @@ took, and commit only your own paths.
    2000 + UT demo) if no answer.
 6. **A 1999 Detonator** (2.08 / 3.53 / 3.68): lists 0029 (ULTRA), 002C
    (Vanta), 002D (M64), so it is what tests those boards; newer drivers
-   use the NV5 class variants (0x63-0x66) and may move set-context
+   use the NV5 class variants (0x64-0x66) and may move set-context
    methods to hardware via DEBUG_3. The owner has to supply the files
    (not in the archive drop or `F:\86box FTP`).
 7. **Windows 2000** (inbox NVIDIA driver) and **NT4** (archive driver):
@@ -449,9 +451,11 @@ took, and commit only your own paths.
     - 0x48, the DX3 textured triangle kept from NV3 (old D3D apps,
       possibly the ICD's fallbacks).
     - 0x38 DVD subpicture (with the overlay; DVD players).
-    - NV5 0x63-0x66 (NV5 SIFM/IIFC/IFC/SIFC variants): needed by the
-      Detonators of B6. envytools `hwtest/pgraph.cc` has their method
-      lists.
+    - NV5 0x64-0x66 (IIFC/IFC/SIFC variants): done in 13ba43f0b, not
+      yet run by a driver. 0x63 is an NV10 class. On the TNT (NV4 only)
+      0x10/0x11/0x13/0x15 and 0x64-0x67 are the old operation objects
+      (clip, blend, ROP, chroma, srccopy...), not modeled: 4.11 never
+      makes them.
     Do them in the order A2's counters show them.
 11. **PME (media port), TV encoders** (Bt869/Chrontel on I2C): only if a
     BIOS or driver hangs probing them.
