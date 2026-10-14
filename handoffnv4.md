@@ -353,13 +353,83 @@ note), so expect slow runs rather than raising the CPU.
 
 Recommended order: 4, then 7, then 5.
 
+**Where the 2026-10-15 session stopped (read this first).** The owner
+asked for items 1-4 and 6 of the list they were given (= here: 71.84,
+NT4, the NV5 classes 0x64-0x66, Quake III/GLQuake/Quake II, DOS/VESA).
+- Done and committed on `tnt` (e6cfa815c, not merged to master, not
+  released, rigs not staged -- ask before merging/pushing/staging):
+  71.84 hang fixed (awaken notify), scan-out start latch, debug aids.
+  71.84's D3D still draws nothing (item 4 below has the analysis).
+- NT4 finished: DirectDraw overlay (OVLTEST, all three phases) on 28.32
+  and 43.45; 43.45 installs (pick "NVIDIA RIVA TNT"), desktop, OpenGL
+  pipes, Restart. The "Bt868" label: the miniport never probes I2C
+  (no CR3E/3F traffic) -- the straps say TV disabled (bits 8:7 = 3), so
+  the panel shows its first encoder name. Not an emulation bug.
+- 0x64-0x66: no driver at hand uses them. Checked: Win2000 inbox driver
+  and 71.84 for Win2000 on a PCI TNT2 (work-w2k-tnt), 8.05, 71.84 9x --
+  all use 0x60/0x61 (and 0x72 once). NVIDIA's display driver picks the
+  NV05 classes only when the 16-bit half reports "dithering control"
+  (STB tree dmaenab.c), which none of these do. They alias the
+  driver-tested 0x60/0x61/0x76 paths plus one ignored colour method, so
+  the risk is low; a bare-metal DOS test would be the next step if ever.
+- Quake III timedemo (work-q3, TNT2 ERAZOR III, Celeron 266, 640x480,
+  `timedemo 1; demo demo001`): 1346 frames, 39.0 fps in guest time on
+  both paths; emulation speed 48% with the GPU lane (4 threads + GPU),
+  29% on the CPU path (4 threads, NV4_GPU=0). The GPU lane waited
+  48 s of 196 for syncs, all caused by class 0x5f blits -- a speed lead.
+  The work-q3 config migrated cleanly from `gfxcard = nv5_erazor3`.
+- Icon cache (owner's request): `C:\WINDOWS\ShellIconCache` deleted on
+  work-q3 from MS-DOS mode; the Quake III shortcut arrow is back, so
+  loose end 1 was the stale cache. work-tnt still has its old cache.
+- GLQuake / Quake II / DOS: prepared, not run yet.
+  - `F:\Claude\86Box-Next\dl\games.iso` (source folder dl\games\iso):
+    `GLQUAKE\GLQUAKE.EXE` (from the owner's GLQ1114.EXE) +
+    `GLQUAKE\ID1\PAK0.PAK` (Quake 1.06 shareware, from the BeOS apps
+    folder's quake106.zip), `QUAKE1\` (DOS Quake 1.06 shareware:
+    QUAKE.EXE, CWSDPMI -- also a VESA test), `QUAKE2\` (the owner's full
+    Quake II 3.05 from G:\Old OS\Games\Win9x\Quake 2\QUAKE2.EXE,
+    extracted), `VBETEST\VBETEST.EXE` (SciTech, from UniVBE 6.70 --
+    run it without loading UNIVBE so it tests the card's own VBE).
+  - work-tnt (TNT + 4.11, US keyboard, CD = D:) has games.iso in its
+    cfg now (old cfg in 86box.cfg.bak-games); GLQuake is copied to
+    C:\GLQUAKE (`xcopy d:\glquake c:\glquake /s /i` through Start > Run;
+    VM shut down cleanly). Next: run `c:\glquake\glquake.exe` (OpenGL through 4.11's ICD on
+    the TNT), console `timedemo demo1`; then Quake II (copy D:\QUAKE2,
+    `quake2 +set vid_ref gl` / timedemo demo1); compare fps and look
+    for missing triangles/texture faults.
+  - DOS/VESA: VM `F:\Claude\86Box-Next\work-dos-tnt` = copy of the
+    owner's Latest\MS-DOS rig: Intel TC430HX (AMI BIOS, Socket 7,
+    PCI), Pentium 200, now `nv4_tnt_pci` model ERAZOR II PCI, games.iso
+    in the CD, muted, uuid removed, romsx copied. Never booted yet:
+    check MSCDEX gives a CD letter, run D:\VBETEST\VBETEST.EXE (mode
+    list, every mode's test pattern, bank/linear framebuffer, display
+    start/scrolling), then D:\QUAKE1\QUAKE.EXE in its VESA modes
+    (`vid_describemodes`, `vid_mode N`).
+- VM states: work-7184 back to the Creative TNT (TNT2 Ultra test cfg
+  was temporary; `86box.cfg.tnt` = its saved TNT cfg). work-w2k-tnt is
+  now a PCI TNT2 (ERAZOR III) with NVIDIA 71.84 for Win2000 installed
+  (its ERAZOR II PCI cfg is in `86box.cfg.tnt`). work-nt4-tnt has
+  43.45 installed over 28.32. work-ultra unchanged (8.05). All shut
+  down cleanly; no VM is running.
+- Driver ISOs made this session: dl\nt4drv2.iso (NT2832, NT4345, SP6A),
+  dl\w2kdrv.iso (W7184, W4523 = NVIDIA 71.84 / 45.23 for Win2000/XP,
+  extracted), dl\nv805root.iso (8.05 at the root, for Win98's wizard).
+- NVIDIA source in the owner's STB archive (confidential, cite only in
+  commit messages): C:\Users\xeon4\Downloads\stbdata\Archive\recovered\
+  latest\SChanGfx -- NV4Ver1 (Dell, nv4_cpq, V128II trees), NV4Ver2\V4400
+  (STB Velocity 4400: Win9x display/ddraw/D3D, resman incl. gr\nv4\
+  GRCTXT.C, modular class064-066.c), NTNV4Ver3 (NT4). The D3D driver's
+  render-target code is nv4state.c nvSetD3DSurfaceState.
+
 **Loose ends**
-1. Desktop shortcut arrows: likely a stale `C:\WINDOWS\ShellIconCache`
-   from before c59c71997; delete it in work-tnt (MS-DOS mode, `attrib -h
-   -s`, `del c:\windows\shelli~1`) and look again.
+1. ~~Desktop shortcut arrows~~: confirmed a stale ShellIconCache
+   (fixed on work-q3 2026-10-15 by deleting it from MS-DOS mode; do the
+   same on work-tnt if its arrows are missing).
 2. POST slowdown at 466 MHz (see In progress): parked, not hit at 266.
-3. Quake III follow-ups: timedemo fps with the GPU lane on; the TNT
-   (ERAZOR II, work-tnt) with the same ICD; GLQuake and Quake II (B4).
+3. Quake III follow-ups: ~~timedemo with the GPU lane~~ (39.0 fps,
+   48% vs 29% emulation speed; see the session note above); still to
+   do: GLQuake and Quake II on the TNT (games.iso ready), Quake III on
+   the TNT if wanted (needs installing on work-tnt).
 
 **More software and drivers**
 4. Later NVIDIA drivers (B6): 8.05 and 71.84 are already unpacked in
@@ -458,8 +528,9 @@ Recommended order: 4, then 7, then 5.
    ERAZOR II BIOS. The NVIDIA tab says "TV Encoder: Conexant Bt868"
    although no I2C traffic at all reaches CR3E/CR3F during its start
    (`dev regs`): most likely the panel's default name; not chased.
-   Not tried yet: OVLTEST/DirectDraw on NT4, 43.45. (The VM was left
-   paused with its Settings window open from the desktop at 16:34.)
+   2026-10-15: OVLTEST passes all three phases on 28.32 and 43.45;
+   43.45 (setup.exe, "NVIDIA RIVA TNT") works: desktop, GL pipes,
+   Restart (its nView wizard complains about IE < 5 -- guest issue).
 6. Linux (B8, optional): XFree86 `nv`, `rivafb`.
 
 **Hardware not modeled yet**
@@ -488,7 +559,8 @@ Recommended order: 4, then 7, then 5.
 
 **Platforms, speed, docs**
 10. DOS/VESA (D12): VBE tester, VESA games, an AMI board, ERAZOR II PCI
-    on Socket 7.
+    on Socket 7. Prepared 2026-10-15, not run: work-dos-tnt (TC430HX AMI
+    board + ERAZOR II PCI) and games.iso with VBETEST and DOS Quake.
 11. More boards (D13/D14). **Regrouped (2026-10-14, owner's request):**
     like NV3, one device per chip and bus -- `nv4_tnt_pci/agp`,
     `nv5_tnt2_pci/agp`, `nv5_tnt2_ultra_pci/agp` ("nVIDIA RIVA TNT (NV4)
@@ -638,6 +710,10 @@ them with `dev 3d` before optimising.
 ## Sources
 - Owner's NVIDIA archive `98dec\Alpha.87`: `nv4_ref.h`, the resman (RM), BIOS
   and the D3D driver. Confidential: cite only in commit messages.
+- Owner's STB archive (`C:\Users\xeon4\Downloads\stbdata`,
+  `Archive\recovered\latest\SChanGfx\NV4Ver1`, `NV4Ver2\V4400`,
+  `NTNV4Ver3`): NVIDIA's NV4 Win9x/NT4 display, DirectDraw/D3D and
+  resman sources of 1999. Same rule.
 - TNT datasheet 1.0, NV5 datasheet 0.24.
 - envytools (MIT):
   - rnndb.
@@ -695,3 +771,7 @@ them with `dev 3d` before optimising.
     recompiling in the ELSA BIOS's text output); only at 466 MHz, gone
     at 266 on the same board. Owner: no test CPU above a Celeron 266.
 - 2026-10-14: tnt merged into master (287ad9076) and released as Release 2.1.4.9.
+- 2026-10-15: e6cfa815c (71.84 hang: awaken notify; start latch; debug
+  aids). NT4 overlay + 43.45, Win2000 TNT2 + 71.84, Quake III timedemo,
+  work-q3 icon cache; games.iso and work-dos-tnt prepared (see "Where
+  the 2026-10-15 session stopped").
