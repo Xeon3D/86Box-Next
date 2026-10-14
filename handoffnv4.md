@@ -659,3 +659,4 @@ them with `dev 3d` before optimising.
   - POST slowdown on work-q3 reproduced and profiled (dynarec
     recompiling in the ELSA BIOS's text output); only at 466 MHz, gone
     at 266 on the same board. Owner: no test CPU above a Celeron 266.
+- 2026-10-14: tnt merged into master (287ad9076) and released as Release 2.1.4.9.
