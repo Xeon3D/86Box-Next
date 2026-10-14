@@ -13,6 +13,7 @@
  *                 dev args         passed to the device that registered a hook
  *                 cpu              CS:EIP, registers and the code bytes there
  *                 peek addr        the physical address and 16 bytes at a linear address
+ *                 peekp addr [n]   n (16) bytes at a physical address, 16 a line
  *                 bp addr [n]      log registers and stack the next n (default 8) times the
  *                                  CPU executes linear addr; "bp clear" drops them all
  *                 wp addr          log each instruction that changes the dword at linear addr
@@ -267,6 +268,23 @@ debug_cmd_peek(const char *arg)
     always_log("debug_cmd: peek %08x (phys %08x):%s\n", lin, (uint32_t) phys, bytes);
 }
 
+static void
+debug_cmd_peekp(const char *arg)
+{
+    char    *end;
+    uint32_t phys = strtoul(arg, &end, 16);
+    uint32_t n    = strtoul(end, NULL, 0);
+    char     bytes[3 * 16 + 1];
+
+    if ((n == 0) || (n > 4096))
+        n = 16;
+    for (uint32_t o = 0; o < n; o += 16) {
+        for (int i = 0; i < 16; i++)
+            snprintf(bytes + 3 * i, 4, " %02x", mem_readb_phys(phys + o + i));
+        always_log("debug_cmd: peekp %08x:%s\n", phys + o, bytes);
+    }
+}
+
 int debug_cmd_speed_log;
 
 void
@@ -354,6 +372,8 @@ debug_cmd_run(char *line)
         debug_cmd_bp(arg);
     else if (!strcmp(line, "peek"))
         debug_cmd_peek(arg);
+    else if (!strcmp(line, "peekp"))
+        debug_cmd_peekp(arg);
     else if (!strcmp(line, "map"))
         debug_cmd_map(arg);
     else if (!strcmp(line, "speedlog")) {

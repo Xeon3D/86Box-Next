@@ -287,7 +287,8 @@ nv4_mmio_read(nv4_t *nv4, uint32_t addr, int len)
 {
     addr &= NV4_MMIO_SIZE - 1;
 
-    if (nv4->dbg_reads_left && (addr < NV4_PRAMIN_START)) {
+    /* the registers and the channels' areas, not instance memory */
+    if (nv4->dbg_reads_left && ((addr < NV4_PRAMIN_START) || (addr >= NV4_USER_START))) {
         int i;
 
         for (i = 0; (i < 64) && nv4->dbg_read_count[i] && (nv4->dbg_read_addr[i] != addr); i++)
@@ -832,9 +833,26 @@ nv4_debug_hook(const char *args)
 
     if (!nv4)
         return;
+    if (args && !strncmp(args, "ramht", 5)) {
+        /* ramht HANDLE: the hash table's entries for a handle (hex) */
+        nv4_pfifo_ramht_dump(nv4, strtoul(args + 5, NULL, 16));
+        return;
+    }
+    if (args && !strncmp(args, "logclass", 8)) {
+        /* logclass C: log every method of class C (hex); "logclass" alone stops */
+        nv4->dbg_log_cls = args[8] ? (int) strtol(args + 8, NULL, 16) : -1;
+        pclog("nv4: logging class %02x\n", nv4->dbg_log_cls & 0xff);
+        return;
+    }
     if (args && !strncmp(args, "trace", 5)) {
-        nv4->dbg_trace = strtoul(args + 5, NULL, 0);
-        pclog("nv4: tracing %u methods\n", nv4->dbg_trace);
+        /* trace N [CH]: the next N methods, pushes and user writes (of channel CH) */
+        char *end;
+
+        nv4->dbg_trace    = strtoul(args + 5, &end, 0);
+        nv4->dbg_trace_ch = (*end && strtol(end, NULL, 0) >= 0) ? (int) strtol(end, NULL, 0) : -1;
+        if (!*end)
+            nv4->dbg_trace_ch = -1;
+        pclog("nv4: tracing %u methods, channel %d\n", nv4->dbg_trace, nv4->dbg_trace_ch);
         return;
     }
     if (args && !strncmp(args, "reads", 5)) {
@@ -892,7 +910,7 @@ nv4_debug_hook(const char *args)
           NV4_GR(nv4, NV4_PGRAPH_CTX_SWITCH2), NV4_GR(nv4, NV4_PGRAPH_CTX_SWITCH3), NV4_GR(nv4, NV4_PGRAPH_CTX_SWITCH4),
           NV4_GR(nv4, NV4_PGRAPH_DEBUG_0), NV4_GR(nv4, NV4_PGRAPH_DEBUG_1), NV4_GR(nv4, NV4_PGRAPH_DEBUG_2),
           NV4_GR(nv4, NV4_PGRAPH_DEBUG_3));
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < 4; i++) /* 2D source and destination, 3D colour and zeta */
         pclog("nv4: surf %d base %08x off %08x pitch %04x limit %08x fmt %x\n", i, NV4_GR(nv4, NV4_PGRAPH_BBASE + i * 4),
               NV4_GR(nv4, NV4_PGRAPH_BOFFSET + i * 4), NV4_GR(nv4, NV4_PGRAPH_BPITCH + i * 4),
               NV4_GR(nv4, NV4_PGRAPH_BLIMIT + i * 4), (NV4_GR(nv4, NV4_PGRAPH_BPIXEL) >> (i * 4)) & 0xf);
@@ -987,6 +1005,7 @@ nv4_init(const device_t *info)
     nv4->render_threads = device_get_config_int("render_threads");
     /* NV4_GPU=0/1 overrides the option */
     nv4->gpu_raster = device_get_config_int("gpu_raster");
+    nv4->dbg_log_cls = (getenv("NV4_LOGCLASS") && *getenv("NV4_LOGCLASS")) ? (int) strtol(getenv("NV4_LOGCLASS"), NULL, 16) : -1;
     if (getenv("NV4_GPU") && *getenv("NV4_GPU"))
         nv4->gpu_raster = atoi(getenv("NV4_GPU"));
     nv4_3d_init(nv4);

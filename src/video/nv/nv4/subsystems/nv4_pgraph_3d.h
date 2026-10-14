@@ -149,6 +149,7 @@ typedef struct nv4_3d_batch_s {
     struct nv4_gpu_s *gpu;
 
     uint64_t st_flushes, st_spans, st_us; /* for nv4_3d_stats */
+    uint64_t st_nosurf;                   /* triangles dropped: no valid colour surface */
     uint64_t st_sync_us[NV4_SYNC_CAUSES]; /* time waiting for the GPU, by cause */
     uint32_t st_sync_n[NV4_SYNC_CAUSES];
 

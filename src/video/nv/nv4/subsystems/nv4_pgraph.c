@@ -156,11 +156,17 @@ nv4_pgraph_do_notify(nv4_t *nv4)
 {
     uint32_t notify = GR(NV4_PGRAPH_NOTIFY);
 
-    GR(NV4_PGRAPH_NOTIFY) = notify & ~0x00110000u;
     nv4_3d_flush(nv4);
-    nv4_pgraph_notify_write(nv4, 0, 0);
-    if (notify & (1u << 20)) /* WRITE_THEN_AWAKEN: the driver signals the waiter */
+    /* WRITE_THEN_AWAKEN is the resman's to do: the request stays pending
+       with its style, which the interrupt handler reads to know it must
+       wake the waiter (it writes the notifier and clears the request).
+       Later resmans have no other record of the style. */
+    if (notify & (1u << 20)) {
         nv4_pgraph_blowup(nv4, NV4_NSOURCE_NOTIFICATION);
+        return;
+    }
+    GR(NV4_PGRAPH_NOTIFY) = notify & ~0x00110000u;
+    nv4_pgraph_notify_write(nv4, 0, 0);
 }
 
 /* Loads the subchannel's cache from the object at <inst>. */
@@ -320,8 +326,7 @@ nv4_pgraph_method(nv4_t *nv4, int chid, int subc, uint32_t mthd, uint32_t data)
 
     cls = GR(NV4_PGRAPH_CTX_SWITCH1) & 0xff;
     nv4->dbg_cls_count[cls]++;
-    if (nv4->dbg_trace) {
-        nv4->dbg_trace--;
+    if (NV4_TRACE(nv4, chid) || (cls == nv4->dbg_log_cls)) {
         pclog("nv4 trace: ch %d sub %d class %02x mthd %04x data %08x\n", chid, subc, cls, mthd, data);
     }
     /* 2D pixels waiting to join the 3D batch go before this method */

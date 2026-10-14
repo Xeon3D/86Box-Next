@@ -557,6 +557,8 @@ typedef struct nv4_s {
         uint32_t reads, writes, last_off, last_val;
     } dbg_user[16];
     uint32_t      dbg_trace;          /* methods left to log */
+    int           dbg_trace_ch;       /* only this channel's, or -1 */
+    int           dbg_log_cls;        /* log every method of this class ("dev logclass", NV4_LOGCLASS), or -1 */
     uint32_t      dbg_regtrace;       /* register writes left to log */
     /* "dev reads N": the registers read most over the next N reads */
     uint32_t      dbg_reads_left;
@@ -638,7 +640,12 @@ extern uint32_t nv4_pfb_read(nv4_t *nv4, uint32_t addr);
 extern void     nv4_pfb_write(nv4_t *nv4, uint32_t addr, uint32_t val);
 extern uint32_t nv4_pextdev_read(nv4_t *nv4, uint32_t addr);
 extern void     nv4_pextdev_write(nv4_t *nv4, uint32_t addr, uint32_t val);
+/* "dev trace N [CH]": log this event of channel <ch>? (counts it) */
+#define NV4_TRACE(nv4, ch) \
+    ((nv4)->dbg_trace && (((nv4)->dbg_trace_ch < 0) || ((nv4)->dbg_trace_ch == (int) (ch))) && (nv4)->dbg_trace--)
+
 extern uint32_t nv4_straps(const nv4_t *nv4);
+extern void     nv4_pfifo_ramht_dump(nv4_t *nv4, uint32_t handle);
 extern const nv4_board_t *nv4_board_find(const char *name);
 extern double   nv4_crystal_hz(const nv4_t *nv4);
 

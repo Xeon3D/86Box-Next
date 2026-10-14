@@ -93,8 +93,7 @@ nv4_pcrtc_write(nv4_t *nv4, uint32_t addr, uint32_t val)
             break;
         case NV4_PCRTC_START_ADDR:
             nv4->pcrtc_start = val & 0x01fffffc;
-            if (nv4->pcrtc_config & 1)
-                svga_recalctimings(&nv4->svga);
+            svga_recalctimings(&nv4->svga);
             break;
         case NV4_PCRTC_CONFIG:
             nv4->pcrtc_config = val & 1;
@@ -112,7 +111,8 @@ nv4_pcrtc_write(nv4_t *nv4, uint32_t addr, uint32_t val)
    effect (the driver sets it to latch flips at the end of vertical sync).
    Windows goes back to text mode (a DOS box, the blue screen) by
    writing the VGA registers only: a game that had flipped to a back
-   buffer through PCRTC_START must not leave text mode scanning it. */
+   buffer through PCRTC_START must not leave text mode scanning it.
+   Scan-out always takes this latch (nv4_recalctimings). */
 void
 nv4_pcrtc_crtc_start_write(nv4_t *nv4, uint8_t idx, uint8_t val)
 {
@@ -136,8 +136,7 @@ nv4_pcrtc_crtc_start_write(nv4_t *nv4, uint8_t idx, uint8_t val)
     }
     if (s != nv4->pcrtc_start) {
         nv4->pcrtc_start = s;
-        if (nv4->pcrtc_config & 1)
-            svga_recalctimings(&nv4->svga);
+        svga_recalctimings(&nv4->svga);
     }
 }
 
@@ -184,13 +183,11 @@ nv4_recalctimings(svga_t *svga)
     uint8_t lsr    = svga->crtc[NV4_CR_LSR];
     uint8_t heb    = svga->crtc[NV4_CR_HEB];
 
-    /* Start address and row offset. Once the driver has set
-       PCRTC_CONFIG bit 0, the start is the latch PCRTC_START and the
-       CRTC start registers share (nv4_pcrtc_crtc_start_write). */
-    if (nv4->pcrtc_config & 1)
-        svga->memaddr_latch = nv4->pcrtc_start >> 2;
-    else
-        svga->memaddr_latch += ((svga->crtc[NV4_CR_RPC0] & 0x1f) << 16) | ((heb & 0x20) << 16);
+    /* Start address and row offset. The start is the latch PCRTC_START
+       and the CRTC start registers share (nv4_pcrtc_crtc_start_write),
+       whatever PCRTC_CONFIG says: that only picks when a new start takes
+       effect. NVIDIA's later drivers write PCRTC_START with it clear. */
+    svga->memaddr_latch = nv4->pcrtc_start >> 2;
     svga->rowoffset += (svga->crtc[NV4_CR_RPC0] & 0xe0) << 3;
     if (lsr & 0x20)
         svga->rowoffset += 0x800;

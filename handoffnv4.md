@@ -397,6 +397,41 @@ Recommended order: 4, then 7, then 5.
    installed and with the start latch disabled; no register is polled
    (`dev reads N`), the RM only services vblank. Most likely its D3D
    driver waits on something in memory. Not chased further.
+   **2026-10-15: the hang is fixed, the 3D still draws nothing.**
+   - The hang: D3D's NOTIFY with WRITE_THEN_AWAKEN (class 4a, ch 1).
+     We cleared NOTIFY's REQ/STYLE before raising the interrupt; the
+     RM's grService (GR.C) only learns the style from PGRAPH_NOTIFY
+     (REQ pending -> NotifyAction = STYLE -> notifyMethodComplete), so it
+     never woke the waiter. Awaken notifies are now left pending for
+     the RM (nv4_pgraph.c nv4_pgraph_do_notify).
+   - The desktop shifted 302 lines (start 0x97000 shown from 0): 71.84
+     writes PCRTC_START with PCRTC_CONFIG clear. Scan-out now always
+     takes the shared start latch (nv4_pcrtc.c); CONFIG only times it.
+   - Since then 3DMark 99 runs through (2656-2658 3DMarks on the
+     Creative TNT, also on the ULTRA) but every triangle is dropped:
+     `dev 3d` "N triangles without a colour surface". 71.84 never
+     programs a 3D render target: its D3D_CONTEXT_SURFACES object
+     (handle d3d05301, class 0x53, inst 28d1, all-zero instance words)
+     only gets SET_CONTEXT_DMA_COLOR/ZETA (0x184/0x188) once, bound on
+     subchannel 7; no 0x300-0x310 anywhere (NV4_LOGCLASS=53 from boot,
+     on the TNT and the TNT2 Ultra); the RM's context restores load
+     buffer 2/3 as zero (`dev regs`); no PIO user writes but PUT. 8.05
+     by contrast binds its 0x53 object on subchannel 1 (NV_DD_SURFACES)
+     and sends FORMAT 0x103 / CLIP / PITCH / OFFSET_COLOR / OFFSET_ZETA
+     per scene. 71.84's subchannel 1 instead holds the 2D surfaces
+     (dd003f00: colour/Z clears with 0x5e, a Y32 fence written at
+     offset 0) and the software flip object dd006020 (RM writes
+     PCRTC_START; flips work). How real NV4/NV5 hardware would know the
+     target is open; ideas: the 0x18c surface context loading state we
+     do not model, or 71.84's NV4 path really being broken. Early runs
+     also crashed (0E, FS=0 in KERNEL32) before the notify fix; the
+     later runs did not.
+   - New aids: `dev trace N CH`, `dev logclass C` / NV4_LOGCLASS=C,
+     `dev ramht HANDLE`, `dev reads` counts the channels' user areas,
+     `dev` shows surfaces 0-3, debug_cmd `peekp PHYS [N]`. NVIDIA's
+     NV4 D3D/display/RM sources are in the STB archive
+     (C:\Users\xeon4\Downloads\stbdata\Archive\recovered\latest\SChanGfx\
+     NV4Ver1, NV4Ver2\V4400, NTNV4Ver3; confidential like nvdocs).
    Script pitfall: TaskStop on a background tnt.sh/fullrun.sh leaves
    its children running -- they keep sending keys (one shut Windows
    down mid-test). Run keystroke scripts in the foreground.

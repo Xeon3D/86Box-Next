@@ -425,8 +425,10 @@ nv4_3d_make_state(nv4_t *nv4, nv4_3d_batch_t *b, int cls, const nv4_d3d_t *d)
     s->col_base  = GR(NV4_PGRAPH_BBASE + 2 * 4) + GR(NV4_PGRAPH_BOFFSET + 2 * 4);
     s->col_pitch = GR(NV4_PGRAPH_BPITCH + 2 * 4) & 0xffff;
     lim          = GR(NV4_PGRAPH_BLIMIT + 2 * 4);
-    if ((lim & 0x80000000) || !s->bpp)
+    if ((lim & 0x80000000) || !s->bpp) {
+        b->st_nosurf++;
         return -1;
+    }
     s->col_lim  = GR(NV4_PGRAPH_BBASE + 2 * 4) + (lim & 0x7fffffff);
     s->z_base   = GR(NV4_PGRAPH_BBASE + 3 * 4) + GR(NV4_PGRAPH_BOFFSET + 3 * 4);
     s->z_pitch  = GR(NV4_PGRAPH_BPITCH + 3 * 4) & 0xffff;
@@ -1372,8 +1374,9 @@ nv4_3d_stats(nv4_t *nv4)
     t_last           = now;
     tsc_last         = tsc;
     nv4->dbg_vblanks = 0;
-    pclog("nv4 3D: %d threads%s, %llu flushes, %llu spans, %llu us shading\n", b->nthreads, b->gpu ? " + GPU" : "",
-          (unsigned long long) b->st_flushes, (unsigned long long) b->st_spans, (unsigned long long) b->st_us);
+    pclog("nv4 3D: %d threads%s, %llu flushes, %llu spans, %llu us shading, %llu triangles without a colour surface\n",
+          b->nthreads, b->gpu ? " + GPU" : "", (unsigned long long) b->st_flushes, (unsigned long long) b->st_spans,
+          (unsigned long long) b->st_us, (unsigned long long) b->st_nosurf);
     if (b->gpu) {
         uint64_t n, f;
 
@@ -1388,7 +1391,7 @@ nv4_3d_stats(nv4_t *nv4)
         memset(b->st_sync_us, 0, sizeof(b->st_sync_us));
         memset(b->st_sync_n, 0, sizeof(b->st_sync_n));
     }
-    b->st_flushes = b->st_spans = b->st_us = 0;
+    b->st_flushes = b->st_spans = b->st_us = b->st_nosurf = 0;
 }
 
 void

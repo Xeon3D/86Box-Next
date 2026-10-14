@@ -211,6 +211,25 @@ nv4_ramht_lookup(nv4_t *nv4, uint32_t handle, int chid)
     return 0;
 }
 
+/* For "dev ramht": every entry holding <handle>, any channel, with its
+   object's first instance word. */
+void
+nv4_pfifo_ramht_dump(nv4_t *nv4, uint32_t handle)
+{
+    nv4_pfifo_t *p       = &nv4->pfifo;
+    uint32_t     entries = nv4_ramht_entries(p);
+    uint32_t     base    = nv4_ramht_base(p);
+
+    for (uint32_t slot = 0; slot < entries; slot++) {
+        uint32_t ctx = nv4_ramin_read32(nv4, base + slot * 8 + 4);
+
+        if (nv4_ramin_read32(nv4, base + slot * 8) == handle)
+            pclog("nv4: ramht %08x slot %u ctx %08x: ch %u engine %u inst %04x, word0 %08x%s\n", handle, slot, ctx,
+                  (ctx >> 24) & 0x0f, (ctx >> 16) & 3, ctx & 0xffff, nv4_ramin_read32(nv4, (ctx & 0xffff) << 4),
+                  (ctx & 0x80000000) ? "" : " (invalid)");
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* Interrupts and RAMRO.                                               */
 /* ------------------------------------------------------------------ */
@@ -327,7 +346,7 @@ nv4_pfifo_switch(nv4_t *nv4, int chid)
         p->c1_dma_push &= ~DMA_PUSH_ACCESS;
     p->dma &= ~(1u << chid);
     nv4_log("NV4 PFIFO: channel switch %d -> %d\n", old, chid);
-    if (nv4->dbg_trace && nv4->dbg_trace--)
+    if (NV4_TRACE(nv4, chid) || NV4_TRACE(nv4, old))
         pclog("nv4 trace: channel switch %d -> %d, put %08x get %08x\n", old, chid, p->c1_dma_put, p->c1_dma_get);
 }
 
@@ -472,7 +491,7 @@ nv4_dma_push(nv4_t *nv4)
             nv4_pfifo_intr(nv4, INTR_DMA_PT);
             break;
         }
-        if (nv4->dbg_trace && nv4->dbg_trace--)
+        if (NV4_TRACE(nv4, CHID(p)))
             pclog("nv4 trace: push ch %d get %08x word %08x\n", CHID(p), p->c1_dma_get, word);
         p->c1_dma_get = (p->c1_dma_get + 4) & 0x1ffffffc;
 
@@ -597,7 +616,7 @@ nv4_user_write(nv4_t *nv4, uint32_t addr, uint32_t val)
     uint32_t     off  = addr & 0x1fff;
 
     nv4->dbg_user[chid].writes++;
-    if (nv4->dbg_trace && nv4->dbg_trace--)
+    if (NV4_TRACE(nv4, chid))
         pclog("nv4 trace: user ch %d %04x = %08x (cache1 ch %d) from %08x\n", chid, (subc << 13) | off, val, CHID(p),
               cs + cpu_state.pc);
     nv4->dbg_user[chid].last_off = (subc << 13) | off;
