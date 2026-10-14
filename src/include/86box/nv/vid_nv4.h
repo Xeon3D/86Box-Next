@@ -558,6 +558,13 @@ typedef struct nv4_s {
     uint32_t      dbg_trace;          /* methods left to log */
     uint32_t      dbg_vblanks;        /* vertical blanks, for "dev 3d" */
     uint32_t      vblank_count;       /* vertical blanks since power-on */
+    /* DMA into system memory, for the debug hook: the last writes and
+       the translations through a page table entry not marked present */
+    struct {
+        uint32_t inst, offset, addr, len;
+    } dbg_sysw[8];
+    uint32_t      dbg_sysw_n;
+    uint32_t      dbg_dma_np, dbg_np_inst, dbg_np_offset, dbg_np_pte;
     /* 2D pixels with a plain store gathered into a run on one row, to
        join the 3D batch as a fill (nv4_pgraph_2d.c) */
     struct {
@@ -661,6 +668,7 @@ extern int      nv4_dma_read(nv4_t *nv4, uint32_t inst, uint32_t offset, uint8_t
 extern int      nv4_dma_write(nv4_t *nv4, uint32_t inst, uint32_t offset, const uint8_t *buf, uint32_t len);
 extern uint32_t nv4_dma_class(nv4_t *nv4, uint32_t inst);
 extern uint32_t nv4_dma_limit(nv4_t *nv4, uint32_t inst);
+extern uint32_t nv4_dma_page_left(nv4_t *nv4, uint32_t inst, uint32_t offset);
 
 /* subsystems/nv4_pfifo.c */
 extern void     nv4_pfifo_reset(nv4_t *nv4);

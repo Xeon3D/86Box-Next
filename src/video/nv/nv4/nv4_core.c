@@ -872,6 +872,14 @@ nv4_debug_hook(const char *args)
             pclog("nv4: user ch %d: %u reads, %u writes, last %04x = %08x%s\n", i, nv4->dbg_user[i].reads,
                   nv4->dbg_user[i].writes, nv4->dbg_user[i].last_off, nv4->dbg_user[i].last_val,
                   (nv4->pfifo.mode & (1u << i)) ? " (DMA)" : "");
+    pclog("nv4: dma to system memory: %u writes, %u through not-present PTEs (last inst %04x offset %08x pte %08x)\n",
+          nv4->dbg_sysw_n, nv4->dbg_dma_np, nv4->dbg_np_inst, nv4->dbg_np_offset, nv4->dbg_np_pte);
+    for (uint32_t i = 0; (i < 8) && (i < nv4->dbg_sysw_n); i++) {
+        uint32_t n = (nv4->dbg_sysw_n - 1 - i) & 7;
+
+        pclog("nv4:   inst %04x offset %08x -> %08x (%u bytes)\n", nv4->dbg_sysw[n].inst, nv4->dbg_sysw[n].offset,
+              nv4->dbg_sysw[n].addr, nv4->dbg_sysw[n].len);
+    }
     for (int i = 0; i < nv4->dbg_gaps; i++)
         pclog("nv4: not modeled: class %02x method %04x: %s (%u times)\n", nv4->dbg_gap[i].cls,
               nv4->dbg_gap[i].mthd, nv4->dbg_gap[i].what, nv4->dbg_gap[i].count);

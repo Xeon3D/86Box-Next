@@ -540,13 +540,18 @@ static uint32_t
 nv4_3d_tex_read(nv4_t *nv4, const nv4_3d_tex_t *t, nv4_3d_tcache_t *tc, uint32_t off, int bytes)
 {
     uint32_t a;
+    /* the window's page of <off> and the byte in it (the window starts
+       part way into its first page) */
+    uint32_t in   = 0x1000 - nv4_dma_page_left(nv4, t->dma, off);
+    uint32_t page = off - in;
 
-    if ((off & ~0xfffu) != tc->page) {
+    if (page != tc->page) {
         uint32_t ra;
 
-        if (nv4_dma_translate(nv4, t->dma, off & ~0xfffu, 0, &tc->addr, &tc->target) != NV4_DMA_OK)
+        if (nv4_dma_translate(nv4, t->dma, off, 0, &tc->addr, &tc->target) != NV4_DMA_OK)
             return 0;
-        tc->page = off & ~0xfffu;
+        tc->addr -= in;
+        tc->page = page;
         tc->host = NULL;
         if (tc->target) {
             /* system memory, through the AGP aperture if it points
@@ -558,9 +563,9 @@ nv4_3d_tex_read(nv4_t *nv4, const nv4_3d_tex_t *t, nv4_3d_tcache_t *tc, uint32_t
                 tc->host = ram + ra;
         }
     }
-    a = tc->addr + (off & 0xfff);
-    if (tc->host && (((tc->addr & 0xfff) + (off & 0xfff) + bytes) <= 0x1000)) {
-        const uint8_t *h = tc->host + (tc->addr & 0xfff) + (off & 0xfff);
+    a = tc->addr + in;
+    if (tc->host && (((tc->addr & 0xfff) + in + bytes) <= 0x1000)) {
+        const uint8_t *h = tc->host + (tc->addr & 0xfff) + in;
 
         if (bytes == 1)
             return h[0];

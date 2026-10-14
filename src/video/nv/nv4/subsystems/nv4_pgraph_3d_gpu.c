@@ -708,7 +708,8 @@ nv4_gpu_close(struct nv4_gpu_s *g)
     gpu_destroy(g);
 }
 
-/* <len> bytes of a texture at DMA offset <off> (within one page) as
+/* <len> bytes of a texture at DMA offset <off> (within one page of the
+   window: nv4_dma_page_left) as
    the CPU span shader reads them: a pointer into VRAM or system memory,
    or <tmp> filled. */
 static const uint8_t *
@@ -717,12 +718,12 @@ gpu_tex_bytes(nv4_t *nv4, const nv4_3d_tex_t *t, uint32_t off, uint32_t len, uin
     uint32_t addr;
     int      target;
 
-    if (nv4_dma_translate(nv4, t->dma, off & ~0xfffu, 0, &addr, &target) != NV4_DMA_OK) {
+    if (nv4_dma_translate(nv4, t->dma, off, 0, &addr, &target) != NV4_DMA_OK) {
         memset(tmp, 0, len);
         return tmp;
     }
     if (!target) {
-        uint32_t va = (addr + (off & 0xfff)) & nv4->vram_mask;
+        uint32_t va = addr & nv4->vram_mask;
 
         if (va + len <= nv4->vram_size)
             return nv4->svga.vram + va;
@@ -731,7 +732,7 @@ gpu_tex_bytes(nv4_t *nv4, const nv4_3d_tex_t *t, uint32_t off, uint32_t len, uin
         return tmp;
     }
     {
-        uint32_t pa = addr + (off & 0xfff);
+        uint32_t pa = addr;
         uint32_t ra;
 
         /* through the AGP aperture to the page behind it (len stays
@@ -760,14 +761,14 @@ gpu_tex_settle(nv4_gpu_t *g, nv4_t *nv4, const nv4_3d_tex_t *t)
 {
     for (uint32_t done = 0; done < t->size;) {
         uint32_t off   = t->offset + done;
-        uint32_t chunk = 0x1000 - (off & 0xfff);
+        uint32_t chunk = nv4_dma_page_left(nv4, t->dma, off);
         uint32_t addr;
         int      target;
 
         if (chunk > t->size - done)
             chunk = t->size - done;
-        if ((nv4_dma_translate(nv4, t->dma, off & ~0xfffu, 0, &addr, &target) == NV4_DMA_OK) && !target) {
-            uint32_t va = (addr + (off & 0xfff)) & nv4->vram_mask;
+        if ((nv4_dma_translate(nv4, t->dma, off, 0, &addr, &target) == NV4_DMA_OK) && !target) {
+            uint32_t va = addr & nv4->vram_mask;
 
             if (nv4_gpu_pending_overlaps(g, va, va + chunk - 1)) {
                 gpu_complete_upto(g, nv4, UINT64_MAX);
@@ -789,7 +790,7 @@ gpu_tex_hash(nv4_gpu_t *g, nv4_t *nv4, const nv4_3d_tex_t *t)
 
     for (uint32_t done = 0; done < t->size;) {
         uint32_t       off   = t->offset + done;
-        uint32_t       chunk = 0x1000 - (off & 0xfff);
+        uint32_t       chunk = nv4_dma_page_left(nv4, t->dma, off);
         const uint8_t *p;
         uint32_t       i = 0;
 
@@ -823,7 +824,7 @@ gpu_tex_copy(nv4_gpu_t *g, nv4_t *nv4, const nv4_3d_tex_t *t, uint32_t base)
 
     for (uint32_t done = 0; done < t->size;) {
         uint32_t off   = t->offset + done;
-        uint32_t chunk = 0x1000 - (off & 0xfff);
+        uint32_t chunk = nv4_dma_page_left(nv4, t->dma, off);
 
         if (chunk > t->size - done)
             chunk = t->size - done;

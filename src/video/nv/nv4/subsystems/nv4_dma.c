@@ -60,6 +60,17 @@ nv4_dma_limit(nv4_t *nv4, uint32_t inst)
     return nv4_ramin_read32(nv4, (inst << 4) + 4);
 }
 
+/* The bytes from <offset> to the end of its page. The window starts
+   <adjust> bytes into its first page, so its pages begin at offsets
+   that are not multiples of 4 KB: a transfer split at offset multiples
+   of 4 KB runs off the end of a page into whatever frame follows it in
+   memory, not the window's next page. */
+uint32_t
+nv4_dma_page_left(nv4_t *nv4, uint32_t inst, uint32_t offset)
+{
+    return 0x1000 - ((offset + (nv4_ramin_read32(nv4, inst << 4) >> 20)) & 0xfff);
+}
+
 /* The address of byte <offset> of the window. */
 int
 nv4_dma_translate(nv4_t *nv4, uint32_t inst, uint32_t offset, int write, uint32_t *addr, int *target)
@@ -89,6 +100,12 @@ nv4_dma_translate(nv4_t *nv4, uint32_t inst, uint32_t offset, int write, uint32_
     else
         *addr = (pte & 0xfffff000) + (o & 0xfff);
     *target = (w0 >> 16) & 3;
+    if (!(pte & 1) && (*target != NV4_DMA_TARGET_VRAM)) {
+        nv4->dbg_dma_np++;
+        nv4->dbg_np_inst   = inst;
+        nv4->dbg_np_offset = offset;
+        nv4->dbg_np_pte    = pte;
+    }
     return NV4_DMA_OK;
 }
 
@@ -98,7 +115,7 @@ nv4_dma_read(nv4_t *nv4, uint32_t inst, uint32_t offset, uint8_t *buf, uint32_t 
     while (len) {
         uint32_t addr;
         int      target;
-        uint32_t chunk = 0x1000 - (offset & 0xfff);
+        uint32_t chunk = nv4_dma_page_left(nv4, inst, offset);
 
         if (chunk > len)
             chunk = len;
@@ -122,7 +139,7 @@ nv4_dma_write(nv4_t *nv4, uint32_t inst, uint32_t offset, const uint8_t *buf, ui
     while (len) {
         uint32_t addr;
         int      target;
-        uint32_t chunk = 0x1000 - (offset & 0xfff);
+        uint32_t chunk = nv4_dma_page_left(nv4, inst, offset);
 
         if (chunk > len)
             chunk = len;
@@ -133,8 +150,15 @@ nv4_dma_write(nv4_t *nv4, uint32_t inst, uint32_t offset, const uint8_t *buf, ui
                 nv4->svga.vram[(addr + i) & nv4->vram_mask] = buf[i];
             for (uint32_t a = addr & ~0xfffu; a < addr + chunk; a += 0x1000)
                 nv4->svga.changedvram[(a & nv4->vram_mask) >> 12] = nv4->svga.monitor->mon_changeframecount;
-        } else
+        } else {
+            uint32_t n = nv4->dbg_sysw_n++ & 7;
+
+            nv4->dbg_sysw[n].inst   = inst;
+            nv4->dbg_sysw[n].offset = offset;
+            nv4->dbg_sysw[n].addr   = addr;
+            nv4->dbg_sysw[n].len    = chunk;
             dma_bm_write(addr, buf, chunk, 4);
+        }
         buf += chunk;
         offset += chunk;
         len -= chunk;
