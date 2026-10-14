@@ -260,14 +260,16 @@ nv4_recalctimings(svga_t *svga)
         svga->clock = (cpuclock * (double) (1ULL << 32)) / nv4->vclk_hz;
 
     /* Hardware cursor: CR31 bit 0 shows it; its 2 KB image is at
-       CR30 6:0 (address 23:17) and CR31 7:2 (16:11), in instance memory
-       or, with CR30 bit 7, in the framebuffer. */
+       CR2F (address 31:24), CR30 6:0 (23:17) and CR31 7:2 (16:11), in
+       instance memory or, with CR30 bit 7, in the framebuffer. The
+       TNT2's later drivers keep it in the top 16 MB of a 32 MB card. */
     svga->hwcursor.ena       = (svga->crtc[NV4_CR_HCUR_ADDR1] & 0x01) && format;
     svga->hwcursor.cur_xsize = NV4_CURSOR_SIZE;
     svga->hwcursor.cur_ysize = NV4_CURSOR_SIZE;
     svga->hwcursor.xoff      = (svga->hwcursor.x < 0) ? -svga->hwcursor.x : 0;
     svga->hwcursor.yoff      = (svga->hwcursor.y < 0) ? -svga->hwcursor.y : 0;
-    svga->hwcursor.addr      = ((svga->crtc[NV4_CR_HCUR_ADDR0] & 0x7f) << 17)
+    svga->hwcursor.addr      = ((uint32_t) svga->crtc[NV4_CR_HCUR_ADDR2] << 24)
+                             | ((svga->crtc[NV4_CR_HCUR_ADDR0] & 0x7f) << 17)
                              | ((svga->crtc[NV4_CR_HCUR_ADDR1] & 0xfc) << 9);
     svga->hwcursor.addr += svga->hwcursor.yoff * NV4_CURSOR_SIZE * 2;
 }
