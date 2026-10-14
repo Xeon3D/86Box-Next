@@ -2143,6 +2143,20 @@ static const nv4_gdi_layout_t nv4_gdi_nv3 = {
     0xfe8, 0x1000, 0x1200, 0x13e4, 0x1400, 0x1600
 };
 
+/* A data word of a C, D or E bitmap. The blocks' clip, colour, size and
+   point methods all set the same engine state, so a bitmap may be set
+   up through one block and its data sent through another (Windows
+   2000's driver gives the size and point through E and the glyphs
+   through C): the data method decides whether 0 bits are drawn. */
+static void
+nv4_gdi_mono_data(nv4_t *nv4, nv4_gr_chan_t *ch, int kind, uint32_t data)
+{
+    if ((ch->img_kind != IMG_MONO1) && (ch->img_kind != IMG_MONO2))
+        return;
+    ch->img_kind = kind;
+    nv4_img_mono_data(nv4, ch, data, 1);
+}
+
 static int
 nv4_class_gdi(nv4_t *nv4, nv4_gr_chan_t *ch, int cls, uint32_t mthd, uint32_t data)
 {
@@ -2209,8 +2223,7 @@ nv4_class_gdi(nv4_t *nv4, nv4_gr_chan_t *ch, int cls, uint32_t mthd, uint32_t da
         return NV4_GR_OK;
     }
     if ((mthd >= l->c_data) && (mthd < l->c_end)) {
-        if (ch->img_kind == IMG_MONO1)
-            nv4_img_mono_data(nv4, ch, data, 1);
+        nv4_gdi_mono_data(nv4, ch, IMG_MONO1, data);
         return NV4_GR_OK;
     }
     /* D (0x4b): clip, color 1, size in, size out, point, data */
@@ -2238,8 +2251,7 @@ nv4_class_gdi(nv4_t *nv4, nv4_gr_chan_t *ch, int cls, uint32_t mthd, uint32_t da
             return NV4_GR_OK;
         }
         if ((mthd >= l->d_data) && (mthd < l->d_end)) {
-            if (ch->img_kind == IMG_MONO1)
-                nv4_img_mono_data(nv4, ch, data, 1);
+            nv4_gdi_mono_data(nv4, ch, IMG_MONO1, data);
             return NV4_GR_OK;
         }
     }
@@ -2271,8 +2283,7 @@ nv4_class_gdi(nv4_t *nv4, nv4_gr_chan_t *ch, int cls, uint32_t mthd, uint32_t da
         return NV4_GR_OK;
     }
     if ((mthd >= l->e_data) && (mthd < l->e_end)) {
-        if (ch->img_kind == IMG_MONO2)
-            nv4_img_mono_data(nv4, ch, data, 1);
+        nv4_gdi_mono_data(nv4, ch, IMG_MONO2, data);
         return NV4_GR_OK;
     }
 
