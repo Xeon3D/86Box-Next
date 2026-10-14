@@ -436,7 +436,16 @@ Recommended order: 4, then 7, then 5.
    TEST.MPG, made with ffmpeg in WSL; on nv4tools.iso): Win98 + 8.05 on
    the ULTRA plays it through the overlay (YUY2, frames copied with
    0x38, `dev` shows the PVIDEO registers), Win2000 inbox too, both in
-   real time. Indeo not tried.
+   real time. **Indeo done (2026-10-14):** VM `work-indeo` (the NV3
+   Indeo session's Win98 SE copy: ax59pro, P233 MMX, PT keyboard), now
+   `nv4_tnt_agp` ERAZOR II AGP + 8.05 (CD `dl/nv805root.iso` = NV805 at
+   the root, so the new-hardware wizard finds NVAML.INF by itself; the
+   NV3 cfg is kept as 86box.cfg.nv3). Media Player 6.4 plays the desktop
+   clips correctly and in real time, all through the overlay (control
+   0x111, buffers flipping; `dev`'s "shown" is the buffer index):
+   mcmi5.avi (Indeo 5), open.avi (Indeo 4) -- the two the NV3 needed
+   fixes for -- barneysw.avi and keyboard.mpg. Open a clip by type-ahead
+   on the desktop (`type mcm`, Enter).
 8. Classes (C10): ~~0x38 DVD subpicture~~ done (ec094b9f0; subpicture
    blend untested -- the drivers seen use it transparent), 0x48 DX3
    triangle; 3D into a swizzled surface (A3) when something needs it.
