@@ -362,8 +362,22 @@ Recommended order: 4, then 7, then 5.
    **8.05 done on the ULTRA (2026-10-14):** installed (keep the newer
    vgartd.vxd when asked), desktop 1024x768x32 accelerated; its 2D still
    uses 0x60/0x61, not 0x64-0x66; it copies DirectDraw overlay frames with
-   class 0x38 (now drawn). Next: 3DMark 99 / D3D on 8.05, then 71.84, and
-   the LT (M64, 002D) board.
+   class 0x38 (now drawn). 3DMark 99 MAX on the ULTRA + 8.05: 2714
+   3DMarks after two fixes -- DMA transfers split at the window's pages
+   (76d77a669: 8.05 writes through objects whose window starts 0x1f8
+   into a page; the tail landed in an unrelated frame and Windows died
+   with 0E in VMM at random) and the cursor address bits in CR2F
+   (8b4101702: 8.05 keeps the cursor above 16 MB). Regression: the TNT
+   + 4.11 full run gives 2613 (2616-2620 before).
+   Next: 71.84 on the ULTRA, then the LT (M64, 002D): VM `work-lt` is
+   ready (copy of work-tnt2, ERAZOR III LT, Celeron 233, same CD).
+   Open: after a crash in 3D, the blue screen came out black -- text
+   mode was scanned from PCRTC_START (0x1d4c00, PCRTC_CONFIG = 1, set
+   by 8.05). Unknown whether the chip ignores PCRTC_START in VGA modes
+   or the driver resets PCRTC_CONFIG in a way not modeled; left as is.
+   Script pitfall: TaskStop on a background tnt.sh/fullrun.sh leaves
+   its children running -- they keep sending keys (one shut Windows
+   down mid-test). Run keystroke scripts in the foreground.
 5. Windows 2000 / NT4 (B7): other resman, several channels; test Start >
    Restart too (the NV3 restart-hang lesson).
 6. Linux (B8, optional): XFree86 `nv`, `rivafb`.
