@@ -91,9 +91,20 @@ spans) intact.
   | ERAZOR III ULTRA | E3G30500.AUN | TNT2 Ultra (0029) |
   | ERAZOR III LT | E3230500.AMN | TNT2 M64 (002D) |
 
+  Other makers' boards (2b1b66874, all AGP, ROMs in Xeon3D/roms
+  `video/nvidia/nv4`): Diamond Viper V550 (195c0550.rom), Creative
+  Graphics Blaster RIVA TNT (nv4-creative.rom), STB Velocity 4400
+  (nv4-stbvelocity4400-110.rom), ASUS AGP-V3400TNT (v3400tnt.rom,
+  SGRAM) -- TNT; Diamond Viper V770 (diamond-viper-v770.BIN), Leadtek
+  WinFast 3D S320 II (rivatnt2leadteks320ii.BIN) -- TNT2. All post on
+  the p6bap; V770 + 8.05 and Creative + 71.84 run the Win98 desktop
+  accelerated. Not added: ASUS AGP-V3800PRO (PCI ID 0029 vs its name),
+  the other ELSA variants (E3230500.A2P/A2V/AON/APN/APV/AUV, Synergy
+  II-32, ER220300.ATN).
+
   The driver on `nv4drv.iso` (4.11.01.0115) lists only 0020 (TNT), 0028
-  (TNT2) and 002C (Vanta), so with it only the ERAZOR III (0028) can be
-  tested; the ULTRA (0029) and LT (002D) need a later driver.
+  (TNT2) and 002C (Vanta); the ULTRA (0029) and LT (002D) need NVIDIA
+  8.05 or 71.84 (dl/iso-extra, on nv4tools.iso).
 
 ## Rules (from the owner)
 - Never open PRs/issues against 86Box/86Box. All PRs target Xeon3D/86Box-Next.
@@ -369,12 +380,19 @@ Recommended order: 4, then 7, then 5.
    with 0E in VMM at random) and the cursor address bits in CR2F
    (8b4101702: 8.05 keeps the cursor above 16 MB). Regression: the TNT
    + 4.11 full run gives 2613 (2616-2620 before).
-   Next: 71.84 on the ULTRA, then the LT (M64, 002D): VM `work-lt` is
-   ready (copy of work-tnt2, ERAZOR III LT, Celeron 233, same CD).
-   Open: after a crash in 3D, the blue screen came out black -- text
-   mode was scanned from PCRTC_START (0x1d4c00, PCRTC_CONFIG = 1, set
-   by 8.05). Unknown whether the chip ignores PCRTC_START in VGA modes
-   or the driver resets PCRTC_CONFIG in a way not modeled; left as is.
+   LT (M64) + 8.05: 2717 3DMarks (VM `work-lt`, now fitted with the
+   Viper V770). Black blue screen fixed (0f68a7bd8): the CRTC start
+   registers and PCRTC_START are one latch.
+   **71.84 (2005) is parked:** VM `work-7184` (copy of work-tnt2, now
+   fitted with the Creative TNT). Installs and runs the desktop on the
+   ULTRA and the TNT, but 3DMark 99 never gets its 800x600 mode: no
+   CRTC/RAMDAC write at all reaches the card (`dev regs`), the D3D
+   channel (ch 14) gets a few setup methods, and every thread blocks
+   (VMM/APM idle). nvcore.vxd pings ch 14 now and then with NOTIFY+NOP
+   on a clip object (status 0xffff, a heartbeat) and our notifier
+   answers it -- not the blocker. Next step: find what the 16-bit
+   display driver's mode set waits on (16-bit samples 0637:3f6,
+   0351:68c seen) before touching registers.
    Script pitfall: TaskStop on a background tnt.sh/fullrun.sh leaves
    its children running -- they keep sending keys (one shut Windows
    down mid-test). Run keystroke scripts in the foreground.
