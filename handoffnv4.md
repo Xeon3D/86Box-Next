@@ -359,16 +359,24 @@ Recommended order: 4, then 7, then 5.
    VM: `work-ultra` (copy of work-tnt2, ERAZOR III ULTRA, Celeron 233,
    nv4tools.iso in the CD drive: `NV805`, `NV7184`); 8.05 is an INF
    install (NVAML.INF), so Windows' new-hardware wizard takes it.
+   **8.05 done on the ULTRA (2026-10-14):** installed (keep the newer
+   vgartd.vxd when asked), desktop 1024x768x32 accelerated; its 2D still
+   uses 0x60/0x61, not 0x64-0x66; it copies DirectDraw overlay frames with
+   class 0x38 (now drawn). Next: 3DMark 99 / D3D on 8.05, then 71.84, and
+   the LT (M64, 002D) board.
 5. Windows 2000 / NT4 (B7): other resman, several channels; test Start >
    Restart too (the NV3 restart-hang lesson).
 6. Linux (B8, optional): XFree86 `nv`, `rivafb`.
 
 **Hardware not modeled yet**
-7. PVIDEO overlay (C9): register stub in `nv4_stubs.c`; port NV3's
-   (wt-nv3) to NV4's layout; Media Player + DxDiag overlay tests.
-8. Classes (C10): 0x38 DVD subpicture (3DMark 2000 sets it up), 0x48 DX3
-   triangle; 3D into a swizzled surface (A3) when something
-   needs it.
+7. ~~PVIDEO overlay~~ done (ec094b9f0): `nv4_pvideo.c`, NV3's overlay
+   (same registers); OVLTEST (tools/nv3/ovltest, OVLTEST.EXE on
+   nv4tools.iso via dl/iso-extra) passes all three phases on the TNT
+   (4.11, writes the buffer itself) and the ULTRA (8.05, copies with
+   0x38). Still to try: Media Player with MPEG-1/Indeo files.
+8. Classes (C10): ~~0x38 DVD subpicture~~ done (ec094b9f0; subpicture
+   blend untested -- the drivers seen use it transparent), 0x48 DX3
+   triangle; 3D into a swizzled surface (A3) when something needs it.
 9. PME / TV encoders (C11): only if a BIOS or driver hangs on them.
 
 **Platforms, speed, docs**
