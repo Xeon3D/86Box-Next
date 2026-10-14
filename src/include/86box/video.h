@@ -679,6 +679,12 @@ extern const device_t nv4_erazor2_agp_device;
 extern const device_t nv5_erazor3_device;
 extern const device_t nv5_erazor3_ultra_device;
 extern const device_t nv5_erazor3_lt_device;
+extern const device_t nv4_viper_v550_device;
+extern const device_t nv4_creative_tnt_device;
+extern const device_t nv4_velocity_4400_device;
+extern const device_t nv4_asus_v3400tnt_device;
+extern const device_t nv5_viper_v770_device;
+extern const device_t nv5_winfast_s320ii_device;
 
 #endif
 

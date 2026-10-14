@@ -226,6 +226,12 @@ video_cards[] = {
     { .device = &nv5_erazor3_device,                            .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &nv5_erazor3_lt_device,                         .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &nv5_erazor3_ultra_device,                      .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &nv4_viper_v550_device,                         .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &nv4_creative_tnt_device,                       .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &nv4_velocity_4400_device,                      .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &nv4_asus_v3400tnt_device,                      .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &nv5_viper_v770_device,                         .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &nv5_winfast_s320ii_device,                     .flags = VIDEO_FLAG_TYPE_NONE      },
 #ifdef USE_G100
     { .device = &productiva_g100_device,                        .flags = VIDEO_FLAG_TYPE_SPECIAL   },
 #endif /*USE_G100 */

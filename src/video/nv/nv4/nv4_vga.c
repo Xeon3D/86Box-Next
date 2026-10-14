@@ -439,6 +439,15 @@ nv4_vga_out(uint16_t addr, uint8_t val, void *priv)
     if (((addr & 0xfff0) == 0x3d0 || (addr & 0xfff0) == 0x3b0) && !(svga->miscout & 1))
         addr ^= 0x60;
 
+    if (nv4->dbg_regtrace && nv4->dbg_regtrace--) {
+        if (addr == 0x3d5)
+            pclog("nv4 regs: cr%02x = %02x\n", svga->crtcreg, val);
+        else if ((addr == 0x3c5) || (addr == 0x3cf))
+            pclog("nv4 regs: port %03x [%02x] = %02x\n", addr, (addr == 0x3c5) ? svga->seqaddr : svga->gdcaddr, val);
+        else if (addr != 0x3d4)
+            pclog("nv4 regs: port %03x = %02x\n", addr, val);
+    }
+
     switch (addr) {
         case 0x3c2:
             svga_out(addr, val, svga);

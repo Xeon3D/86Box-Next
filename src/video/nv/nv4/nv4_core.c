@@ -317,6 +317,10 @@ nv4_mmio_write(nv4_t *nv4, uint32_t addr, uint32_t val, int len)
 {
     addr &= NV4_MMIO_SIZE - 1;
 
+    /* the registers, not instance memory or the channels' areas */
+    if (nv4->dbg_regtrace && (addr < NV4_PRAMIN_START) && nv4->dbg_regtrace--)
+        pclog("nv4 regs: mmio %06x = %08x (%d)\n", addr, val, len);
+
     if (nv4_mmio_byte_wide(addr)) {
         for (int i = 0; i < len; i++)
             nv4_mmio_write8_bytewide(nv4, addr + i, (val >> (i * 8)) & 0xff);
@@ -818,6 +822,12 @@ nv4_debug_hook(const char *args)
         pclog("nv4: tracing %u methods\n", nv4->dbg_trace);
         return;
     }
+    if (args && !strncmp(args, "regs", 4)) {
+        /* regs N: log the next N register writes (MMIO and VGA ports) */
+        nv4->dbg_regtrace = strtoul(args + 4, NULL, 0);
+        pclog("nv4: logging %u register writes\n", nv4->dbg_regtrace);
+        return;
+    }
     if (args && !strncmp(args, "3d", 2)) {
         nv4_3d_stats(nv4);
         return;
@@ -997,12 +1007,25 @@ nv4_force_redraw(void *priv)
 #define ROM_ERAZOR3       "roms/video/nvidia/nv4/elsa_erazor_iii_3.05.00.rom"
 #define ROM_ERAZOR3_ULTRA "roms/video/nvidia/nv4/elsa_erazor_iii_ultra_3.05.00.rom"
 #define ROM_ERAZOR3_LT    "roms/video/nvidia/nv4/elsa_erazor_iii_lt_3.05.00.rom"
+/* Other makers' boards: their BIOSes in the same folder (Xeon3D/roms) */
+#define ROM_VIPER_V550     "roms/video/nvidia/nv4/195c0550.rom"
+#define ROM_CREATIVE_TNT   "roms/video/nvidia/nv4/nv4-creative.rom"
+#define ROM_VELOCITY_4400  "roms/video/nvidia/nv4/nv4-stbvelocity4400-110.rom"
+#define ROM_ASUS_V3400TNT  "roms/video/nvidia/nv4/v3400tnt.rom"
+#define ROM_VIPER_V770     "roms/video/nvidia/nv4/diamond-viper-v770.BIN"
+#define ROM_WINFAST_S320II "roms/video/nvidia/nv4/rivatnt2leadteks320ii.BIN"
 
 static const nv4_board_t board_erazor2_pci   = { .rom_path = ROM_ERAZOR2_PCI, .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1 };
 static const nv4_board_t board_erazor2_agp   = { .rom_path = ROM_ERAZOR2_AGP, .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1 };
 static const nv4_board_t board_erazor3       = { .rom_path = ROM_ERAZOR3, .device_id = NV4_PCI_DEVICE_TNT2, .chip = NV4_CHIP_TNT2, .revision = 0x11, .crystal_14m = 1 };
 static const nv4_board_t board_erazor3_ultra = { .rom_path = ROM_ERAZOR3_ULTRA, .device_id = NV4_PCI_DEVICE_TNT2_U, .chip = NV4_CHIP_TNT2, .revision = 0x11, .crystal_14m = 1, .sgram = 1 };
 static const nv4_board_t board_erazor3_lt    = { .rom_path = ROM_ERAZOR3_LT, .device_id = NV4_PCI_DEVICE_TNT2_M64, .chip = NV4_CHIP_TNT2, .revision = 0x15, .crystal_14m = 1, .mem_64bit = 1 };
+static const nv4_board_t board_nv4_viper_v550 = { .rom_path = ROM_VIPER_V550, .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1 };
+static const nv4_board_t board_nv4_creative_tnt = { .rom_path = ROM_CREATIVE_TNT, .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1 };
+static const nv4_board_t board_nv4_velocity_4400 = { .rom_path = ROM_VELOCITY_4400, .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1 };
+static const nv4_board_t board_nv4_asus_v3400tnt = { .rom_path = ROM_ASUS_V3400TNT, .device_id = NV4_PCI_DEVICE_TNT, .chip = NV4_CHIP_TNT, .revision = 0x04, .crystal_14m = 1, .sgram = 1 };
+static const nv4_board_t board_nv5_viper_v770 = { .rom_path = ROM_VIPER_V770, .device_id = NV4_PCI_DEVICE_TNT2, .chip = NV4_CHIP_TNT2, .revision = 0x11, .crystal_14m = 1 };
+static const nv4_board_t board_nv5_winfast_s320ii = { .rom_path = ROM_WINFAST_S320II, .device_id = NV4_PCI_DEVICE_TNT2, .chip = NV4_CHIP_TNT2, .revision = 0x11, .crystal_14m = 1 };
 
 static int
 nv4_erazor2_pci_available(void)
@@ -1032,6 +1055,42 @@ static int
 nv4_erazor3_lt_available(void)
 {
     return rom_present(ROM_ERAZOR3_LT);
+}
+
+static int
+nv4_viper_v550_available(void)
+{
+    return rom_present(ROM_VIPER_V550);
+}
+
+static int
+nv4_creative_tnt_available(void)
+{
+    return rom_present(ROM_CREATIVE_TNT);
+}
+
+static int
+nv4_velocity_4400_available(void)
+{
+    return rom_present(ROM_VELOCITY_4400);
+}
+
+static int
+nv4_asus_v3400tnt_available(void)
+{
+    return rom_present(ROM_ASUS_V3400TNT);
+}
+
+static int
+nv5_viper_v770_available(void)
+{
+    return rom_present(ROM_VIPER_V770);
+}
+
+static int
+nv5_winfast_s320ii_available(void)
+{
+    return rom_present(ROM_WINFAST_S320II);
 }
 
 /* clang-format off */
@@ -1198,6 +1257,90 @@ const device_t nv5_erazor3_lt_device = {
     .close         = nv4_close,
     .reset         = nv4_reset,
     .available     = nv4_erazor3_lt_available,
+    .speed_changed = nv4_speed_changed,
+    .force_redraw  = nv4_force_redraw,
+    .config        = nv4_tnt2_config
+};
+
+const device_t nv4_viper_v550_device = {
+    .name          = "Diamond Viper V550 AGP (RIVA TNT)",
+    .internal_name = "nv4_viper_v550",
+    .flags         = DEVICE_AGP,
+    .local         = (uintptr_t) &board_nv4_viper_v550,
+    .init          = nv4_init,
+    .close         = nv4_close,
+    .reset         = nv4_reset,
+    .available     = nv4_viper_v550_available,
+    .speed_changed = nv4_speed_changed,
+    .force_redraw  = nv4_force_redraw,
+    .config        = nv4_tnt_config
+};
+
+const device_t nv4_creative_tnt_device = {
+    .name          = "Creative Graphics Blaster RIVA TNT AGP",
+    .internal_name = "nv4_creative_tnt",
+    .flags         = DEVICE_AGP,
+    .local         = (uintptr_t) &board_nv4_creative_tnt,
+    .init          = nv4_init,
+    .close         = nv4_close,
+    .reset         = nv4_reset,
+    .available     = nv4_creative_tnt_available,
+    .speed_changed = nv4_speed_changed,
+    .force_redraw  = nv4_force_redraw,
+    .config        = nv4_tnt_config
+};
+
+const device_t nv4_velocity_4400_device = {
+    .name          = "STB Velocity 4400 AGP (RIVA TNT)",
+    .internal_name = "nv4_velocity_4400",
+    .flags         = DEVICE_AGP,
+    .local         = (uintptr_t) &board_nv4_velocity_4400,
+    .init          = nv4_init,
+    .close         = nv4_close,
+    .reset         = nv4_reset,
+    .available     = nv4_velocity_4400_available,
+    .speed_changed = nv4_speed_changed,
+    .force_redraw  = nv4_force_redraw,
+    .config        = nv4_tnt_config
+};
+
+const device_t nv4_asus_v3400tnt_device = {
+    .name          = "ASUS AGP-V3400TNT (RIVA TNT)",
+    .internal_name = "nv4_asus_v3400tnt",
+    .flags         = DEVICE_AGP,
+    .local         = (uintptr_t) &board_nv4_asus_v3400tnt,
+    .init          = nv4_init,
+    .close         = nv4_close,
+    .reset         = nv4_reset,
+    .available     = nv4_asus_v3400tnt_available,
+    .speed_changed = nv4_speed_changed,
+    .force_redraw  = nv4_force_redraw,
+    .config        = nv4_tnt_config
+};
+
+const device_t nv5_viper_v770_device = {
+    .name          = "Diamond Viper V770 AGP (RIVA TNT2)",
+    .internal_name = "nv5_viper_v770",
+    .flags         = DEVICE_AGP,
+    .local         = (uintptr_t) &board_nv5_viper_v770,
+    .init          = nv4_init,
+    .close         = nv4_close,
+    .reset         = nv4_reset,
+    .available     = nv5_viper_v770_available,
+    .speed_changed = nv4_speed_changed,
+    .force_redraw  = nv4_force_redraw,
+    .config        = nv4_tnt2_config
+};
+
+const device_t nv5_winfast_s320ii_device = {
+    .name          = "Leadtek WinFast 3D S320 II AGP (RIVA TNT2)",
+    .internal_name = "nv5_winfast_s320ii",
+    .flags         = DEVICE_AGP,
+    .local         = (uintptr_t) &board_nv5_winfast_s320ii,
+    .init          = nv4_init,
+    .close         = nv4_close,
+    .reset         = nv4_reset,
+    .available     = nv5_winfast_s320ii_available,
     .speed_changed = nv4_speed_changed,
     .force_redraw  = nv4_force_redraw,
     .config        = nv4_tnt2_config
