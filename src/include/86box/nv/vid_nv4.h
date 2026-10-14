@@ -649,6 +649,7 @@ extern void     nv4_pcrtc_write(nv4_t *nv4, uint32_t addr, uint32_t val);
 extern void     nv4_recalctimings(svga_t *svga);
 extern void     nv4_hwcursor_draw(svga_t *svga, int displine);
 extern void     nv4_vblank_start(svga_t *svga);
+extern void     nv4_pcrtc_crtc_start_write(nv4_t *nv4, uint8_t idx, uint8_t val);
 
 /* subsystems/nv4_pramin.c */
 extern uint8_t  nv4_ramin_read8(nv4_t *nv4, uint32_t off);

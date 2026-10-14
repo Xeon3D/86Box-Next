@@ -106,6 +106,41 @@ nv4_pcrtc_write(nv4_t *nv4, uint32_t addr, uint32_t val)
     }
 }
 
+/* The CRTC's start address registers and PCRTC_START are one latch:
+   CR0C/CR0D (byte address 17:2), CR19 4:0 (22:18) and CR2D bit 5 (23)
+   write their bits of it. PCRTC_CONFIG only picks when a new start takes
+   effect (the driver sets it to latch flips at the end of vertical sync).
+   Windows goes back to text mode (a DOS box, the blue screen) by
+   writing the VGA registers only: a game that had flipped to a back
+   buffer through PCRTC_START must not leave text mode scanning it. */
+void
+nv4_pcrtc_crtc_start_write(nv4_t *nv4, uint8_t idx, uint8_t val)
+{
+    uint32_t s = nv4->pcrtc_start;
+
+    switch (idx) {
+        case 0x0c:
+            s = (s & ~(0xffu << 10)) | ((uint32_t) val << 10);
+            break;
+        case 0x0d:
+            s = (s & ~(0xffu << 2)) | ((uint32_t) val << 2);
+            break;
+        case NV4_CR_RPC0:
+            s = (s & ~(0x1fu << 18)) | ((uint32_t) (val & 0x1f) << 18);
+            break;
+        case NV4_CR_HEB:
+            s = (s & ~(1u << 23)) | ((uint32_t) ((val >> 5) & 1) << 23);
+            break;
+        default:
+            return;
+    }
+    if (s != nv4->pcrtc_start) {
+        nv4->pcrtc_start = s;
+        if (nv4->pcrtc_config & 1)
+            svga_recalctimings(&nv4->svga);
+    }
+}
+
 /* Start of vertical blank: the PCRTC interrupt. */
 void
 nv4_vblank_start(svga_t *svga)
@@ -149,8 +184,9 @@ nv4_recalctimings(svga_t *svga)
     uint8_t lsr    = svga->crtc[NV4_CR_LSR];
     uint8_t heb    = svga->crtc[NV4_CR_HEB];
 
-    /* Start address and row offset. PCRTC_CONFIG bit 0 makes the CRTC
-       take its start from PCRTC_START (a byte address) instead. */
+    /* Start address and row offset. Once the driver has set
+       PCRTC_CONFIG bit 0, the start is the latch PCRTC_START and the
+       CRTC start registers share (nv4_pcrtc_crtc_start_write). */
     if (nv4->pcrtc_config & 1)
         svga->memaddr_latch = nv4->pcrtc_start >> 2;
     else
