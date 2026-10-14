@@ -390,14 +390,23 @@ Recommended order: 4, then 7, then 5.
    channel (ch 14) gets a few setup methods, and every thread blocks
    (VMM/APM idle). nvcore.vxd pings ch 14 now and then with NOTIFY+NOP
    on a clip object (status 0xffff, a heartbeat) and our notifier
-   answers it -- not the blocker. Next step: find what the 16-bit
-   display driver's mode set waits on (16-bit samples 0637:3f6,
-   0351:68c seen) before touching registers.
+   answers it -- not the blocker. Verified 2026-10-14: desktop
+   resolution and colour-depth changes work, plain DirectDraw works
+   (OVLTEST takes 800x600x16; its overlay does not show), but 3DMark
+   (D3D) blocks with every thread idle -- the same with DirectX 7
+   installed and with the start latch disabled; no register is polled
+   (`dev reads N`), the RM only services vblank. Most likely its D3D
+   driver waits on something in memory. Not chased further.
    Script pitfall: TaskStop on a background tnt.sh/fullrun.sh leaves
    its children running -- they keep sending keys (one shut Windows
    down mid-test). Run keystroke scripts in the foreground.
-5. Windows 2000 / NT4 (B7): other resman, several channels; test Start >
-   Restart too (the NV3 restart-hang lesson).
+5. Windows 2000 / NT4 (B7). **Windows 2000 done (2026-10-14):** VM
+   `work-w2k-tnt` (copy of work-w2k: p55tvp4, Pentium 233, ERAZOR II
+   PCI). The inbox NVIDIA RIVA TNT driver installs by itself; 1024x768x32
+   desktop; text was missing until 7c1a49089 (its driver sets a glyph's
+   size/point through GDI block E and sends the bits through block C);
+   Start > Restart reboots cleanly; OVLTEST passes all three phases;
+   Media Player 6.4 plays an MPEG-1 clip in real time. NT4 not tried.
 6. Linux (B8, optional): XFree86 `nv`, `rivafb`.
 
 **Hardware not modeled yet**
@@ -405,7 +414,11 @@ Recommended order: 4, then 7, then 5.
    (same registers); OVLTEST (tools/nv3/ovltest, OVLTEST.EXE on
    nv4tools.iso via dl/iso-extra) passes all three phases on the TNT
    (4.11, writes the buffer itself) and the ULTRA (8.05, copies with
-   0x38). Still to try: Media Player with MPEG-1/Indeo files.
+   0x38). Media Player 6.4 with an MPEG-1 clip (dl/iso-extra/VIDEO/
+   TEST.MPG, made with ffmpeg in WSL; on nv4tools.iso): Win98 + 8.05 on
+   the ULTRA plays it through the overlay (YUY2, frames copied with
+   0x38, `dev` shows the PVIDEO registers), Win2000 inbox too, both in
+   real time. Indeo not tried.
 8. Classes (C10): ~~0x38 DVD subpicture~~ done (ec094b9f0; subpicture
    blend untested -- the drivers seen use it transparent), 0x48 DX3
    triangle; 3D into a swizzled surface (A3) when something needs it.
