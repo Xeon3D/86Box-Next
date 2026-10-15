@@ -292,8 +292,10 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
     external DRAM that wraps (the BIOS sizes it so), ROM `video/chips/stb_monocle_65554_110.bin`).
     The BIOS and Windows run the panel path (FR01 = 2) with no panel: the 65554 shows the CRTC
     timing, not the picture cut to the panel. Interlaced modes halve all vertical timings.
-    Win98 SE's built-in "Chips & Technologies 65554 PCI" driver works. Known: its VBE 4-bit
-    *linear* modes render wrong (banked 16-colour is fine); Win98's 1024x600 entry fails.
+    Its packed 16-colour modes (20h-2Ah: GR05 bit 6 without AR10 bit 6) show each nibble as a
+    pixel. SciTech VBETest draws those modes with planar writes (it resets GR05), so its 4-bit
+    "Banked+Linear" tests look wrong -- VBETest's doing, not the card's. Win98 SE's built-in
+    "Chips & Technologies 65554 PCI" driver works; its 1024x600 entry fails.
   - `debug_cmd dev` dumps both cards' registers.
 - Upstream's CI workflows and Dependabot are disabled/removed in this repo; only
   `sync-upstream.yml` runs.

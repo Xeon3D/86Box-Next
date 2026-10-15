@@ -1183,6 +1183,13 @@ chips_69000_recalctimings(svga_t *svga)
         svga->bpp = 8;
         svga->hoverride = 0;
     }
+
+    /* The 65554 BIOS's packed 16-colour modes (20h-2Ah): the 256-colour shifter
+       (GR05 bit 6) without 8-bit attribute pixels (AR10 bit 6), so as on a VGA each
+       nibble is a pixel through the attribute palette, not half of a 256-colour one. */
+    if ((chips->chip == CHIPS_65554) && !(chips->ext_regs[0x81] & 0x0f) && (svga->gdcreg[6] & 1) &&
+        (svga->gdcreg[5] & 0x40) && !(svga->attrregs[0x10] & 0x40) && (svga->render == svga_render_8bpp_highres))
+        svga->render = svga_render_4bpp_highres;
 }
 
 void
