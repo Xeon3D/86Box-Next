@@ -21,6 +21,9 @@
  *                                  and where the AGP aperture sends it
  *                 cdrom n path     put an image in CD-ROM drive n (0 = the first); no path
  *                                  empties the drive
+ *                 pci bus dev fn   the device's 256-byte configuration space (hex), read
+ *                                  through configuration mechanism #1
+ *                 pciw bus dev fn reg byte   a configuration write of one byte
  *
  *               Each command is logged ("debug_cmd: ..."), so a test can wait
  *               for the file to vanish and then read the log.
@@ -37,6 +40,7 @@
 #include <86box/mem.h>
 #include <86box/cdrom.h>
 #include <86box/agpgart.h>
+#include <86box/pci.h>
 #include <86box/plat.h>
 #include "cpu.h"
 
@@ -310,6 +314,57 @@ debug_cmd_find(const char *arg)
         always_log("debug_cmd: find \"%s\": not found\n", arg);
 }
 
+/* pci <bus> <dev> <fn>: configuration space through mechanism #1, with the
+   guest's CF8h index put back afterwards */
+static void
+debug_cmd_pci(const char *arg)
+{
+    unsigned bus = 0;
+    unsigned dev = 0;
+    unsigned fn  = 0;
+    uint32_t saved;
+    uint32_t regs[64];
+    char     line[80];
+
+    if (sscanf(arg, "%x %x %x", &bus, &dev, &fn) != 3) {
+        always_log("debug_cmd: pci needs bus dev fn\n");
+        return;
+    }
+    saved = pci_readl(0x0cf8, NULL);
+    for (int i = 0; i < 64; i++) {
+        pci_writel(0x0cf8, 0x80000000 | ((bus & 0xff) << 16) | ((dev & 0x1f) << 11) | ((fn & 7) << 8) | (i << 2), NULL);
+        regs[i] = pci_readl(0x0cfc, NULL);
+    }
+    pci_writel(0x0cf8, saved, NULL);
+    for (int i = 0; i < 64; i += 4) {
+        snprintf(line, sizeof(line), "%08x %08x %08x %08x", regs[i], regs[i + 1], regs[i + 2], regs[i + 3]);
+        always_log("debug_cmd: pci %02x:%02x.%x %02x: %s\n", bus, dev, fn, i << 2, line);
+    }
+}
+
+/* pciw <bus> <dev> <fn> <reg> <byte>: a configuration write, as the guest
+   would make it */
+static void
+debug_cmd_pciw(const char *arg)
+{
+    unsigned bus = 0;
+    unsigned dev = 0;
+    unsigned fn  = 0;
+    unsigned reg = 0;
+    unsigned val = 0;
+    uint32_t saved;
+
+    if (sscanf(arg, "%x %x %x %x %x", &bus, &dev, &fn, &reg, &val) != 5) {
+        always_log("debug_cmd: pciw needs bus dev fn reg byte\n");
+        return;
+    }
+    saved = pci_readl(0x0cf8, NULL);
+    pci_writel(0x0cf8, 0x80000000 | ((bus & 0xff) << 16) | ((dev & 0x1f) << 11) | ((fn & 7) << 8) | (reg & 0xfc), NULL);
+    pci_write(0x0cfc + (reg & 3), val & 0xff, NULL);
+    pci_writel(0x0cf8, saved, NULL);
+    always_log("debug_cmd: pciw %02x:%02x.%x %02x = %02x\n", bus, dev, fn, reg & 0xff, val & 0xff);
+}
+
 static void
 debug_cmd_run(char *line)
 {
@@ -381,7 +436,11 @@ debug_cmd_run(char *line)
             always_log("debug_cmd: cdrom %ld \"%s\"\n", id, path);
             plat_cdrom_mount_queued((uint8_t) id, path);
         }
-    } else if (!strcmp(line, "log"))
+    } else if (!strcmp(line, "pci"))
+        debug_cmd_pci(arg);
+    else if (!strcmp(line, "pciw"))
+        debug_cmd_pciw(arg);
+    else if (!strcmp(line, "log"))
         always_log("debug_cmd: %s\n", arg);
     else if (line[0])
         always_log("debug_cmd: unknown command \"%s\"\n", line);
