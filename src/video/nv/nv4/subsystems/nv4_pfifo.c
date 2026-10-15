@@ -553,8 +553,8 @@ nv4_dma_push(nv4_t *nv4)
    flips run up to five frames ahead, then wait for that counter).
    Rates: the 2D engine moves 16 bytes per memory clock over the
    128-bit framebuffer interface, the 3D pipeline draws two pixels per
-   clock and is held to the same memory rate; every method takes at
-   least one clock. */
+   clock (one with two textures) and is held to the same memory rate;
+   every method takes at least one clock. */
 #define NV4_ENG_SLACK_US 20.0 /* run ahead this far before deferring */
 
 static void

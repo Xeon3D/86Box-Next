@@ -1020,5 +1020,10 @@ them with `dev 3d` before optimising.
   method); PGRAPH_STATUS STATE busy until then (the RM's GR_IDLE spins
   on it). Plain same-format blits copy rows (nv4_blit_rows). Exit now
   ~4 s; full 3DMark 2000 = 1045 (was 1050; Celeron 233 is CPU-bound).
+  3DMark 2000 Fill Rate: 163.3 MTexels/s single and multi (TNT peak
+  180 at 90 MHz; the twin pipelines draw 2 single-textured pixels or 1
+  dual-textured pixel a clock). Before the multi-texture rule: 298.8.
   Debug: `dev` prints the engine backlog; new `mouse DX DY [BUTTONS]`
-  debug line (PS/2 reports without capture once used).
+  debug line (PS/2 reports without capture once used; a button change
+  alone sends no packet: pair it with a 1-pixel move, `mouse 1 0 1`
+  then `mouse -1 0 0`; moves of 4 or less avoid Win98's acceleration).
