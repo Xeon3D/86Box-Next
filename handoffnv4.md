@@ -417,10 +417,18 @@ work-tnt (ERAZOR II AGP, 4.11 ICD, Celeron 233, 2 threads + GPU lane,
   shareware folder) was used: **timedemo demo1 640x480 = 969 frames,
   44.0 s, 22.0 fps**. 1280x1024 and 320x240 (line-doubled) checked.
   DOS 6.22 xcopy has no /i (md first).
-  **Open: VBE reports 8192 KB** while the card has 16 MB (PFB_BOOT_0
-  0x1f, the Windows driver uses 16): VBETest's virtual heights confirm
-  8 MB. Check whether the ELSA BIOS sizes memory itself (as the TNT2
-  probe through 3D0-3D3 does) or caps it -- real ERAZOR II PCI had 16 MB.
+  **VBE reports 8192 KB on the 16 MB card: genuine BIOS behaviour, not
+  ours.** The VBE 4F00h handler takes TotalMemory from a routine that is
+  `push bx / push esi / mov ax,CONST / pop esi / pop bx / ret` (ERAZOR II
+  PCI at C000:04DF, unchanged after POST). NVIDIA's reference NV4 BIOS
+  (98dec Alpha.87 Nv4_bios.zip, Chip/NV4/NV4.asm OEMGetMemSize) has the
+  PFB_BOOT_0 read commented out ("limit to 4MB size for VGA") and
+  returns 64 blocks; vendors changed only the constant. Per ROM
+  (search `53 66 56 b8 xx xx 66 5e 5b`): ELSA TNT 2.03/2.05 = 8 MB,
+  ELSA TNT2 3.05 + Synergy II + Creative + ASUS V3400/V3800 + Leadtek
+  = 4 MB, Diamond V770 = 16320 KB; STB 4400 1.10 = `mov ax,0ffh`
+  (16320 KB); Diamond V550 1.95 reads PFB_BOOT_0 bits 1:0 (our 0x1f ->
+  16 MB). README row updated.
 - README on GitHub (master d943c7cc6, cherry-picked from tnt) now has a
   tested-configurations table (OS x driver x card); keep it current.
   master and tnt now differ by those cherry-picks: next time tnt goes
