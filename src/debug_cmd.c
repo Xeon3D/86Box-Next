@@ -36,6 +36,7 @@
 #include <ctype.h>
 #include <86box/86box.h>
 #include <86box/keyboard.h>
+#include <86box/mouse.h>
 #include <86box/video.h>
 #include <86box/debug_cmd.h>
 #include <86box/mem.h>
@@ -54,6 +55,7 @@ static uint16_t debug_cmd_keys[DEBUG_CMD_QUEUE];
 static int      debug_cmd_key_head;
 static int      debug_cmd_key_tail;
 static int      debug_cmd_key_wait;
+int            debug_cmd_mouse = 0;
 static void   (*debug_cmd_device_hook)(const char *args);
 
 void
@@ -412,6 +414,20 @@ debug_cmd_run(char *line)
                 debug_cmd_queue_key(0xaa);
         }
         always_log("debug_cmd: type %s\n", arg);
+    } else if (!strcmp(line, "mouse")) {
+        /* mouse DX DY [BUTTONS]: relative motion, then the buttons
+           (bit 0 left, 1 right, 2 middle) until the next mouse line */
+        int dx = 0, dy = 0, b = -1;
+
+        debug_cmd_mouse = 1;
+
+        if (sscanf(arg, "%d %d %d", &dx, &dy, &b) >= 2) {
+            if (dx || dy)
+                mouse_scale(dx, dy);
+            if (b >= 0)
+                mouse_set_buttons_ex(b);
+        }
+        always_log("debug_cmd: mouse %s\n", arg);
     } else if (!strcmp(line, "shot"))
         debug_cmd_shot(arg);
     else if (!strcmp(line, "dev")) {

@@ -910,6 +910,9 @@ nv4_debug_hook(const char *args)
           NV4_GR(nv4, NV4_PGRAPH_INTR), NV4_GR(nv4, NV4_PGRAPH_INTR_EN), NV4_GR(nv4, NV4_PGRAPH_FIFO),
           NV4_GR(nv4, NV4_PGRAPH_NSOURCE), NV4_GR(nv4, NV4_PGRAPH_CTX_USER), NV4_GR(nv4, NV4_PGRAPH_CTX_CONTROL),
           NV4_GR(nv4, NV4_PGRAPH_TRAPPED_ADDR), NV4_GR(nv4, NV4_PGRAPH_TRAPPED_DATA));
+    pclog("nv4: engine busy for %.0f us more (nvclk %.1f MHz, mclk %.1f MHz)\n",
+          nv4_pfifo_engine_busy(nv4) ? (double) (nv4->eng_tsc - tsc) * 1000000.0 / cpuclock : 0.0,
+          nv4->nvclk_hz / 1000000.0, nv4->mclk_hz / 1000000.0);
     pclog("nv4: switch %08x %08x %08x %08x debug %08x %08x %08x %08x\n", NV4_GR(nv4, NV4_PGRAPH_CTX_SWITCH1),
           NV4_GR(nv4, NV4_PGRAPH_CTX_SWITCH2), NV4_GR(nv4, NV4_PGRAPH_CTX_SWITCH3), NV4_GR(nv4, NV4_PGRAPH_CTX_SWITCH4),
           NV4_GR(nv4, NV4_PGRAPH_DEBUG_0), NV4_GR(nv4, NV4_PGRAPH_DEBUG_1), NV4_GR(nv4, NV4_PGRAPH_DEBUG_2),
@@ -1008,6 +1011,7 @@ nv4_init(const device_t *info)
 
     nv4_vga_init(nv4);
     nv4_ptimer_init(nv4);
+    nv4_pfifo_init(nv4);
 
     pci_add_card(nv4->is_agp ? PCI_ADD_AGP : PCI_ADD_NORMAL,nv4_pci_read, nv4_pci_write, nv4, &nv4->pci_slot);
 
@@ -1036,6 +1040,7 @@ nv4_close(void *priv)
         nv4_debug_dev = NULL;
     }
     timer_disable(&nv4->ptimer_timer);
+    nv4_pfifo_close(nv4);
     nv4_vga_close(nv4);
     ddc_close(nv4->ddc);
     i2c_gpio_close(nv4->i2c);

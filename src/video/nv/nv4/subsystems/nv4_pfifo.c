@@ -419,15 +419,22 @@ nv4_pull_one(nv4_t *nv4, int chid, uint32_t *engines, uint32_t *pull0, uint32_t 
     return nv4_pgraph_method(nv4, chid, subc, mthd, data) == NV4_MTHD_DONE;
 }
 
+static void nv4_eng_charge(nv4_t *nv4);
+static int  nv4_eng_ready(nv4_t *nv4);
+
 static int
 nv4_cache1_pull(nv4_t *nv4)
 {
     nv4_pfifo_t *p    = &nv4->pfifo;
     int          work = 0;
 
-    while ((p->c1_pull0 & PULL0_ACCESS) && nv4_cache1_count(p) && !(p->intr & INTR_CACHE_ERROR)) {
-        if (!nv4_pull_one(nv4, CHID(p), &p->c1_engine, &p->c1_pull0, &p->c1_pull1, &p->c1_hash,
-                          p->c1_method[p->c1_get], p->c1_data[p->c1_get])) {
+    while ((p->c1_pull0 & PULL0_ACCESS) && nv4_cache1_count(p) && !(p->intr & INTR_CACHE_ERROR)
+           && nv4_eng_ready(nv4)) {
+        int done = nv4_pull_one(nv4, CHID(p), &p->c1_engine, &p->c1_pull0, &p->c1_pull1, &p->c1_hash,
+                                p->c1_method[p->c1_get], p->c1_data[p->c1_get]);
+
+        nv4_eng_charge(nv4);
+        if (!done) {
             if (p->c1_pull0 & (PULL0_HASH_FAILED | PULL0_DEVICE_SW))
                 nv4_pfifo_intr(nv4, INTR_CACHE_ERROR);
             break;
@@ -536,50 +543,85 @@ nv4_dma_push(nv4_t *nv4)
 }
 
 /* ------------------------------------------------------------------ */
-/* 2D engine time.                                                     */
+/* Engine time.                                                        */
 /* ------------------------------------------------------------------ */
-/* Methods run as soon as they are queued, so a blit costs the guest no
-   time at all. A program that copies whole frames in a loop until some
-   guest time has passed (3DMark 2000 between tests: ~300 1024x768
-   blits per host second) then ran at 1% speed. Pixels are charged at
-   one per NVCLK; the guest CPU only waits when it queues work while
-   the engine is more than NV4_GR_BACKLOG_MS behind, as it would on a
-   full FIFO, so frames that overlap CPU work cost nothing. */
-#define NV4_GR_BACKLOG_MS 20.0
+/* A method runs as soon as the puller takes it, and its cost in guest
+   time then keeps the engine busy: the next one waits for it. So
+   notifiers, DMA GET, the CACHE1 free count, PGRAPH_STATUS and the
+   flip counter the D3D driver writes after each no-vsync flip blit
+   lag as on the chip, and the drivers' own waits pace the guest (3D
+   flips run up to five frames ahead, then wait for that counter).
+   Rates: the 2D engine moves 16 bytes per memory clock over the
+   128-bit framebuffer interface, the 3D pipeline draws two pixels per
+   clock and is held to the same memory rate; every method takes at
+   least one clock. */
+#define NV4_ENG_SLACK_US 20.0 /* run ahead this far before deferring */
 
 static void
-nv4_gr_account(nv4_t *nv4)
+nv4_eng_charge(nv4_t *nv4)
+{
+    uint64_t now = tsc;
+    double   mem = (nv4->mclk_hz > 0.0) ? (double) nv4->eng_bytes / (16.0 * nv4->mclk_hz) : 0.0;
+    double   px  = (nv4->nvclk_hz > 0.0) ? (double) nv4->eng_px3d / (2.0 * nv4->nvclk_hz) : 0.0;
+    double   sec = (nv4->nvclk_hz > 0.0) ? 1.0 / nv4->nvclk_hz : 0.0;
+
+    sec += (mem > px) ? mem : px;
+    nv4->eng_bytes = 0;
+    nv4->eng_px3d  = 0;
+    if (cpuclock <= 0.0)
+        return;
+    if (nv4->eng_tsc < now)
+        nv4->eng_tsc = now;
+    nv4->eng_tsc += (uint64_t) (sec * cpuclock);
+}
+
+/* Whether PGRAPH is still busy with the work it was given. */
+int
+nv4_pfifo_engine_busy(nv4_t *nv4)
 {
     uint64_t now = tsc;
 
-    if (!nv4->gr_px || (cpuclock <= 0.0) || (nv4->nvclk_hz <= 0.0)) {
-        nv4->gr_px = 0;
-        return;
+    if (nv4->eng_tsc <= now)
+        return 0;
+    if ((double) (nv4->eng_tsc - now) > 2.0 * cpuclock) {
+        /* the TSC was reset (a speed change) */
+        nv4->eng_tsc = now;
+        return 0;
     }
-    if (nv4->gr_busy_tsc < now)
-        nv4->gr_busy_tsc = now;
-    nv4->gr_busy_tsc += (uint64_t) ((double) nv4->gr_px * cpuclock / nv4->nvclk_hz);
-    nv4->gr_px = 0;
+    return 1;
+}
+
+/* Whether the puller may hand PGRAPH another method now; if not, the
+   engine timer resumes it when the engine is done. */
+static int
+nv4_eng_ready(nv4_t *nv4)
+{
+    uint64_t now   = tsc;
+    uint64_t slack = (uint64_t) (cpuclock * NV4_ENG_SLACK_US / 1000000.0);
+
+    if (!nv4_pfifo_engine_busy(nv4) || (nv4->eng_tsc <= now + slack))
+        return 1;
+    if (!timer_is_on(&nv4->eng_timer))
+        timer_set_delay_u64(&nv4->eng_timer, (nv4->eng_tsc - now) << 32);
+    return 0;
 }
 
 static void
-nv4_gr_wait(nv4_t *nv4)
+nv4_eng_timer(void *priv)
 {
-    uint64_t now     = tsc;
-    uint64_t backlog = (uint64_t) (cpuclock * NV4_GR_BACKLOG_MS / 1000.0);
-    uint64_t wait;
+    nv4_pfifo_run((nv4_t *) priv);
+}
 
-    if (nv4->gr_busy_tsc <= now + backlog)
-        return;
-    wait = nv4->gr_busy_tsc - now - backlog;
-    if (wait > (uint64_t) cpuclock) {
-        /* the TSC was reset (speed change) */
-        nv4->gr_busy_tsc = now;
-        return;
-    }
-    if (wait > (uint64_t) (cpuclock / 10.0))
-        wait = (uint64_t) (cpuclock / 10.0);
-    cycles -= (int) wait;
+void
+nv4_pfifo_init(nv4_t *nv4)
+{
+    timer_add(&nv4->eng_timer, nv4_eng_timer, nv4, 0);
+}
+
+void
+nv4_pfifo_close(nv4_t *nv4)
+{
+    timer_disable(&nv4->eng_timer);
 }
 
 /* ------------------------------------------------------------------ */
@@ -623,7 +665,6 @@ nv4_pfifo_run(nv4_t *nv4)
        moves PUT every few triangles, and nothing can see the pixels
        until a sync point (nv4_pgraph_3d.c) draws them. */
     p->busy = 0;
-    nv4_gr_account(nv4);
 }
 
 /* ------------------------------------------------------------------ */
@@ -679,7 +720,6 @@ nv4_user_write(nv4_t *nv4, uint32_t addr, uint32_t val)
                 p->dma |= 1u << chid;
             }
             nv4_pfifo_run(nv4);
-            nv4_gr_wait(nv4);
         } else
             nv4_runout(nv4, chid, (subc << 13) | off, val, RO_ILLEGAL_ACCESS);
         return;
@@ -703,7 +743,6 @@ nv4_user_write(nv4_t *nv4, uint32_t addr, uint32_t val)
     }
     nv4_cache1_push(p, (subc << 13) | off, val);
     nv4_pfifo_run(nv4);
-    nv4_gr_wait(nv4);
 }
 
 /* ------------------------------------------------------------------ */
@@ -715,6 +754,9 @@ nv4_pfifo_reset(nv4_t *nv4)
     nv4_pfifo_t *p = &nv4->pfifo;
 
     memset(p, 0, sizeof(*p));
+    nv4->eng_tsc   = 0;
+    nv4->eng_bytes = 0;
+    nv4->eng_px3d  = 0;
     p->ramht        = 0x00000100; /* 0x10000, 4 KB */
     p->ramfc        = 0x00000110; /* 0x11000 */
     p->ramro        = 0x00000112; /* 0x11200, 512 bytes */

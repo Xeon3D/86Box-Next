@@ -1499,6 +1499,7 @@ nv4_3d_triangle(nv4_t *nv4, int chid, int cls, int i0, int i1, int i2)
     float                inv, x10, y10, x20, y20;
     int32_t              ymin, ymax;
     int                  off16;
+    uint64_t             px = 0;
 
     if (!b)
         return;
@@ -1656,7 +1657,13 @@ nv4_3d_triangle(nv4_t *nv4, int chid, int cls, int i0, int i1, int i2)
         b->spans[b->nspans].x1  = (int16_t) (hi + 1);
         b->spans[b->nspans].tri = (uint16_t) b->ntris;
         b->nspans++;
+        px += (uint64_t) (hi + 1 - lo);
     }
+    /* engine time: the color write, a depth read and write (the depth
+       buffer has the color's depth), the destination read for blending */
+    nv4->eng_px3d += px;
+    nv4->eng_bytes += px * (s->bpp + ((s->z_on && s->zen) ? s->bpp : 0) + ((s->z_on && s->zwrite) ? s->bpp : 0)
+                            + (s->ablend ? s->bpp : 0));
     if (b->parallel && (ymin <= ymax))
         nv4_3d_written(b, s, ymin, ymax);
     b->ntris++;

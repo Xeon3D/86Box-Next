@@ -1009,8 +1009,16 @@ them with `dev 3d` before optimising.
   the board (POST on six VIA boards unchanged, Win98 + 3DMark unchanged);
   `pci` debug command, cpuspeed guest tool.
 - 2026-10-15 (late): 3DMark 2000 test exit (owner report: black screen,
-  1% speed for ~4 min) = the program presents black frames by 1024x768
-  blits in a loop until ~2 s of guest time pass; blits cost host time but
-  no guest time. 2D engine time modeled (nv4_pfifo.c nv4_gr_account /
-  nv4_gr_wait): pixels at one per NVCLK, CPU stalls on PUT only past a
-  20 ms backlog. Exit is instant now; in-test fps unchanged (27).
+  1% speed for ~4 min): no-vsync D3D flips are a back-to-front blit plus
+  a "spoofed flip count" word the engine writes (STB V4400 ddraw
+  Flip32); the driver waits on it only past regPreRenderLimit (5)
+  frames, and our engine finished everything at once, so the black
+  frames between tests took ~300 host blits per guest ms. Engine time
+  modeled (nv4_pfifo.c "Engine time"): the puller takes a method only
+  when PGRAPH is done in guest time; costs from the TNT datasheet (2D:
+  16 bytes per MCLK, 3D: 2 px per NVCLK or memory, 1 NVCLK per
+  method); PGRAPH_STATUS STATE busy until then (the RM's GR_IDLE spins
+  on it). Plain same-format blits copy rows (nv4_blit_rows). Exit now
+  ~4 s; full 3DMark 2000 = 1045 (was 1050; Celeron 233 is CPU-bound).
+  Debug: `dev` prints the engine backlog; new `mouse DX DY [BUTTONS]`
+  debug line (PS/2 reports without capture once used).
