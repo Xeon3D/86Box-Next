@@ -564,9 +564,9 @@ no machines.
   differs only in 0x52 bit 7 (GTL strap) between old and new defaults,
   and guest CPU speed is identical (`cpuspeed`: 234 MHz, same memory
   pass) -- so treat one-off 3DMark outliers as noise and rerun.
-- New debug aids: `pci BUS DEV [FUNC]` debug command (256 config bytes
-  through the card's own read handler; pci_debug_read in pci.c), and
-  tools/nv4/guest/cpuspeed.c (integer loop + 4 MB memory pass timed with
+- New debug aids: the `pci bus dev fn` / `pciw bus dev fn reg byte`
+  debug commands (from master's AGP commit, merged into tnt; mine was
+  dropped for them), and tools/nv4/guest/cpuspeed.c (integer loop + 4 MB memory pass timed with
   GetTickCount and RDTSC, C:\CPUSPEED.TXT).
 
 **Where the 2026-10-15 session stopped (read this first).** The owner
