@@ -26,6 +26,25 @@ Extra features
   * Direct3D (DirectX 5 and 6 triangles, multitexturing) and the **OpenGL ICD**: 3DMark 99 and 2000, Unreal Tournament and Quake III Arena run on NVIDIA's Windows 98 driver;
   * the 3D is drawn on worker threads (1 to 8), or on the **host's GPU** through Vulkan ("Draw 3D on the host GPU" in the card's settings), with the same pixels either way.
 
+#### RIVA TNT / TNT2: what has been tested
+
+Guests ran on Pentium II-class machines (ASUS P6BAP, Celeron 233-266, or a Pentium 233 on Socket 7 for the PCI cards). Benchmark figures are the guest's own (its emulated CPU sets them), not host speed.
+
+| OS | NVIDIA driver | Cards | Works | Does not work / not tested |
+|---|---|---|---|---|
+| Windows 98 SE | 4.11.01.0115 (reference, 1999) | TNT, TNT2 (not Ultra/M64: the driver does not list them) | 2D up to 1600x1200x32; DirectDraw and its overlay; Direct3D: DxDiag, **3DMark 99 MAX 2620**, **3DMark 2000 1050**, Unreal Tournament demo; OpenGL: **Quake III Arena** (39 fps timedemo), **GLQuake 85 fps**, **Quake II 38.5 fps** | Alt+Tab out of a fullscreen OpenGL game and back crashes the driver (its own 1999 bug, as far as we can tell) |
+| Windows 98 SE | 8.05 | TNT, TNT2, TNT2 Ultra, TNT2 M64 | 2D, Direct3D (**3DMark 99: 2714 Ultra, 2717 M64**), overlay and DVD subpicture: Media Player plays MPEG-1 and Indeo 4/5 through the overlay in real time | |
+| Windows 98 SE | 71.84 (2005) | TNT, TNT2 Ultra | Desktop, resolution and colour-depth changes, DirectDraw | **Direct3D draws nothing** (3DMark runs to the end on a blank screen): open |
+| Windows 2000 | built-in NVIDIA driver | TNT (PCI) | 1024x768x32 desktop, overlay, Media Player MPEG-1, restart | 3D not tested |
+| Windows 2000 | 71.84 | TNT2 (PCI) | Installs, desktop | 3D not tested |
+| Windows NT 4.0 SP6a | 28.32, 43.45 | TNT (AGP) | 800x600x16 and 1024x768x32 desktops, mode change without reboot, OpenGL (3D Pipes), DirectDraw overlay | Direct3D: NT4 has none |
+| DOS | (card BIOS) | all 18 boards | POST, text and VGA modes, VESA through the board's BIOS | VESA games and VBE test suites: being tested |
+| Linux | XFree86 `nv`, `rivafb` | | | Not tested |
+
+Not emulated: the TV encoders and video capture (PME), the DirectX 3 triangle class (0x48), 3D drawn into a swizzled surface. Nothing found so far needs them.
+
+Tip: with the **shareware** Quake data GLQuake shows the desktop instead of the game in fullscreen. That is GLQuake, not the card: it cannot read back its palette cache with shareware data, regenerates it behind a dialog on every start, and minimizes itself when that dialog takes the focus. Use the full game's PAK0/PAK1 or `-window`.
+
 ### Dial-up, telephone lines and voice calls
 * **Modems on COM ports:** Diamond SupraExpress 56e PRO and ELSA MicroLink 56k, with a status bar icon to change the line while the machine runs. The line can be:
   * not connected;
