@@ -508,10 +508,9 @@ Vanta (NV5 IDs 0028/0029/002C/002D): Setup refuses a TNT (0020).
   `(dev->id >= VIA_585) || (dev->id < VIA_597)` -- always true, VIA_585
   is the lowest id (came with upstream's "Merged the VIA VPX and AMD 640
   on the common Apollo tree", 22cdad8c7; still in upstream). Fixed for
-  the status register only (VP3 on: 0x90, cap list at A0h). **The same
-  always-true test still sets 0x52 (0x02), 0x59, 0x64 (0xab) and the
-  0x05/0x0f write masks for every VIA chipset -- probably meant
-  `id < VIA_597`; left alone, ask the owner.** Without a working GART
+  the status register first (VP3 on: 0x90, cap list at A0h); the rest of
+  that test's uses were audited and fixed afterwards (see "VIA Apollo
+  audit" below). Without a working GART
   driver 45.23's D3D 6/7 should fail the same way on real VIA boards
   (a forum report of the same DxDiag "step 8" failure with 45.23 on
   Win98 SE; card not named).
@@ -537,6 +536,38 @@ Vanta (NV5 IDs 0028/0029/002C/002D): Setup refuses a TNT (0020).
   3DMark 99 Max 2619 (was 2620), clean shutdown.
 - Guest automation tip: Win+R (`key e0,5b,13,93,e0,db`) opens Run
   reliably; Ctrl+Esc then `r` often misses right after a console window.
+
+**VIA Apollo audit (2026-10-15 evening).** `(dev->id >= VIA_585) ||
+(dev->id < VIA_597)` (always true) came with upstream's 22cdad8c7, which
+added the VPX: at the time VIA_585 was the only id below VIA_597, so it
+meant "the VPX", now "VPX or AMD 640" = `dev->id < VIA_597`. Every use is
+now that (src/chipset/via_apollo.c). For the AGP parts this restores the
+pre-22cdad8c7 behaviour: 0x52 defaults 0x90 (694X) / 0x10 / 0x00, 0x59 =
+0, 0x64 = 0xec (VT8601 datasheet: Rx52 = Dynamic Defer Timer, default
+10h, bit 7 = GTL pull-up strap), write masks 0x51 0xeb, 0x53/0x59 0xf0,
+0x76 0xf0, 0x70/0x73 full on 598/691, 0x71 full except VPX/694X, 0x58
+full on 598/691. 0x05/0x0f keep the masks for every chipset (only SERR#
+and fast back-to-back exist in 0x05). Two `(id != A) || (id != B)` tests
+(0x69, 0x7e) are now `&&`: 0x69 read-only on VPX/AMD 640, 0x7e on
+694X/8601. Not touched: `(dev->id == VIA_693A) && (dev->id < VIA_8601)`
+in 0x69/0x6b/0x6c (redundant, intent unclear). AMD 640 and VT8601 have
+no machines.
+- POST, old vs new build, from clean CMOS and past F1 to the boot
+  attempt: ficva502 (VPX), ficpa2012 (VP3), ax59pro (MVP3), ficka6130
+  (Pro), p3v133 (Pro133), p6bap (Pro133A): identical screens (memory,
+  cache, PCI device lists).
+- Win98: work-tnt (p6bap) 3DMark 99 2616 (baseline 2619/2620); work-indeo
+  (ax59pro, MVP3) boots to the desktop, no new hardware, clean shutdown.
+- One work-tnt run scored 3162 (CPU 3DMarks 3131) and could not be
+  reproduced (2616 next with the same exe; 2625/2629 with experiments).
+  While chasing it: final PCI config of 0:0.0, 0:1.0, 0:7.x and 1:0.0
+  differs only in 0x52 bit 7 (GTL strap) between old and new defaults,
+  and guest CPU speed is identical (`cpuspeed`: 234 MHz, same memory
+  pass) -- so treat one-off 3DMark outliers as noise and rerun.
+- New debug aids: `pci BUS DEV [FUNC]` debug command (256 config bytes
+  through the card's own read handler; pci_debug_read in pci.c), and
+  tools/nv4/guest/cpuspeed.c (integer loop + 4 MB memory pass timed with
+  GetTickCount and RDTSC, C:\CPUSPEED.TXT).
 
 **Where the 2026-10-15 session stopped (read this first).** The owner
 asked for items 1-4 and 6 of the list they were given (= here: 71.84,
@@ -974,3 +1005,6 @@ them with `dev 3d` before optimising.
   (VIAGART, so no AGP memory, so no D3D 6/7 HAL) and 8-bpp IFC index
   packing fixed. 3DMark 99 2679 on 45.23. July 1999 and ASUS Dec 1998
   Detonators pass.
+- 2026-10-15 (evening): VIA Apollo's always-true VPX tests fixed across
+  the board (POST on six VIA boards unchanged, Win98 + 3DMark unchanged);
+  `pci` debug command, cpuspeed guest tool.

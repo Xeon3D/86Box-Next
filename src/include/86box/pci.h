@@ -295,6 +295,7 @@ extern void        pci_write(uint16_t port, uint8_t val, void *priv);
 extern void        pci_writew(uint16_t port, uint16_t val, void *priv);
 extern void        pci_writel(uint16_t port, uint32_t val, void *priv);
 extern uint8_t     pci_read(uint16_t port, void *priv);
+extern uint8_t     pci_debug_read(uint8_t bus, uint8_t card, uint8_t func, uint8_t reg);
 extern uint16_t    pci_readw(uint16_t port, void *priv);
 extern uint32_t    pci_readl(uint16_t port, void *priv);
 

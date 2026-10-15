@@ -591,6 +591,18 @@ pci_reg_read(uint16_t port)
     return ret;
 }
 
+/* A device's configuration byte for the debug commands: the card's own
+   read handler, without touching the guest's address latch. */
+uint8_t
+pci_debug_read(uint8_t bus, uint8_t card, uint8_t func, uint8_t reg)
+{
+    uint8_t slot = pci_card_to_slot_mapping[pci_bus_number_to_index_mapping[bus]][card & 31];
+
+    if ((slot == PCI_CARD_INVALID) || !pci_cards[slot].read)
+        return 0xff;
+    return pci_cards[slot].read(func, reg, 1, pci_cards[slot].priv);
+}
+
 uint8_t
 pci_read(uint16_t port, UNUSED(void *priv))
 {

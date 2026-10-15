@@ -39,6 +39,7 @@
 #include <86box/cdrom.h>
 #include <86box/agpgart.h>
 #include <86box/plat.h>
+#include <86box/pci.h>
 #include "cpu.h"
 
 #define DEBUG_CMD_QUEUE 512
@@ -328,6 +329,25 @@ debug_cmd_find(const char *arg)
         always_log("debug_cmd: find \"%s\": not found\n", arg);
 }
 
+/* pci BUS DEV FUNC: the 256 bytes of a device's configuration space. */
+static void
+debug_cmd_pci(const char *arg)
+{
+    unsigned bus = 0, dev = 0, func = 0;
+
+    if (sscanf(arg, "%x %x %x", &bus, &dev, &func) < 2) {
+        always_log("debug_cmd: pci BUS DEV [FUNC]\n");
+        return;
+    }
+    for (int o = 0; o < 256; o += 16) {
+        char bytes[3 * 16 + 1];
+
+        for (int i = 0; i < 16; i++)
+            snprintf(bytes + 3 * i, 4, " %02x", pci_debug_read(bus, dev, func, o + i));
+        always_log("debug_cmd: pci %02x:%02x.%x %02x:%s\n", bus, dev, func, o, bytes);
+    }
+}
+
 static void
 debug_cmd_run(char *line)
 {
@@ -372,6 +392,8 @@ debug_cmd_run(char *line)
         debug_cmd_bp(arg);
     else if (!strcmp(line, "peek"))
         debug_cmd_peek(arg);
+    else if (!strcmp(line, "pci"))
+        debug_cmd_pci(arg);
     else if (!strcmp(line, "peekp"))
         debug_cmd_peekp(arg);
     else if (!strcmp(line, "map"))
