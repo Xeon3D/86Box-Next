@@ -54,6 +54,7 @@
 #include <86box/vid_ddc.h>
 #include <86box/vid_svga.h>
 #include <86box/vid_svga_render.h>
+#include <86box/debug_cmd.h>
 
 #define lookup_lut(val) svga_lookup_lut_ram(svga, val)
 
@@ -98,6 +99,7 @@ enum {
     BCI_TEXT_HEADER, /* text: glyph width/height */
     BCI_TEXT_DATA,   /* text: glyph bits */
     BCI_SETREG,      /* register writes */
+    BCI_3DDATA,      /* vertices of a 3D primitive (not drawn) */
     BCI_SKIP         /* unknown command: swallow dwords until the next command */
 };
 
@@ -172,6 +174,12 @@ typedef struct savage_t {
     uint32_t cob;          /* MM48C14 */
     uint32_t event_tag;
     uint32_t tiled_surf[6];
+    uint32_t regs3d[256];
+
+    /* The last BCI dwords, for the debug command file's "dev". */
+    uint32_t bci_hist[256];
+    uint8_t  bci_hist_state[256];
+    uint32_t bci_hist_pos;
 
     savage_bd_t gbd, pbd, sbd;
 
@@ -200,6 +208,7 @@ typedef struct savage_t {
         uint8_t  glyph_buf[8192];
 
         int      setreg_index, setreg_count;
+        int      skip_count;
     } bci;
 } savage_t;
 
@@ -1105,6 +1114,7 @@ s3_savage_mmio_writel_reg(savage_t *dev, uint32_t addr, uint32_t val)
             break;
 
         default:
+            s3_savage_log("MMIO write %05x = %08x\n", addr, val);
             break;
     }
 }
@@ -1613,7 +1623,7 @@ savage_host_line(savage_t *dev)
     savage_bd_t *dbd     = savage_bd(dev, savage_dst_bd(cmd));
     int          bytespp = savage_bd_bytespp(dbd);
     uint32_t     cmask   = savage_color_mask(bytespp);
-    int          y       = dev->bci.y + dev->bci.line;
+    int          y       = dev->bci.y + ((cmd & BCI_Y_POSITIVE) ? dev->bci.line : -dev->bci.line);
     const uint8_t *buf   = (const uint8_t *) dev->bci.line_buf;
 
     for (int xx = 0; xx < dev->bci.w; xx++) {
@@ -1783,6 +1793,7 @@ savage_start_command(savage_t *dev, uint32_t cmd)
     int pat = savage_pat_type(cmd);
     int colors;
 
+    s3_savage_log("BCI cmd %08x\n", cmd);
     dev->bci.cmd    = cmd;
     dev->bci.nslots = 0;
     dev->bci.slot   = 0;
@@ -1908,8 +1919,12 @@ savage_text_dword(savage_t *dev, uint32_t val)
             break;
 
         case BCI_TEXT_HEADER:
-            dev->bci.glyph_w         = val & 0xffff;
-            dev->bci.glyph_h         = val >> 16;
+            /* The DIB engine's glyph header, as the Win9x driver copies it:
+               x origin, y origin (above the baseline), width, height. */
+            dev->bci.glyph_x += (int8_t) (val & 0xff);
+            dev->bci.glyph_y -= (int8_t) ((val >> 8) & 0xff);
+            dev->bci.glyph_w         = (val >> 16) & 0xff;
+            dev->bci.glyph_h         = (val >> 24) & 0xff;
             dev->bci.glyph_bitpacked = (savage_cmd_class(dev->bci.cmd) == 0x0d);
             if (dev->bci.glyph_bitpacked)
                 dev->bci.glyph_dwords = (dev->bci.glyph_w * dev->bci.glyph_h + 31) >> 5;
@@ -1969,8 +1984,8 @@ savage_set_register(savage_t *dev, int index, uint32_t val)
             case 0xe5:
                 dev->sbd.hi = val;
                 return;
-            default:
-                s3_savage_log("BCI set register %02x = %08x\n", index, val);
+            default: /* 3D registers (texture, Z, destination, scissors) */
+                dev->regs3d[index & 0xff] = val;
                 return;
         }
     }
@@ -1981,6 +1996,10 @@ savage_set_register(savage_t *dev, int index, uint32_t val)
 static void
 s3_savage_bci_write(savage_t *dev, uint32_t val)
 {
+    dev->bci_hist[dev->bci_hist_pos & 255] = val;
+    dev->bci_hist_state[dev->bci_hist_pos & 255] = dev->bci.state;
+    dev->bci_hist_pos++;
+
     switch (dev->bci.state) {
         case BCI_PARAMS:
             savage_param(dev, val);
@@ -2014,6 +2033,11 @@ s3_savage_bci_write(savage_t *dev, uint32_t val)
                 dev->bci.state = BCI_IDLE;
             return;
 
+        case BCI_3DDATA:
+            if (--dev->bci.skip_count <= 0)
+                dev->bci.state = BCI_IDLE;
+            return;
+
         case BCI_SKIP:
             if (!(val & 0xc0000000))
                 return;
@@ -2036,29 +2060,37 @@ s3_savage_bci_write(savage_t *dev, uint32_t val)
 
     dev->bci.state = BCI_IDLE;
 
-    switch (val >> 28) {
-        case 0x4:
-        case 0x5:
-        case 0x6:
-        case 0x7:
+    switch (val >> 27) {
+        case 0x08 ... 0x0f: /* 2D */
             savage_start_command(dev, val);
             break;
 
-        case 0x9:
-            if ((val >> 24) == 0x98) { /* update the event tag */
-                dev->event_tag = val & 0xffff;
-                s3_savage_update_shadow(dev);
-            } else if ((val >> 24) == 0x96) { /* set registers */
-                dev->bci.setreg_index = val & 0xff;
-                dev->bci.setreg_count = (val >> 16) & 0xff;
-                if (dev->bci.setreg_count)
-                    dev->bci.state = BCI_SETREG;
-            } else
-                s3_savage_log("BCI unknown command %08x\n", val);
+        case 0x10: /* 3D draw primitive: X, Y and the vertex components not switched off */
+            dev->bci.skip_count = ((val >> 16) & 0xff) * (8 - __builtin_popcount(val & 0x3f));
+            if (dev->bci.skip_count)
+                dev->bci.state = BCI_3DDATA;
             break;
 
-        case 0xa: /* queued page flip: the registers are already set */
-        case 0xc: /* wait for idle */
+        case 0x11: /* 3D draw indexed primitive: two 16-bit indices a dword */
+            dev->bci.skip_count = (((val >> 16) & 0xff) + 1) >> 1;
+            if (dev->bci.skip_count)
+                dev->bci.state = BCI_3DDATA;
+            break;
+
+        case 0x12: /* set registers */
+            dev->bci.setreg_index = val & 0xff;
+            dev->bci.setreg_count = (val >> 16) & 0xff;
+            if (dev->bci.setreg_count)
+                dev->bci.state = BCI_SETREG;
+            break;
+
+        case 0x13: /* update the event tag */
+            dev->event_tag = val & 0xffff;
+            s3_savage_update_shadow(dev);
+            break;
+
+        case 0x14: /* queued page flip: the registers are already set */
+        case 0x18: /* wait for idle */
             break;
 
         default:
@@ -2303,6 +2335,32 @@ s3_savage_reset_regs(savage_t *dev)
     dev->pci_regs[0x3d]            = 0x01;
 }
 
+static savage_t *savage_debug_dev;
+
+/* "dev" in the debug command file: the BCI parser's state and its last dwords. */
+static void
+s3_savage_debug_hook(UNUSED(const char *args))
+{
+    savage_t *dev = savage_debug_dev;
+
+    if (!dev)
+        return;
+
+    pclog("Savage BCI: state %d cmd %08x slot %d/%d glyph %dx%d %u/%u host line %d/%d dword %d/%d\n",
+          dev->bci.state, dev->bci.cmd, dev->bci.slot, dev->bci.nslots, dev->bci.glyph_w, dev->bci.glyph_h,
+          dev->bci.glyph_pos, dev->bci.glyph_dwords, dev->bci.line, dev->bci.h, dev->bci.dword,
+          dev->bci.dwords_per_line);
+    pclog("Savage GBD %08x %08x PBD %08x %08x SBD %08x %08x\n", dev->gbd.offset, dev->gbd.hi,
+          dev->pbd.offset, dev->pbd.hi, dev->sbd.offset, dev->sbd.hi);
+    for (uint32_t i = 0; i < 256; i++) {
+        uint32_t n = dev->bci_hist_pos - 256 + i;
+
+        if ((int32_t) n < 0)
+            continue;
+        pclog("Savage BCI -%3u: %08x (state %d)\n", 256 - i, dev->bci_hist[n & 255], dev->bci_hist_state[n & 255]);
+    }
+}
+
 static void *
 s3_savage_init(const device_t *info)
 {
@@ -2355,6 +2413,9 @@ s3_savage_init(const device_t *info)
     dev->i2c = i2c_gpio_init("ddc_s3_savage");
     dev->ddc = ddc_init(i2c_gpio_get_bus(dev->i2c));
 
+    savage_debug_dev = dev;
+    debug_cmd_set_device_hook(s3_savage_debug_hook);
+
     return dev;
 }
 
@@ -2362,6 +2423,11 @@ static void
 s3_savage_close(void *priv)
 {
     savage_t *dev = (savage_t *) priv;
+
+    if (savage_debug_dev == dev) {
+        debug_cmd_set_device_hook(NULL);
+        savage_debug_dev = NULL;
+    }
 
     svga_close(&dev->svga);
 
