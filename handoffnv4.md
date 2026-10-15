@@ -402,9 +402,31 @@ work-tnt (ERAZOR II AGP, 4.11 ICD, Celeron 233, 2 threads + GPU lane,
   WSL), partition at sector 2048, `mtype -i raw@@1048576 ::WINLIST.TXT`.
   nv4ogl.dll disassembles fine with capstone + pefile (py), as does
   GLQUAKE.EXE.
-- Still to do from this list: DOS/VESA on work-dos-tnt (games.iso now
-  also has the full DOS Quake in QUAKEFUL\, GO.EXE). The owner's
-  software library for any OS is G:\Old OS\ (Games, Drivers, Apps).
+- **DOS/VESA done (2026-10-15)** on work-dos-tnt (TC430HX, Pentium 200,
+  ERAZOR II PCI, MS-DOS 6.22 + MSCDEX, CD = D:). Its cfg had duplicate
+  [General]/[Hard disks] sections (merged; old one in
+  86box.cfg.bak-merge) and no `roms` (junction to Latest\98se-nv3\roms
+  added; without it the emulator stops at a ROM dialog before
+  debug_cmd starts). SciTech VBETest 8.00 (D:\VBETEST): "ELSA ERAZOR
+  II", VBE 3.0, linear framebuffer; 640x480x16 banked and 1600x1200x16
+  linear pass every step (Moire, double buffering 19.2/29.8 fps,
+  virtual-screen scrolling). Full Quake (owner's 1.01, GO.EXE = quake,
+  in C:\QUAKE): "VESA 2.0 compliant adapter: ELSA ERAZOR II", modes
+  11-18 (640x400..1280x1024, 320x200/400/240) render; 1.01 never prints
+  a timedemo summary, so the 1.06 exe (C:\QUAKE\Q106.EXE, from the
+  shareware folder) was used: **timedemo demo1 640x480 = 969 frames,
+  44.0 s, 22.0 fps**. 1280x1024 and 320x240 (line-doubled) checked.
+  DOS 6.22 xcopy has no /i (md first).
+  **Open: VBE reports 8192 KB** while the card has 16 MB (PFB_BOOT_0
+  0x1f, the Windows driver uses 16): VBETest's virtual heights confirm
+  8 MB. Check whether the ELSA BIOS sizes memory itself (as the TNT2
+  probe through 3D0-3D3 does) or caps it -- real ERAZOR II PCI had 16 MB.
+- README on GitHub (master d943c7cc6, cherry-picked from tnt) now has a
+  tested-configurations table (OS x driver x card); keep it current.
+  master and tnt now differ by those cherry-picks: next time tnt goes
+  to master, merge (not fast-forward).
+- The owner's software library for any OS is G:\Old OS\ (Games,
+  Drivers, Apps).
 
 **Where the 2026-10-15 session stopped (read this first).** The owner
 asked for items 1-4 and 6 of the list they were given (= here: 71.84,
@@ -832,3 +854,6 @@ them with `dev 3d` before optimising.
   fullscreen on the TNT; GLQuake's "draws nothing" was its own
   minimize-on-focus-loss + shareware 15to8.pal dialog, not the card.
   `dev` shows the clip registers; guest probe winlist.exe.
+- 2026-10-15 (later): full Quake data -> fullscreen GLQuake 85.3 fps; README
+  table pushed; DOS/VESA: VBETest passes, DOS Quake 22 fps at 640x480 VESA
+  (P200). VBE reports 8 MB of 16 (open).
