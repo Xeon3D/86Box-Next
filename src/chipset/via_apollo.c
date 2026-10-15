@@ -119,7 +119,10 @@ via_apollo_setup(via_apollo_t *dev)
     dev->pci_conf[0x04] = 6;
     dev->pci_conf[0x05] = 0;
 
-    if ((dev->id >= VIA_585) || (dev->id < VIA_597))
+    /* The AGP parts (VP3 on) have a capability list: their AGP
+       capability at A0h. VIA's AGP driver (VIAGART) looks for it and
+       gives up on the GART without it. */
+    if (dev->id < VIA_597)
         dev->pci_conf[0x06] = 0xa0;
     else
         dev->pci_conf[0x06] = 0x90;
