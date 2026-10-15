@@ -19,7 +19,10 @@
  *
  *          Graphics processor (GLINT core): register file, input FIFO
  *          parsing (tag/data words, hold/increment/indexed), Sync, and the
- *          2D paths the display drivers use.
+ *          2D paths the display drivers use. The rasterizer's fragment rules
+ *          follow the Permedia 2 model in the ES40 emulator
+ *          (https://github.com/ES40-Emu/es40, src/graphics/Permedia2.cpp,
+ *          Copyright (C) 2026 gdwnldsKSC, BSD-1-Clause).
  *
  * Authors: Marcos Alves, <xeon4d@gmail.com>
  *
@@ -121,42 +124,36 @@ enum {
 #define TVP_MEMCLK_STATUS  0x33
 
 /* Graphics processor tags (register = 0x8000 + 8 * tag). */
-#define GP_TAGS 0x200
+#define GP_TAGS 0x1000
 
 /* A primitive in progress (it may wait for host data). */
 typedef struct p2_raster_t {
     int      active;
-    uint32_t render;
-    int      prim;
-    int      packed;
+    uint32_t command;
+    uint32_t prim;
     int      bpp;
-    uint32_t pitch;
-    int      need_mask;
-    int      need_color;
-    int      source_delta;
-    int      src_dx;
-    int      src_dy;
-    int      rows_left;
-    int      in_span;
-    int      x;
-    int      y;
-    int      x_end;
-    int      x_step;
-    int      y_step;
-    int      x_first;
-    int      x_last;
-    int      cur_y;
-    int32_t  xdom;
-    int32_t  xsub;
-    int32_t  dxdom;
-    int32_t  dxsub;
-    int32_t  fy;
-    int32_t  dy;
-    uint32_t mask;
-    int      mask_left;
-    uint32_t color;
-    int      color_left;
-    int      color_used;
+    int      texture_block;
+    int      origin_x;
+    int      origin_y;
+    uint32_t columns;
+    uint32_t rows;
+    uint32_t col;
+    uint32_t row;
+    int64_t  xdom;
+    int64_t  xsub;
+    int64_t  y;
+    int64_t  dxdom;
+    int64_t  dxsub;
+    int64_t  dy;
+    uint32_t payload;
+    uint32_t payload_left;
+    uint32_t payload_tag;
+    int      shade;        /* Gouraud colour interpolation. */
+    int64_t  color[3];     /* R, G, B in 9.11 fixed point. */
+    int64_t  dcolor_dx[3];
+    int64_t  dcolor_dy[3];
+    uint32_t alpha;
+    int      rel_offset; /* Last: kept from one primitive to the next. */
 } p2_raster_t;
 
 typedef struct p2_t {
@@ -270,13 +267,22 @@ p2_raise_int(p2_t *p2, uint32_t flag)
     p2_update_irq(p2);
 }
 
+/* The graphics pipeline is on screen while the VTG runs (VideoControl, which
+   the STB VDD's EnableVGA clears) and the RAMDAC takes graphics pixels rather
+   than the VGA core's (colour mode bit 4, which the BIOS mode set clears). */
+static int
+p2_vtg_active(p2_t *p2)
+{
+    return (p2->vtg[VTG_VIDEO_CONTROL] & VC_ENABLE) && (p2->dac_regs[TVP_COLOR_MODE] & 0x10);
+}
+
 static void
 p2_vsync_callback(svga_t *svga)
 {
     p2_t *p2 = (p2_t *) svga->priv;
 
     /* The border follows the palette entry, which the BIOS loads after AR11. */
-    svga->overscan_color = (p2->vtg[VTG_VIDEO_CONTROL] & VC_ENABLE) ? 0x000000 : svga->pallook[svga->attrregs[0x11]];
+    svga->overscan_color = p2_vtg_active(p2) ? 0x000000 : svga->pallook[svga->attrregs[0x11]];
 
     p2_raise_int(p2, INT_VRETRACE);
 }
@@ -364,7 +370,7 @@ p2_update_cursor(p2_t *p2)
     svga->dac_hwcursor.yoff = (svga->dac_hwcursor.y < 0) ? -svga->dac_hwcursor.y : 0;
     if (svga->dac_hwcursor.yoff > size)
         svga->dac_hwcursor.yoff = size;
-    svga->dac_hwcursor.addr = svga->dac_hwcursor.yoff * (size >> 3);
+    svga->dac_hwcursor.addr = svga->dac_hwcursor.yoff * 8;
 }
 
 static void
@@ -543,16 +549,20 @@ p2_hwcursor_draw(svga_t *svga, int displine)
 {
     p2_t          *p2     = (p2_t *) svga->priv;
     const int      size   = svga->dac_hwcursor_latch.cur_xsize;
-    const int      plane  = (size == 64) ? 512 : 128;
+    const int      plane  = 0x200;
     const int      mode   = p2->dac_regs[TVP_CURSOR_CONTROL] & 0x03;
     const uint8_t *cd     = p2->cursor_ram;
     uint32_t       base   = svga->dac_hwcursor_latch.addr;
     int            offset = svga->dac_hwcursor_latch.x;
     uint32_t      *p      = svga->monitor->target_buffer->line[displine];
 
-    /* A 32x32 cursor is one of four images in the cursor RAM. */
-    if (size == 32)
-        base += ((p2->dac_regs[TVP_CURSOR_CONTROL] >> 4) & 3) * 256;
+    /* The RAM always holds two 64x64 planes, 8 bytes a row, MSB first; a
+       32x32 cursor is one quadrant of them. */
+    if (size == 32) {
+        const int sel = (p2->dac_regs[TVP_CURSOR_CONTROL] >> 4) & 3;
+
+        base += (sel & 1) * 4 + (sel >> 1) * 256;
+    }
 
     for (int x = 0; x < size; x += 8) {
         const uint8_t b0 = cd[(base + (x >> 3)) & 0x3ff];
@@ -590,7 +600,7 @@ p2_hwcursor_draw(svga_t *svga, int displine)
         }
     }
 
-    svga->dac_hwcursor_latch.addr += size >> 3;
+    svga->dac_hwcursor_latch.addr += 8;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -787,8 +797,12 @@ p2_recalctimings(svga_t *svga)
     p2_t *p2 = (p2_t *) svga->priv;
 
     svga->border_override = 0;
+    /* The attribute controller's blink bit is the VGA core's: the graphics
+       pipeline never blinks (the drivers pass through a text mode on each
+       mode switch and leave AR10 bit 3 set). */
+    svga->disable_blink = p2_vtg_active(p2);
 
-    if (!(p2->vtg[VTG_VIDEO_CONTROL] & VC_ENABLE)) {
+    if (!p2_vtg_active(p2)) {
         /* The VGA core drives the display, if SR05 lets it. */
         const int    sel  = (svga->miscout >> 2) & 3;
         const double freq = p2_pixclk(p2, (sel > 2) ? 2 : sel);
@@ -828,8 +842,7 @@ p2_recalctimings(svga_t *svga)
         return;
     }
 
-    /* VideoControl enabled: the video timing generator drives the display
-       (the VDD's EnableVGA just clears it again). */
+    /* The video timing generator drives the display. */
     const uint32_t vc       = p2->vtg[VTG_VIDEO_CONTROL];
     const int      bpp      = p2_bpp(p2);
     const int      unitbits = (vc & VC_DATA64) ? 64 : 32;
@@ -985,11 +998,11 @@ p2_fifo_write(p2_t *p2, uint32_t val)
 {
     if (!p2->fifo_hdr_count) {
         /* A tag word: [8:0] tag, [15:14] mode, [31:16] count - 1 or the indexed mask. */
-        p2->fifo_hdr_tag  = val & 0x1ff;
+        p2->fifo_hdr_tag  = val & 0x3ff;
         p2->fifo_hdr_mode = (val >> 14) & 3;
         if (p2->fifo_hdr_mode == 2) {
             p2->fifo_hdr_mask  = val >> 16;
-            p2->fifo_hdr_tag   = val & 0x1f0;
+            p2->fifo_hdr_tag   = val & 0x3f0;
             p2->fifo_hdr_count = 0;
             for (int i = 0; i < 16; i++)
                 p2->fifo_hdr_count += (p2->fifo_hdr_mask >> i) & 1;
@@ -1000,7 +1013,8 @@ p2_fifo_write(p2_t *p2, uint32_t val)
 
     switch (p2->fifo_hdr_mode) {
         case 1: /* Increment. */
-            p2_gp_write(p2, p2->fifo_hdr_tag++, val);
+            p2_gp_write(p2, p2->fifo_hdr_tag, val);
+            p2->fifo_hdr_tag = (p2->fifo_hdr_tag + 1) & 0x3ff;
             break;
         case 2: /* Indexed. */
             for (int i = 0; i < 16; i++) {
@@ -1029,7 +1043,7 @@ p2_vtg_write(p2_t *p2, int idx, uint32_t val)
             return;
         case VTG_SCREEN_BASE:
             p2->vtg[idx] = val;
-            if (p2->vtg[VTG_VIDEO_CONTROL] & VC_ENABLE)
+            if (p2_vtg_active(p2))
                 svga->memaddr_latch = (val & 0xfffff) << 1;
             svga->fullchange = 3;
             return;
@@ -1402,7 +1416,13 @@ p2_gp_write(p2_t *p2, uint32_t tag, uint32_t val)
 }
 
 /* ------------------------------------------------------------------------- */
-/* Rasterizer (the 2D paths: fills, copies, host colour and bit mask data)   */
+/* Rasterizer and framebuffer units (the 2D paths)                           */
+/*                                                                           */
+/* The fragment rules follow the Permedia 2 model in ES40's                  */
+/* src/graphics/Permedia2.cpp (Copyright (C) 2026 gdwnldsKSC,                */
+/* BSD-1-Clause): packed DWORD groups widened to native pixels, separate     */
+/* source (FBReadMode) and destination (FBWriteConfig) pitches, the 64-bit   */
+/* block fill pattern, bit mask and host data streams.                       */
 /* ------------------------------------------------------------------------- */
 
 #define TAG_START_X_DOM         0x000
@@ -1417,12 +1437,12 @@ p2_gp_write(p2_t *p2, uint32_t tag, uint32_t val)
 #define TAG_CONTINUE_NEW_DOM    0x009
 #define TAG_CONTINUE_NEW_SUB    0x00a
 #define TAG_CONTINUE            0x00b
-#define TAG_FLUSH_SPAN          0x00c
 #define TAG_BIT_MASK_PATTERN    0x00d
 #define TAG_RASTERIZER_MODE     0x014
+#define TAG_Y_LIMITS            0x015
+#define TAG_X_LIMITS            0x019
 #define TAG_RECT_ORIGIN         0x01a
 #define TAG_RECT_SIZE           0x01b
-#define TAG_FORCE_BG_COLOR      0x029
 #define TAG_PACKED_DATA_LIMITS  0x02a
 #define TAG_SCISSOR_MODE        0x030
 #define TAG_SCISSOR_MIN         0x031
@@ -1431,6 +1451,16 @@ p2_gp_write(p2_t *p2, uint32_t tag, uint32_t val)
 #define TAG_AREA_STIPPLE_MODE   0x034
 #define TAG_WINDOW_ORIGIN       0x039
 #define TAG_AREA_STIPPLE_PAT    0x040
+#define TAG_S_START             0x071
+#define TAG_DS_DX               0x072
+#define TAG_T_START             0x074
+#define TAG_TEXTURE_BASE        0x0b0
+#define TAG_TEXTURE_MAP_FORMAT  0x0b1
+#define TAG_TEXTURE_DATA_FORMAT 0x0b2
+#define TAG_TEXEL0              0x0c0
+#define TAG_TEXTURE_READ_MODE   0x0ce
+#define TAG_R_START             0x0f0
+#define TAG_A_START             0x0f9
 #define TAG_COLOR_DDA_MODE      0x0fc
 #define TAG_CONSTANT_COLOR      0x0fd
 #define TAG_COLOR               0x0fe
@@ -1441,30 +1471,39 @@ p2_gp_write(p2_t *p2, uint32_t tag, uint32_t val)
 #define TAG_FB_READ_MODE        0x150
 #define TAG_FB_SOURCE_OFFSET    0x151
 #define TAG_FB_PIXEL_OFFSET     0x152
+#define TAG_FB_COLOR            0x153
 #define TAG_FB_DATA             0x154
-#define TAG_FB_SOURCE_DELTA     0x155
+#define TAG_FB_SOURCE_DATA      0x155
 #define TAG_FB_WINDOW_BASE      0x156
 #define TAG_FB_WRITE_MODE       0x157
 #define TAG_FB_HW_WRITE_MASK    0x158
 #define TAG_FB_BLOCK_COLOR      0x159
 #define TAG_FB_READ_PIXEL       0x15a
+#define TAG_FB_WRITE_CONFIG     0x15d
+#define TAG_FB_BLOCK_COLOR_U    0x18d
+#define TAG_FB_BLOCK_COLOR_L    0x18e
+#define TAG_FB_SOURCE_BASE      0x1b0
+#define TAG_FB_SOURCE_DELTA     0x1b1
+#define TAG_CONFIG              0x1b2
 
 #define RENDER_AREA_STIPPLE  (1 << 0)
 #define RENDER_FAST_FILL     (1 << 3)
-#define RENDER_PRIM_SHIFT    6
+#define RENDER_PRIM_MASK     0xc0
 #define RENDER_SYNC_BITMASK  (1 << 11)
 #define RENDER_SYNC_HOSTDATA (1 << 12)
 #define RENDER_TEXTURE       (1 << 13)
 #define RENDER_X_POSITIVE    (1 << 21)
 #define RENDER_Y_POSITIVE    (1 << 22)
 
-#define PRIM_LINE  0
-#define PRIM_TRAP  1
-#define PRIM_POINT 2
-#define PRIM_RECT  3
+#define PRIM_LINE  0x00
+#define PRIM_TRAP  0x40
+#define PRIM_POINT 0x80
+#define PRIM_RECT  0xc0
 
 #define FBRM_SRC_ENABLE (1 << 9)
 #define FBRM_DST_ENABLE (1 << 10)
+#define FBRM_DATA_TYPE  (1 << 15)
+#define FBRM_ORIGIN_BOT (1 << 16)
 #define FBRM_PACKED     (1 << 19)
 
 static int
@@ -1473,18 +1512,24 @@ p2_sext(uint32_t v, int bits)
     return (int32_t) (v << (32 - bits)) >> (32 - bits);
 }
 
-/* FBReadMode's partial products: three 3-bit codes, each 0 or 32 << (code - 1) pixels. */
-static uint32_t
-p2_fb_pitch(p2_t *p2)
+/* The integer part of a 16.16 DDA value, rounding towards minus infinity. */
+static int64_t
+p2_fixed_int(int64_t v)
 {
-    const uint32_t m     = p2->gp[TAG_FB_READ_MODE];
-    uint32_t       pitch = 0;
+    return (v >= 0) ? (v / 65536) : -((-v + 65535) / 65536);
+}
 
-    for (int i = 0; i < 3; i++) {
-        const uint32_t pp = (m >> (i * 3)) & 7;
+/* Partial products: three 3-bit codes, each 0 or 32 << (code - 1) pixels. */
+static uint32_t
+p2_pitch(uint32_t mode)
+{
+    uint32_t pitch = 0;
+
+    for (int i = 0; i < 9; i += 3) {
+        const uint32_t pp = (mode >> i) & 7;
 
         if (pp)
-            pitch += 16 << pp;
+            pitch += 1 << (pp + 4);
     }
 
     return pitch;
@@ -1506,34 +1551,33 @@ p2_fb_bpp(p2_t *p2)
 }
 
 static uint32_t
-p2_fb_read(p2_t *p2, uint32_t addr, int bpp)
+p2_fb_read(p2_t *p2, int64_t addr, int bpp)
 {
     const uint8_t *vram = p2->svga.vram;
-    const uint32_t m    = p2->vram_mask;
+    uint32_t       v    = 0;
 
-    switch (bpp) {
-        case 1:
-            return vram[addr & m];
-        case 2:
-            return vram[addr & m] | (vram[(addr + 1) & m] << 8);
-        case 3:
-            return vram[addr & m] | (vram[(addr + 1) & m] << 8) | (vram[(addr + 2) & m] << 16);
-        default:
-            return vram[addr & m] | (vram[(addr + 1) & m] << 8) | (vram[(addr + 2) & m] << 16) |
-                   ((uint32_t) vram[(addr + 3) & m] << 24);
-    }
+    if ((addr < 0) || (addr > (int64_t) p2->vram_size - bpp))
+        return 0;
+    for (int i = 0; i < bpp; i++)
+        v |= (uint32_t) vram[addr + i] << (i << 3);
+    return v;
 }
 
 static void
-p2_fb_write(p2_t *p2, uint32_t addr, int bpp, uint32_t val)
+p2_fb_write(p2_t *p2, int64_t addr, int bpp, uint32_t val, uint32_t hwmask)
 {
-    uint8_t       *vram = p2->svga.vram;
-    const uint32_t m    = p2->vram_mask;
+    uint8_t *vram = p2->svga.vram;
 
+    if ((addr < 0) || (addr > (int64_t) p2->vram_size - bpp))
+        return;
     for (int i = 0; i < bpp; i++) {
-        vram[(addr + i) & m] = val >> (i << 3);
-        p2_vram_changed(p2, (addr + i) & m);
+        const uint32_t a = (uint32_t) addr + i;
+        const uint8_t  m = hwmask >> ((a & 3) << 3);
+
+        vram[a] = (vram[a] & ~m) | ((val >> (i << 3)) & m);
     }
+    p2_vram_changed(p2, (uint32_t) addr);
+    p2_vram_changed(p2, (uint32_t) addr + bpp - 1);
 }
 
 static uint32_t
@@ -1575,44 +1619,55 @@ p2_logic_op(int op, uint32_t s, uint32_t d)
     }
 }
 
-/* A colour from the GLINT pipeline (ABGR 8888) in the framebuffer's format,
-   as the dither unit converts it; without the unit, the bits go as they are. */
+/* An internal AABBGGRR colour in the framebuffer's format (the dither unit). */
 static uint32_t
-p2_format_color(p2_t *p2, uint32_t c)
+p2_format_color(p2_t *p2, uint32_t v, int x, int y)
 {
     const uint32_t dm  = p2->gp[TAG_DITHER_MODE];
     const uint32_t fmt = ((dm >> 2) & 15) | ((dm >> 12) & 16);
-    uint32_t       r   = c & 0xff;
-    uint32_t       g   = (c >> 8) & 0xff;
-    uint32_t       b   = (c >> 16) & 0xff;
-    uint32_t       a   = c >> 24;
+    const int      rgb = !!(dm & 0x400);
+    uint32_t       r   = v & 0xff;
+    uint32_t       g   = (v >> 8) & 0xff;
+    uint32_t       b   = (v >> 16) & 0xff;
+    uint32_t       lo  = rgb ? b : r;
+    uint32_t       hi  = rgb ? r : b;
+    uint32_t       a   = v >> 24;
 
     if (!(dm & 1))
-        return c;
+        return v;
+    if (fmt == 14)
+        return v & 0xff; /* Colour index. */
 
-    if (dm & (1 << 10)) {
-        /* RGB order: red in the high bits. */
-        const uint32_t t = r;
-        r                = b;
-        b                = t;
+    if (dm & 2) {
+        /* 2x2 ordered dither before truncation. */
+        static const uint8_t dither[2][2] = { { 0, 2 }, { 3, 1 } };
+        const uint32_t       f            = dither[(y + (dm >> 8)) & 1][(x + (dm >> 6)) & 1];
+
+        lo = MIN(255, lo + f * 2);
+        g  = MIN(255, g + f);
+        hi = MIN(255, hi + f * 2);
     }
+    if (dm & 0x1000)
+        a = 0;
+    if (dm & 0x2000)
+        a = 0xf8;
 
     switch (fmt) {
-        case 0: /* 8888 */
-            return b | (g << 8) | (r << 16) | (a << 24);
+        case 0:
+            return lo | (g << 8) | (hi << 16) | (a << 24);
         case 1:
-        case 9: /* 5551 */
-            return (b >> 3) | ((g >> 3) << 5) | ((r >> 3) << 10) | ((a >> 7) << 15);
+            return (lo >> 3) | ((g >> 3) << 5) | ((hi >> 3) << 10) | ((a >> 7) << 15);
+        case 2:
+            return (lo >> 4) | ((g >> 4) << 4) | ((hi >> 4) << 8) | ((a >> 4) << 12);
         case 16:
-        case 17: /* 565 */
-            return (b >> 3) | ((g >> 2) << 5) | ((r >> 3) << 11);
-        default: /* CI8 and the rest: the index or low bits. */
-            return c & 0xff;
+            return (lo >> 3) | ((g >> 2) << 5) | ((hi >> 3) << 11);
+        default:
+            return 0;
     }
 }
 
 static int
-p2_pixel_visible(p2_t *p2, int x, int y)
+p2_clipped(p2_t *p2, int64_t x, int64_t y, int packed_limits)
 {
     const uint32_t sm = p2->gp[TAG_SCISSOR_MODE];
 
@@ -1622,335 +1677,413 @@ p2_pixel_visible(p2_t *p2, int x, int y)
 
         if ((x < p2_sext(mn, 16)) || (y < p2_sext(mn >> 16, 16)) ||
             (x >= p2_sext(mx, 16)) || (y >= p2_sext(mx >> 16, 16)))
-            return 0;
+            return 1;
     }
     if (sm & 2) {
         const uint32_t ss = p2->gp[TAG_SCREEN_SIZE];
 
-        if ((x < 0) || (y < 0) || (x >= (int) (ss & 0xffff)) || (y >= (int) (ss >> 16)))
-            return 0;
+        if ((x < 0) || (y < 0) || (x >= (int64_t) (ss & 0xffff)) || (y >= (int64_t) (ss >> 16)))
+            return 1;
+    }
+    if (packed_limits && (p2->gp[TAG_FB_READ_MODE] & FBRM_PACKED)) {
+        /* Native pixel edges, in either order. */
+        const int a = p2_sext(p2->gp[TAG_PACKED_DATA_LIMITS] >> 16, 12);
+        const int b = p2_sext(p2->gp[TAG_PACKED_DATA_LIMITS], 12);
+
+        if ((x < MIN(a, b)) || (x >= MAX(a, b)))
+            return 1;
     }
 
-    if ((p2->raster.render & RENDER_AREA_STIPPLE) && (p2->gp[TAG_AREA_STIPPLE_MODE] & 1)) {
-        const uint32_t am   = p2->gp[TAG_AREA_STIPPLE_MODE];
-        const int      xoff = (am >> 1) & 31;
-        const int      yoff = (am >> 6) & 31;
-        int            sx   = (x + xoff) & 31;
-        int            sy   = (y + yoff) & 31;
-        uint32_t       bit;
-
-        if (am & (1 << 12))
-            sx = 31 - sx;
-        if (am & (1 << 13))
-            sy = 31 - sy;
-        bit = (p2->gp[TAG_AREA_STIPPLE_PAT + sy] >> sx) & 1;
-        if (am & (1 << 11))
-            bit ^= 1;
-        if (!bit)
-            return 0;
-    }
-
-    return 1;
+    return 0;
 }
 
-/* One fragment through the framebuffer units. */
-static void
-p2_draw_pixel(p2_t *p2, int x, int y, int src_x, int src_y, int have_color, uint32_t color, int bg)
+static uint32_t
+p2_block_color(p2_t *p2, int x, int y)
 {
-    p2_raster_t   *r   = &p2->raster;
-    const uint32_t rm  = p2->gp[TAG_FB_READ_MODE];
-    const uint32_t lop = p2->gp[TAG_LOGICAL_OP_MODE];
-    const int      bpp = r->bpp;
-    const uint32_t pitch = r->pitch;
-    const uint32_t base  = p2->gp[TAG_FB_WINDOW_BASE];
-    uint32_t       addr;
-    uint32_t       src;
-    uint32_t       dst  = 0;
-    uint32_t       mask = p2->gp[TAG_FB_HW_WRITE_MASK] & p2->gp[TAG_FB_SOFT_WRITE_MASK];
-    uint32_t       res;
+    const int      bpp   = p2->raster.bpp;
+    const int64_t  sign  = (p2->gp[TAG_FB_WRITE_CONFIG] & FBRM_ORIGIN_BOT) ? -1 : 1;
+    const int64_t  pixel = (int64_t) p2->gp[TAG_FB_WINDOW_BASE] + p2->gp[TAG_FB_PIXEL_OFFSET] + x +
+                          (int64_t) y * p2_pitch(p2->gp[TAG_FB_WRITE_CONFIG]) * sign;
+    const uint64_t pat   = p2->gp[TAG_FB_BLOCK_COLOR_L] | ((uint64_t) p2->gp[TAG_FB_BLOCK_COLOR_U] << 32);
 
-    if (!p2_pixel_visible(p2, x, y))
+    if (bpp == 3)
+        return p2->gp[TAG_FB_BLOCK_COLOR];
+    return (uint32_t) (pat >> ((((uint64_t) pixel * bpp) & 7) * 8));
+}
+
+/* One fragment through stipple, the write address, logic ops and masks. */
+static void
+p2_emit_pixel(p2_t *p2, int x, int y, uint32_t value, int raw)
+{
+    p2_raster_t   *r    = &p2->raster;
+    const int      fast = !!(r->command & RENDER_FAST_FILL);
+    const uint32_t lop  = p2->gp[TAG_LOGICAL_OP_MODE];
+    const uint32_t wc   = p2->gp[TAG_FB_WRITE_CONFIG];
+    const int      bpp  = r->bpp;
+    int64_t        addr;
+    uint32_t       old;
+
+    if (p2_clipped(p2, x, y, !fast))
         return;
-    if ((x < 0) || (y < 0))
-        return;
 
-    addr = (base + (uint32_t) y * pitch + (uint32_t) x) * bpp;
+    if ((r->command & RENDER_AREA_STIPPLE) && (p2->gp[TAG_AREA_STIPPLE_MODE] & 1)) {
+        /* 8x8 pattern. */
+        const uint32_t am = p2->gp[TAG_AREA_STIPPLE_MODE];
+        uint32_t       ax = (x + (am >> 7)) & 7;
+        uint32_t       ay = (y + (am >> 12)) & 7;
+        int            bit;
 
-    if (bg)
-        src = p2->gp[TAG_FORCE_BG_COLOR];
-    else if (have_color)
-        src = r->packed ? color : p2_format_color(p2, color);
-    else if (rm & FBRM_SRC_ENABLE)
-        src = p2_fb_read(p2, (base + (uint32_t) src_y * pitch + (uint32_t) src_x) * bpp, bpp);
-    else if (r->render & RENDER_FAST_FILL)
-        src = p2->gp[TAG_FB_BLOCK_COLOR];
-    else if (p2->gp[TAG_COLOR_DDA_MODE] & 1)
-        src = r->packed ? p2->gp[TAG_CONSTANT_COLOR] : p2_format_color(p2, p2->gp[TAG_CONSTANT_COLOR]);
-    else
-        src = 0;
+        if (am & (1 << 18))
+            ax = 7 - ax;
+        if (am & (1 << 19))
+            ay = 7 - ay;
+        bit = (p2->gp[TAG_AREA_STIPPLE_PAT + ay] >> ax) & 1;
+        if (am & (1 << 17))
+            bit = !bit;
+        if (!bit) {
+            if (!(am & (1 << 20)))
+                return;
+            value = p2->gp[TAG_TEXEL0];
+            raw   = 1;
+        }
+    }
 
     if (!(p2->gp[TAG_FB_WRITE_MODE] & 1))
         return;
 
-    if ((lop & 1) && !(r->render & RENDER_FAST_FILL)) {
-        if (lop & (1 << 5))
-            src = p2->gp[TAG_FB_WRITE_DATA];
-        dst = p2_fb_read(p2, addr, bpp);
-        res = p2_logic_op(lop >> 1, src, dst);
-    } else {
-        res = src;
-        if (mask != 0xffffffff)
-            dst = p2_fb_read(p2, addr, bpp);
-    }
+    addr = ((int64_t) p2->gp[TAG_FB_WINDOW_BASE] + p2->gp[TAG_FB_PIXEL_OFFSET] + x +
+            (int64_t) y * p2_pitch(wc) * ((wc & FBRM_ORIGIN_BOT) ? -1 : 1)) * bpp;
 
-    /* The write masks are given for the whole word; a pixel uses its low bits. */
-    res = (dst & ~mask) | (res & mask);
-    p2_fb_write(p2, addr, bpp, res);
+    if (!fast && (lop & 0x20)) {
+        /* UseConstantFBWriteData: packed fragments take their byte lane. */
+        value = p2->gp[TAG_FB_WRITE_DATA];
+        if (p2->gp[TAG_FB_READ_MODE] & FBRM_PACKED)
+            value >>= ((uint32_t) addr & 3) << 3;
+    } else if (!raw)
+        value = p2_format_color(p2, value, x, y);
+
+    old = p2_fb_read(p2, addr, bpp);
+    if (!fast) {
+        const uint32_t dst = (p2->gp[TAG_FB_READ_MODE] & FBRM_DST_ENABLE) ? old : 0;
+        const uint32_t swm = p2->gp[TAG_FB_SOFT_WRITE_MASK];
+
+        if (lop & 1)
+            value = p2_logic_op(lop >> 1, value, dst);
+        value = (value & swm) | (dst & ~swm);
+    }
+    p2_fb_write(p2, addr, bpp, value, p2->gp[TAG_FB_HW_WRITE_MASK]);
 }
 
-static uint32_t
-p2_swap_mask(p2_t *p2, uint32_t v)
-{
-    const uint32_t rmode = p2->gp[TAG_RASTERIZER_MODE];
-
-    switch ((rmode >> 7) & 3) {
-        case 1:
-            v = ((v & 0x00ff00ff) << 8) | ((v >> 8) & 0x00ff00ff);
-            break;
-        case 2:
-            v = (v << 16) | (v >> 16);
-            break;
-        case 3:
-            v = (v << 24) | ((v & 0xff00) << 8) | ((v >> 8) & 0xff00) | (v >> 24);
-            break;
-        default:
-            break;
-    }
-    if (rmode & 2)
-        v = ~v;
-    return v;
-}
-
-/* Sets up the next span; returns 0 when the primitive is done. */
 static int
-p2_raster_next_span(p2_t *p2)
+p2_packed_trap(p2_t *p2, uint32_t command)
+{
+    return ((command & RENDER_PRIM_MASK) == PRIM_TRAP) && !(command & RENDER_FAST_FILL) &&
+           (p2->gp[TAG_FB_READ_MODE] & FBRM_PACKED);
+}
+
+/* Reads back to the host (FBReadMode DataType with destination reads). */
+static int
+p2_upload_cmd(p2_t *p2, uint32_t command)
+{
+    return !(command & RENDER_FAST_FILL) &&
+           ((p2->gp[TAG_FB_READ_MODE] & (FBRM_DATA_TYPE | FBRM_DST_ENABLE)) == (FBRM_DATA_TYPE | FBRM_DST_ENABLE));
+}
+
+static void
+p2_set_span(p2_t *p2)
 {
     p2_raster_t *r = &p2->raster;
 
-    for (;;) {
-        if (r->rows_left <= 0)
-            return 0;
-
-        switch (r->prim) {
-            case PRIM_RECT:
-                r->y = r->cur_y;
-                r->x = r->x_first;
-                r->x_end = r->x_last;
-                r->cur_y += r->y_step;
-                break;
-
-            case PRIM_TRAP: {
-                int xa = (r->xdom + 0x8000) >> 16;
-                int xb = (r->xsub + 0x8000) >> 16;
-
-                r->y    = (r->fy + 0x8000) >> 16;
-                r->fy  += r->dy;
-                r->xdom += r->dxdom;
-                r->xsub += r->dxsub;
-                if (xa == xb) {
-                    r->rows_left--;
-                    continue;
-                }
-                if (xa < xb) {
-                    r->x      = xa;
-                    r->x_end  = xb - 1;
-                    r->x_step = 1;
-                } else {
-                    r->x      = xa - 1;
-                    r->x_end  = xb;
-                    r->x_step = -1;
-                }
-                break;
-            }
-
-            default: /* Lines and points: one pixel a step. */
-                r->x     = r->xdom >> 16;
-                r->y     = r->fy >> 16;
-                r->x_end = r->x;
-                r->xdom += r->dxdom;
-                r->fy   += r->dy;
-                break;
-        }
-
-        r->rows_left--;
-        r->in_span = 1;
-        if (!(p2->gp[TAG_RASTERIZER_MODE] & (1 << 9)))
-            r->mask_left = 0; /* Bit masks start each span on a new word. */
-        return 1;
+    if (r->prim != PRIM_TRAP) {
+        r->columns = 1;
+        return;
     }
+    {
+        const int64_t a = p2_fixed_int(r->xdom);
+        const int64_t b = p2_fixed_int(r->xsub);
+        const int64_t w = (a > b) ? (a - b) : (b - a);
+
+        r->columns = (uint32_t) MIN(w, 65535);
+    }
+    if (p2_packed_trap(p2, r->command))
+        r->columns *= 4 / r->bpp;
 }
 
-/* Draws until the primitive ends or needs host data it does not have. */
+static void
+p2_next_fragment(p2_t *p2)
+{
+    p2_raster_t *r = &p2->raster;
+
+    if (++r->col < r->columns)
+        return;
+    r->col = 0;
+    if (r->texture_block)
+        r->payload_left = 0;
+    if (++r->row >= r->rows) {
+        r->active = 0;
+        return;
+    }
+    if (r->shade) {
+        for (int i = 0; i < 3; i++)
+            r->color[i] += r->dcolor_dy[i];
+    }
+    if (r->prim != PRIM_RECT) {
+        r->xdom += r->dxdom;
+        r->xsub += r->dxsub;
+        r->y += r->dy;
+        p2_set_span(p2);
+    }
+    /* Host data, and bit masks with BitMaskPacking set, restart each span on a new word. */
+    if ((r->command & RENDER_SYNC_HOSTDATA) ||
+        ((r->command & RENDER_SYNC_BITMASK) && (p2->gp[TAG_RASTERIZER_MODE] & 0x200)))
+        r->payload_left = 0;
+}
+
+/* A block fill's mask from texture memory: one word per 32 pixels. */
+static void
+p2_load_texture_mask(p2_t *p2)
+{
+    p2_raster_t   *r      = &p2->raster;
+    const int      tbytes = 1 << ((p2->gp[TAG_TEXTURE_MAP_FORMAT] >> 19) & 3);
+    const int64_t  blocks = (r->columns + 31) / 32;
+    const int64_t  block  = (int64_t) r->row * blocks + r->col / 32;
+    const int64_t  s      = (int64_t) p2_sext(p2->gp[TAG_S_START], 32) / 0x100000 +
+                      block * ((int64_t) p2_sext(p2->gp[TAG_DS_DX], 32) / 0x100000);
+    const int64_t  width  = (int64_t) 1 << ((p2->gp[TAG_TEXTURE_READ_MODE] >> 9) & 15);
+    const int64_t  texel  = ((s % width) + width) % width;
+    uint32_t       mask   = p2_fb_read(p2, ((p2->gp[TAG_TEXTURE_BASE] & 0xffffff) + texel) * tbytes, tbytes);
+
+    if (p2->gp[TAG_TEXTURE_DATA_FORMAT] & 0x200) {
+        /* SpanFormat mirrors each byte. */
+        mask = ((mask & 0x55555555) << 1) | ((mask >> 1) & 0x55555555);
+        mask = ((mask & 0x33333333) << 2) | ((mask >> 2) & 0x33333333);
+        mask = ((mask & 0x0f0f0f0f) << 4) | ((mask >> 4) & 0x0f0f0f0f);
+    }
+    r->payload      = mask;
+    r->payload_left = MIN(32, r->columns - r->col);
+}
+
+/* A texture copy's source texel: 8 bit, nearest, clamped, unit steps. */
+static uint32_t
+p2_texture_copy_color(p2_t *p2)
+{
+    p2_raster_t   *r   = &p2->raster;
+    const uint32_t trm = p2->gp[TAG_TEXTURE_READ_MODE];
+    const int      wb  = (trm >> 9) & 15;
+    const int      hb  = (trm >> 13) & 15;
+    int64_t        s   = (int64_t) p2_sext(p2->gp[TAG_S_START], 32) / 0x100000 + r->col;
+    int64_t        t   = (int64_t) p2_sext(p2->gp[TAG_T_START], 32) / 0x100000 + r->row;
+
+    s = MAX(0, MIN(((int64_t) 1 << wb) - 1, s));
+    t = MAX(0, MIN(((int64_t) 1 << hb) - 1, t));
+    return p2_fb_read(p2, (int64_t) p2->gp[TAG_TEXTURE_BASE] + t * p2_pitch(p2->gp[TAG_TEXTURE_MAP_FORMAT]) + s, 1);
+}
+
+/* One step of the primitive; 0 when it waits for host data. */
+static int
+p2_draw_step(p2_t *p2)
+{
+    p2_raster_t   *r    = &p2->raster;
+    const uint32_t cmd  = r->command;
+    const int      mask = !!(cmd & RENDER_SYNC_BITMASK);
+    const int      host = !!(cmd & RENDER_SYNC_HOSTDATA);
+    const int      bpp  = r->bpp;
+    const uint32_t rm   = p2->gp[TAG_FB_READ_MODE];
+    uint32_t       color;
+    int            raw;
+    int            draw = 1;
+    int            x;
+    int            y;
+
+    if (!r->columns) {
+        p2_next_fragment(p2);
+        return 1;
+    }
+    if (r->texture_block && !r->payload_left)
+        p2_load_texture_mask(p2);
+    if ((mask || host) && !r->payload_left)
+        return 0;
+
+    if (r->prim == PRIM_RECT) {
+        x = r->origin_x + ((cmd & RENDER_X_POSITIVE) ? (int) r->col : (int) (r->columns - 1 - r->col));
+        y = r->origin_y + ((cmd & RENDER_Y_POSITIVE) ? (int) r->row : (int) (r->rows - 1 - r->row));
+    } else {
+        y = (int) p2_fixed_int(r->y);
+        x = (int) p2_fixed_int(r->xdom);
+        if (p2_packed_trap(p2, cmd))
+            x *= 4 / bpp;
+        if (r->prim == PRIM_TRAP)
+            x += (r->xsub >= r->xdom) ? (int) r->col : -(int) r->col - 1;
+    }
+
+    if (p2_upload_cmd(p2, cmd)) {
+        /* Framebuffer reads to the output FIFO (FilterMode bits 8/9). */
+        const int     packed = !!(rm & FBRM_PACKED);
+        const int64_t px     = (int64_t) x * (packed ? 4 / bpp : 1);
+        const int     filter = (p2->gp[TAG_FILTER_MODE] >> 8) & 3;
+
+        if (!p2_clipped(p2, px, y, 0)) {
+            const int64_t pixel = (int64_t) p2->gp[TAG_FB_WINDOW_BASE] + px + p2->gp[TAG_FB_PIXEL_OFFSET] +
+                                  (int64_t) y * p2_pitch(rm) * ((rm & FBRM_ORIGIN_BOT) ? -1 : 1);
+            const uint32_t v = p2_fb_read(p2, pixel * bpp, packed ? 4 : bpp);
+
+            if (filter & 1)
+                p2_out_fifo_push(p2, TAG_FB_COLOR);
+            if (filter & 2)
+                p2_out_fifo_push(p2, v);
+        }
+        p2_next_fragment(p2);
+        return 1;
+    }
+
+    if ((cmd & RENDER_TEXTURE) && !(cmd & RENDER_FAST_FILL) && p2_clipped(p2, x, y, 0)) {
+        p2_next_fragment(p2);
+        return 1;
+    }
+
+    if (r->shade) {
+        /* Colour registers hold signed 9.11 values; X steps run along the span. */
+        color = r->alpha << 24;
+        for (int i = 0; i < 3; i++) {
+            int64_t c = r->color[i] + ((r->prim == PRIM_TRAP) ? (int64_t) r->col * r->dcolor_dx[i] : 0);
+
+            c = MAX(0, MIN(255, c / 2048));
+            color |= (uint32_t) c << (i * 8);
+        }
+        raw = 0;
+    } else if (p2->gp[TAG_COLOR_DDA_MODE] & 1) {
+        color = p2->gp[TAG_CONSTANT_COLOR];
+        raw   = 0;
+    } else {
+        color = p2->gp[TAG_COLOR];
+        raw   = 1;
+    }
+    if (cmd & RENDER_FAST_FILL) {
+        color = p2_block_color(p2, x, y);
+        raw   = 1;
+    }
+
+    if (r->texture_block) {
+        draw = r->payload & 1;
+        r->payload >>= 1;
+        r->payload_left--;
+    } else if ((cmd & RENDER_TEXTURE) && !(cmd & RENDER_FAST_FILL)) {
+        color = p2_texture_copy_color(p2);
+        raw   = 1;
+    } else if (mask) {
+        const uint32_t rmode  = p2->gp[TAG_RASTERIZER_MODE];
+        const int      mirror = rmode & 1;
+        int            bit    = mirror ? !!(r->payload & 0x80000000) : (r->payload & 1);
+
+        if (rmode & 2)
+            bit = !bit;
+        if (mirror)
+            r->payload <<= 1;
+        else
+            r->payload >>= 1;
+        r->payload_left--;
+        if (!bit) {
+            if (rmode & 0x40) {
+                color = p2->gp[TAG_TEXEL0]; /* ForceBackgroundColor. */
+                raw   = 1;
+            } else
+                draw = 0;
+        }
+    } else if (host) {
+        color = r->payload;
+        raw   = (r->payload_tag != TAG_COLOR);
+        if (bpp < 4) {
+            if (raw || !(p2->gp[TAG_DITHER_MODE] & 1) || (rm & FBRM_PACKED))
+                color &= (1u << (bpp * 8)) - 1;
+            r->payload >>= bpp * 8;
+        }
+        r->payload_left--;
+        if ((rm & FBRM_PACKED) && ((r->prim == PRIM_RECT) || p2_packed_trap(p2, cmd)))
+            x += r->rel_offset;
+    } else if (!(cmd & RENDER_FAST_FILL) && (rm & FBRM_SRC_ENABLE)) {
+        const int64_t src = (int64_t) p2->gp[TAG_FB_SOURCE_BASE] + x + p2->gp[TAG_FB_PIXEL_OFFSET] +
+                            (int64_t) y * p2_pitch(rm) * ((rm & FBRM_ORIGIN_BOT) ? -1 : 1) +
+                            p2_sext(p2->gp[TAG_FB_SOURCE_OFFSET], 24) - ((rm & FBRM_PACKED) ? r->rel_offset : 0);
+
+        color = p2_fb_read(p2, src * bpp, bpp);
+        raw   = 1;
+    }
+
+    if (draw)
+        p2_emit_pixel(p2, x, y, color, raw);
+    p2_next_fragment(p2);
+    return 1;
+}
+
 static void
 p2_raster_run(p2_t *p2)
 {
-    p2_raster_t *r = &p2->raster;
-
-    while (r->active) {
-        int      have_color = 0;
-        uint32_t color      = 0;
-        int      bg         = 0;
-
-        if (!r->in_span && !p2_raster_next_span(p2)) {
-            r->active = 0;
-            break;
-        }
-
-        if (r->need_mask && !r->mask_left)
-            return;
-        if (r->need_color && !r->color_left)
-            return;
-
-        if (r->need_mask) {
-            const uint32_t rmode = p2->gp[TAG_RASTERIZER_MODE];
-            int            bit;
-
-            bit = (rmode & 1) ? ((r->mask >> (r->mask_left - 1)) & 1) : (r->mask & 1);
-            if (!(rmode & 1))
-                r->mask >>= 1;
-            r->mask_left--;
-            if (!bit) {
-                if (!(rmode & (1 << 6)))
-                    goto next_pixel;
-                bg = 1;
-            }
-        }
-
-        if (r->need_color) {
-            if (r->packed && (r->bpp < 4)) {
-                const int shift = r->color_used * r->bpp * 8;
-
-                color = (r->color >> shift) & ((1u << (r->bpp * 8)) - 1);
-                if (++r->color_used >= (4 / r->bpp)) {
-                    r->color_used = 0;
-                    r->color_left = 0;
-                }
-            } else {
-                color         = r->color;
-                r->color_left = 0;
-            }
-            have_color = 1;
-        }
-
-        p2_draw_pixel(p2, r->x, r->y, r->x + r->src_dx, r->y + r->src_dy, have_color, color, bg);
-
-next_pixel:
-        if (r->x == r->x_end)
-            r->in_span = 0;
-        else
-            r->x += r->x_step;
-    }
+    while (p2->raster.active && p2_draw_step(p2))
+        ;
 }
 
 static void
-p2_raster_start(p2_t *p2, uint32_t render)
+p2_raster_start(p2_t *p2, uint32_t command)
 {
-    p2_raster_t   *r  = &p2->raster;
-    const uint32_t rm = p2->gp[TAG_FB_READ_MODE];
+    p2_raster_t   *r    = &p2->raster;
+    const uint32_t rm   = p2->gp[TAG_FB_READ_MODE];
+    const int      bias = (p2->gp[TAG_RASTERIZER_MODE] >> 4) & 3;
 
-    r->render     = render;
-    r->prim       = (render >> RENDER_PRIM_SHIFT) & 3;
-    r->packed     = !!(rm & FBRM_PACKED);
-    r->bpp        = p2_fb_bpp(p2);
-    r->pitch      = p2_fb_pitch(p2);
-    r->need_mask  = !!(render & RENDER_SYNC_BITMASK);
-    r->need_color = !!(render & RENDER_SYNC_HOSTDATA);
-    r->mask_left  = 0;
-    r->color_left = 0;
-    r->color_used = 0;
-    r->in_span    = 0;
+    memset(r, 0, sizeof(p2_raster_t) - sizeof(r->rel_offset));
+    r->command  = command;
+    r->prim     = command & RENDER_PRIM_MASK;
+    r->bpp      = p2_fb_bpp(p2);
+    r->origin_x = p2_sext(p2->gp[TAG_RECT_ORIGIN], 16);
+    r->origin_y = p2_sext(p2->gp[TAG_RECT_ORIGIN] >> 16, 16);
+    r->xdom     = p2_sext(p2->gp[TAG_START_X_DOM], 32);
+    r->xsub     = p2_sext(p2->gp[TAG_START_X_SUB], 32);
+    r->y        = p2_sext(p2->gp[TAG_START_Y], 32);
+    r->dxdom    = p2_sext(p2->gp[TAG_DX_DOM], 32);
+    r->dxsub    = p2_sext(p2->gp[TAG_DX_SUB], 32);
+    r->dy       = p2_sext(p2->gp[TAG_DY], 32);
 
-    if (r->source_delta) {
-        r->src_dx = p2_sext(p2->gp[TAG_FB_SOURCE_DELTA], 12);
-        r->src_dy = p2_sext(p2->gp[TAG_FB_SOURCE_DELTA] >> 16, 12);
-        if (r->packed)
-            r->src_dx -= p2_sext(p2->gp[TAG_PACKED_DATA_LIMITS] >> 29, 3);
-    } else if (r->pitch) {
-        const int off = p2_sext(p2->gp[TAG_FB_SOURCE_OFFSET], 24);
-
-        r->src_dy = off / (int) r->pitch;
-        r->src_dx = off % (int) r->pitch;
-    } else
-        r->src_dx = r->src_dy = 0;
-
-    switch (r->prim) {
-        case PRIM_RECT: {
-            const uint32_t o = p2->gp[TAG_RECT_ORIGIN];
-            const uint32_t s = p2->gp[TAG_RECT_SIZE];
-            const int      x = p2_sext(o, 12);
-            const int      y = p2_sext(o >> 16, 12);
-            const int      w = s & 0xfff;
-            const int      h = (s >> 16) & 0xfff;
-            int            x0 = x;
-            int            x1 = x + w - 1;
-
-            if (r->packed) {
-                /* Packed: the rectangle is in 32 bit words, the limits in pixels. */
-                const uint32_t lim = p2->gp[TAG_PACKED_DATA_LIMITS];
-
-                x0 = (lim >> 16) & 0xfff;
-                x1 = (int) (lim & 0xfff) - 1;
-            }
-            if (!w || !h || (x1 < x0)) {
-                r->active = 0;
-                return;
-            }
-            r->x_step = (render & RENDER_X_POSITIVE) ? 1 : -1;
-            r->y_step = (render & RENDER_Y_POSITIVE) ? 1 : -1;
-            r->x_first = (r->x_step > 0) ? x0 : x1;
-            r->x_last  = (r->x_step > 0) ? x1 : x0;
-            r->cur_y   = (r->y_step > 0) ? y : (y + h - 1);
-            r->rows_left = h;
-            break;
+    r->shade = !(command & RENDER_FAST_FILL) && ((p2->gp[TAG_COLOR_DDA_MODE] & 3) == 3);
+    if (r->shade) {
+        for (int i = 0; i < 3; i++) {
+            r->color[i]     = p2_sext(p2->gp[TAG_R_START + i * 3] >> 4, 20);
+            r->dcolor_dx[i] = p2_sext(p2->gp[TAG_R_START + i * 3 + 1] >> 4, 20);
+            r->dcolor_dy[i] = p2_sext(p2->gp[TAG_R_START + i * 3 + 2] >> 4, 20);
         }
-
-        case PRIM_TRAP:
-            r->xdom      = p2->gp[TAG_START_X_DOM];
-            r->xsub      = p2->gp[TAG_START_X_SUB];
-            r->dxdom     = p2->gp[TAG_DX_DOM];
-            r->dxsub     = p2->gp[TAG_DX_SUB];
-            r->fy        = p2->gp[TAG_START_Y];
-            r->dy        = p2->gp[TAG_DY];
-            r->rows_left = p2->gp[TAG_COUNT] & 0xfff;
-            break;
-
-        case PRIM_POINT:
-            r->xdom      = p2->gp[TAG_START_X_DOM];
-            r->fy        = p2->gp[TAG_START_Y];
-            r->dxdom     = 0;
-            r->dy        = 0;
-            r->rows_left = 1;
-            break;
-
-        default:
-            r->xdom      = p2->gp[TAG_START_X_DOM];
-            r->dxdom     = p2->gp[TAG_DX_DOM];
-            r->fy        = p2->gp[TAG_START_Y];
-            r->dy        = p2->gp[TAG_DY];
-            r->rows_left = p2->gp[TAG_COUNT] & 0xfff;
-            break;
+        r->alpha = MAX(0, MIN(255, p2_sext(p2->gp[TAG_A_START] >> 4, 20) / 2048));
     }
 
-    p2_log("P2: render %08X prim %i rect %08X %08X tr %08X %08X y %08X n %i rm %08X lop %08X dda %08X cc %08X blk %08X dm %08X wb %08X rp %X lim %08X sd %i,%i rast %08X\n",
-           render, r->prim, p2->gp[TAG_RECT_ORIGIN], p2->gp[TAG_RECT_SIZE], p2->gp[TAG_START_X_DOM], p2->gp[TAG_START_X_SUB],
-           p2->gp[TAG_START_Y], p2->gp[TAG_COUNT], rm, p2->gp[TAG_LOGICAL_OP_MODE], p2->gp[TAG_COLOR_DDA_MODE],
-           p2->gp[TAG_CONSTANT_COLOR], p2->gp[TAG_FB_BLOCK_COLOR], p2->gp[TAG_DITHER_MODE], p2->gp[TAG_FB_WINDOW_BASE],
-           p2->gp[TAG_FB_READ_PIXEL], p2->gp[TAG_PACKED_DATA_LIMITS], r->src_dx, r->src_dy, p2->gp[TAG_RASTERIZER_MODE]);
+    r->texture_block = ((command & (RENDER_FAST_FILL | RENDER_TEXTURE)) == (RENDER_FAST_FILL | RENDER_TEXTURE)) &&
+                       (p2->gp[TAG_TEXTURE_READ_MODE] & 1);
 
-    if (render & RENDER_TEXTURE)
-        p2_log("P2: textured render not emulated\n");
+    if (r->prim == PRIM_RECT) {
+        r->columns = p2->gp[TAG_RECT_SIZE] & 0xffff;
+        r->rows    = p2->gp[TAG_RECT_SIZE] >> 16;
+        /* Packed rectangles count DWORD groups; the framebuffer unit widens them. */
+        if ((rm & FBRM_PACKED) && !(command & RENDER_FAST_FILL) && !p2_upload_cmd(p2, command) && (r->bpp != 3)) {
+            r->origin_x *= 4 / r->bpp;
+            r->columns *= 4 / r->bpp;
+        }
+    } else {
+        const int64_t b = (bias == 1) ? 0x8000 : ((bias == 2) ? 0x7fff : 0);
 
-    r->active = 1;
+        r->rows = (r->prim == PRIM_POINT) ? 1 : (p2->gp[TAG_COUNT] & 0xffff);
+        r->xdom += b;
+        r->xsub += b;
+        r->y += b;
+        p2_set_span(p2);
+    }
+
+    p2_log("P2: render %08X rect %08X %08X tr %08X %08X y %08X d %08X %08X %08X n %i rm %08X wc %08X lop %08X dda %08X cc %08X col %08X blk %08X dm %08X wb %08X sb %08X so %08X po %08X rp %X lim %08X rast %08X sc %X %08X %08X wd %08X t0 %08X wm %08X fs %08X\n",
+           command, p2->gp[TAG_RECT_ORIGIN], p2->gp[TAG_RECT_SIZE], p2->gp[TAG_START_X_DOM], p2->gp[TAG_START_X_SUB],
+           p2->gp[TAG_START_Y], p2->gp[TAG_DX_DOM], p2->gp[TAG_DX_SUB], p2->gp[TAG_DY], p2->gp[TAG_COUNT], rm,
+           p2->gp[TAG_FB_WRITE_CONFIG], p2->gp[TAG_LOGICAL_OP_MODE], p2->gp[TAG_COLOR_DDA_MODE], p2->gp[TAG_CONSTANT_COLOR],
+           p2->gp[TAG_COLOR], p2->gp[TAG_FB_BLOCK_COLOR], p2->gp[TAG_DITHER_MODE], p2->gp[TAG_FB_WINDOW_BASE],
+           p2->gp[TAG_FB_SOURCE_BASE], p2->gp[TAG_FB_SOURCE_OFFSET], p2->gp[TAG_FB_PIXEL_OFFSET], p2->gp[TAG_FB_READ_PIXEL],
+           p2->gp[TAG_PACKED_DATA_LIMITS], p2->gp[TAG_RASTERIZER_MODE], p2->gp[TAG_SCISSOR_MODE], p2->gp[TAG_SCISSOR_MIN],
+           p2->gp[TAG_SCISSOR_MAX], p2->gp[TAG_FB_WRITE_DATA], p2->gp[TAG_TEXEL0], p2->gp[TAG_FB_WRITE_MODE],
+           p2->gp[TAG_FB_SOURCE_DELTA]);
+
+    r->active = r->rows && (r->columns || (r->prim == PRIM_TRAP));
     p2_raster_run(p2);
 }
 
@@ -1959,38 +2092,77 @@ p2_raster_continue(p2_t *p2, uint32_t tag, uint32_t count)
 {
     p2_raster_t *r = &p2->raster;
 
+    /* The finished primitive's DDAs take one more step, then reload as asked. */
+    if (r->prim != PRIM_RECT) {
+        r->xdom += r->dxdom;
+        r->xsub += r->dxsub;
+        r->y += r->dy;
+    }
     switch (tag) {
         case TAG_CONTINUE_NEW_DOM:
-            r->xdom  = p2->gp[TAG_START_X_DOM];
-            r->dxdom = p2->gp[TAG_DX_DOM];
+            r->xdom  = p2_sext(p2->gp[TAG_START_X_DOM], 32);
+            r->dxdom = p2_sext(p2->gp[TAG_DX_DOM], 32);
             break;
         case TAG_CONTINUE_NEW_SUB:
-            r->xsub  = p2->gp[TAG_START_X_SUB];
-            r->dxsub = p2->gp[TAG_DX_SUB];
+            r->xsub  = p2_sext(p2->gp[TAG_START_X_SUB], 32);
+            r->dxsub = p2_sext(p2->gp[TAG_DX_SUB], 32);
             break;
         case TAG_CONTINUE_NEW_LINE:
-            if (r->prim == PRIM_LINE) {
-                r->xdom  = p2->gp[TAG_START_X_DOM];
-                r->dxdom = p2->gp[TAG_DX_DOM];
-                r->fy    = p2->gp[TAG_START_Y];
-                r->dy    = p2->gp[TAG_DY];
-            }
+            r->dxdom = p2_sext(p2->gp[TAG_DX_DOM], 32);
+            r->dy    = p2_sext(p2->gp[TAG_DY], 32);
             break;
         default:
             break;
     }
-
-    r->rows_left = count & 0xfff;
-    r->in_span   = 0;
-    r->active    = 1;
+    r->rows         = count & 0xffff;
+    r->row          = 0;
+    r->col          = 0;
+    r->payload_left = 0;
+    p2_set_span(p2);
+    r->active = r->rows && (r->columns || (r->prim == PRIM_TRAP));
     p2_raster_run(p2);
 }
 
-/* Command tags and host data. */
+/* Register side effects and host data. Returns 1 if the write was data for a
+   waiting primitive. */
 static void
 p2_gp_command(p2_t *p2, uint32_t tag, uint32_t val)
 {
     p2_raster_t *r = &p2->raster;
+
+    /* A primitive waiting for data is abandoned by anything else. */
+    if (r->active && (r->command & (RENDER_SYNC_BITMASK | RENDER_SYNC_HOSTDATA))) {
+        const int is_data = (r->command & RENDER_SYNC_BITMASK) ? (tag == TAG_BIT_MASK_PATTERN)
+                                                                : ((tag == TAG_COLOR) || (tag == TAG_FB_DATA) || (tag == TAG_FB_SOURCE_DATA));
+        if (is_data) {
+            if (r->command & RENDER_SYNC_BITMASK) {
+                const uint32_t rmode = p2->gp[TAG_RASTERIZER_MODE];
+                const int      swap  = (rmode >> 7) & 3;
+                const int      skip  = (rmode >> 10) & 31;
+
+                if (swap & 1)
+                    val = ((val & 0x00ff00ff) << 8) | ((val >> 8) & 0x00ff00ff);
+                if (swap & 2)
+                    val = (val << 16) | (val >> 16);
+                if (skip)
+                    val = (rmode & 1) ? ((val << skip) | (val >> (32 - skip))) : ((val >> skip) | (val << (32 - skip)));
+                r->payload_left = 32;
+            } else {
+                const int swap = (p2->gp[TAG_RASTERIZER_MODE] >> 15) & 3;
+
+                if (swap & 1)
+                    val = ((val & 0x00ff00ff) << 8) | ((val >> 8) & 0x00ff00ff);
+                if (swap & 2)
+                    val = (val << 16) | (val >> 16);
+                r->payload_left = (p2->gp[TAG_FB_READ_MODE] & FBRM_PACKED) ? (4 / r->bpp) : 1;
+            }
+            r->payload     = val;
+            r->payload_tag = tag;
+            p2_raster_run(p2);
+            return;
+        }
+        r->active = 0;
+    }
 
     switch (tag) {
         case TAG_RENDER:
@@ -2004,37 +2176,35 @@ p2_gp_command(p2_t *p2, uint32_t tag, uint32_t val)
             p2_raster_continue(p2, tag, val);
             break;
 
-        case TAG_FLUSH_SPAN:
-            if (r->active) {
-                r->in_span   = 0;
-                r->mask_left = 0;
-                p2_raster_run(p2);
-            }
+        case TAG_FB_READ_MODE:
+            p2->gp[TAG_FB_WRITE_CONFIG] = val;
+            r->rel_offset               = p2_sext(val >> 20, 3);
             break;
+        case TAG_PACKED_DATA_LIMITS:
+            r->rel_offset                = p2_sext(val >> 29, 3);
+            p2->gp[TAG_FB_READ_MODE]     = (p2->gp[TAG_FB_READ_MODE] & ~0x700000) | ((uint32_t) (r->rel_offset & 7) << 20);
+            break;
+        case TAG_FB_WINDOW_BASE:
+            p2->gp[TAG_FB_SOURCE_BASE] = val;
+            break;
+        case TAG_FB_SOURCE_DELTA: {
+            const uint32_t rm    = p2->gp[TAG_FB_READ_MODE];
+            const int64_t  delta = (int64_t) p2_sext(val >> 16, 12) * p2_pitch(rm) * ((rm & FBRM_ORIGIN_BOT) ? -1 : 1) +
+                                  p2_sext(val, 12);
 
-        case TAG_BIT_MASK_PATTERN:
-            if (r->active && r->need_mask) {
-                r->mask      = p2_swap_mask(p2, val);
-                r->mask_left = 32;
-                p2_raster_run(p2);
-            }
+            p2->gp[TAG_FB_SOURCE_OFFSET] = (uint32_t) delta & 0xffffff;
             break;
-
-        case TAG_COLOR:
-        case TAG_FB_DATA:
-            if (r->active && r->need_color) {
-                r->color      = val;
-                r->color_left = 1;
-                r->color_used = 0;
-                p2_raster_run(p2);
-            }
+        }
+        case TAG_CONFIG:
+            p2->gp[TAG_FB_READ_MODE] = (p2->gp[TAG_FB_READ_MODE] & ~(FBRM_SRC_ENABLE | FBRM_DST_ENABLE | FBRM_PACKED)) |
+                                       ((val & 1) ? FBRM_SRC_ENABLE : 0) | ((val & 2) ? FBRM_DST_ENABLE : 0) |
+                                       ((val & 4) ? FBRM_PACKED : 0);
+            p2->gp[TAG_FB_WRITE_MODE]    = (p2->gp[TAG_FB_WRITE_MODE] & ~1) | ((val >> 3) & 1);
+            p2->gp[TAG_COLOR_DDA_MODE]   = (p2->gp[TAG_COLOR_DDA_MODE] & ~1) | ((val >> 4) & 1);
+            p2->gp[TAG_LOGICAL_OP_MODE]  = (p2->gp[TAG_LOGICAL_OP_MODE] & ~31) | ((val >> 5) & 31);
             break;
-
-        case TAG_FB_SOURCE_OFFSET:
-            r->source_delta = 0;
-            break;
-        case TAG_FB_SOURCE_DELTA:
-            r->source_delta = 1;
+        case TAG_FB_BLOCK_COLOR:
+            p2->gp[TAG_FB_BLOCK_COLOR_L] = p2->gp[TAG_FB_BLOCK_COLOR_U] = val;
             break;
 
         default:
@@ -2243,6 +2413,19 @@ p2_debug_hook(const char *args)
         args += 2;
     while (*args == ' ')
         args++;
+
+    if (!strncmp(args, "pal", 3)) {
+        for (int i = 0; i < 256; i += 8) {
+            n = 0;
+            for (int j = i; j < i + 8; j++)
+                n += sprintf(line + n, "%02X%02X%02X ", svga->vgapal[j].r, svga->vgapal[j].g, svga->vgapal[j].b);
+            pclog("P2: pal %02X: %s\n", i, line);
+        }
+        pclog("P2: pallook 4 %08X 9 %08X F7 %08X type %i vram(100,450) %02X (300,200) %02X map8 %i\n",
+              svga->pallook[4], svga->pallook[9], svga->pallook[0xf7], svga->ramdac_type,
+              svga->vram[450 * 640 + 100], svga->vram[200 * 640 + 300], svga->map8 == svga->pallook);
+        return;
+    }
 
     if (!strncmp(args, "log ", 4)) {
         p2_do_log = atoi(args + 4);
