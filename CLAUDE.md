@@ -281,6 +281,14 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   rebuilds the status bar. A new icon group needs a key there and a name in `iconGroupName()`.
   Preferences OK replaces `MachineStatus`; `adoptMenus()` carries the PC Card/USB/modem/Sound
   Canvas hooks over (they were lost before).
+- S3 Savage3D, the STB Nitro 3200 (`src/video/vid_s3_savage.c`, AGP and PCI, 5333:8A21, 8 MB;
+  BIOS `roms/video/s3savage/n32_110.rom` from STB's SourceSafe dump, in ROMS-EXTRA): ViRGE-style VGA
+  core, 128 MB BAR0 (LFB, MMIO at +16 MB with the VGA ports at 8000h + port, six tiled apertures at
+  +32 MB), primary stream via MM81C0/81C8 with 16/32 bpp tiled scan-out (2 KB tiles, 16 lines of
+  128 bytes), and the BCI 2D engine (rectangles with ROP3, patterns, host and screen blits, text,
+  lines, bitmap descriptors, shadow status in system memory). 3D packets are parsed and skipped,
+  not drawn. Win98 SE (S3 4.11.01) and NT4 (S3 6.10.04, PCI card only) run accelerated; "dev" in
+  the debug command file dumps the BCI parser. Open issues in the session notes / handover.
 - Upstream's CI workflows and Dependabot are disabled/removed in this repo; only
   `sync-upstream.yml` runs.
 - Build number in the title bar / About box: `.build-number` (git-ignored, repo root)
