@@ -1027,3 +1027,5 @@ them with `dev 3d` before optimising.
   debug line (PS/2 reports without capture once used; a button change
   alone sends no packet: pair it with a 1-pixel move, `mouse 1 0 1`
   then `mouse -1 0 0`; moves of 4 or less avoid Win98's acceleration).
+- 2026-10-16: tnt merged into master (24922df2e, not pushed) and staged in
+  every rig except the branch-owned ones (AVM-ISDN-RIG, NVIDIA-RIG*).
