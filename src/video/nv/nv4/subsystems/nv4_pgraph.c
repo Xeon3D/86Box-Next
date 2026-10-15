@@ -77,6 +77,9 @@ nv4_pgraph_pending(nv4_t *nv4)
 static void
 nv4_pgraph_intr(nv4_t *nv4, uint32_t bits)
 {
+    if (nv4->dbg_trace)
+        pclog("nv4 trace: pgraph intr %08x (en %08x), fifo off, ctx_user %08x trapped %08x/%08x\n", bits,
+              GR(NV4_PGRAPH_INTR_EN), GR(NV4_PGRAPH_CTX_USER), GR(NV4_PGRAPH_TRAPPED_ADDR), GR(NV4_PGRAPH_TRAPPED_DATA));
     GR(NV4_PGRAPH_INTR) |= bits;
     GR(NV4_PGRAPH_FIFO) &= ~1u;
     nv4_pmc_update_irq(nv4);
@@ -292,19 +295,26 @@ nv4_pgraph_method(nv4_t *nv4, int chid, int subc, uint32_t mthd, uint32_t data)
     int      cls;
     int      r;
 
+    /* Another channel's method: the driver swaps contexts first. The
+       context switch interrupt is raised even with FIFO access off: the
+       driver's handler loads the context and turns access back on, and
+       after a PGRAPH reset that is how access comes back at all. */
+    user = GR(NV4_PGRAPH_CTX_USER);
+    if ((((user >> 24) & 0x0f) != (uint32_t) chid) || !(GR(NV4_PGRAPH_CTX_CONTROL) & (1u << 16))) {
+        if (!(GR(NV4_PGRAPH_INTR) & NV4_PGRAPH_INTR_CONTEXT_SWITCH)) {
+            GR(NV4_PGRAPH_TRAPPED_ADDR) = mthd | (subc << 13) | ((uint32_t) chid << 24);
+            GR(NV4_PGRAPH_TRAPPED_DATA) = data;
+            nv4_log("NV4 PGRAPH: channel switch %d -> %d\n", (user >> 24) & 0x0f, chid);
+            nv4_pgraph_intr(nv4, NV4_PGRAPH_INTR_CONTEXT_SWITCH);
+        }
+        return NV4_MTHD_STALL;
+    }
+
     if (!(GR(NV4_PGRAPH_FIFO) & 1))
         return NV4_MTHD_STALL;
 
     GR(NV4_PGRAPH_TRAPPED_ADDR) = mthd | (subc << 13) | ((uint32_t) chid << 24);
     GR(NV4_PGRAPH_TRAPPED_DATA) = data;
-
-    /* Another channel's method: the driver swaps contexts first. */
-    user = GR(NV4_PGRAPH_CTX_USER);
-    if ((((user >> 24) & 0x0f) != (uint32_t) chid) || !(GR(NV4_PGRAPH_CTX_CONTROL) & (1u << 16))) {
-        nv4_log("NV4 PGRAPH: channel switch %d -> %d\n", (user >> 24) & 0x0f, chid);
-        nv4_pgraph_intr(nv4, NV4_PGRAPH_INTR_CONTEXT_SWITCH);
-        return NV4_MTHD_STALL;
-    }
 
     if ((mthd == 0) || (((user >> 13) & 7) != (uint32_t) subc)) {
         if (mthd == 0) {
@@ -372,6 +382,8 @@ nv4_pgraph_method(nv4_t *nv4, int chid, int subc, uint32_t mthd, uint32_t data)
 void
 nv4_pgraph_reset(nv4_t *nv4)
 {
+    if (nv4->dbg_trace)
+        pclog("nv4 trace: pgraph reset\n");
     memset(nv4->pgraph_regs, 0, sizeof(nv4->pgraph_regs));
     for (int i = 0; i < NV4_CHANNELS; i++) {
         memset(&nv4->gr_chan[i], 0, sizeof(nv4->gr_chan[i]));
@@ -380,6 +392,10 @@ nv4_pgraph_reset(nv4_t *nv4)
     nv4_3d_reset(nv4);
     /* no channel until the driver loads one */
     GR(NV4_PGRAPH_CTX_USER) = 0x0f000000;
+    /* Its reset values: FIFO access on, every surface invalid. */
+    GR(NV4_PGRAPH_FIFO) = 1;
+    for (int i = 0; i < 6; i++)
+        GR(NV4_PGRAPH_BLIMIT + i * 4) = 0x80000000;
 }
 
 uint32_t
