@@ -38,7 +38,7 @@ Guests ran on Pentium II-class machines (ASUS P6BAP, Celeron 233-266, or a Penti
 | Windows 2000 | built-in NVIDIA driver | TNT (PCI) | 1024x768x32 desktop, overlay, Media Player MPEG-1, restart | 3D not tested |
 | Windows 2000 | 71.84 | TNT2 (PCI) | Installs, desktop | 3D not tested |
 | Windows NT 4.0 SP6a | 28.32, 43.45 | TNT (AGP) | 800x600x16 and 1024x768x32 desktops, mode change without reboot, OpenGL (3D Pipes), DirectDraw overlay | Direct3D: NT4 has none |
-| DOS | (card BIOS) | all 18 boards | POST, text and VGA modes, VESA through the board's BIOS | VESA games and VBE test suites: being tested |
+| DOS | card BIOS (VBE 3.0) | all 18 boards POST; tested in depth: ERAZOR II PCI on a Socket 7 board (Intel TC430HX, Pentium 200) | Text and VGA modes; SciTech VBETest: banked and linear framebuffer, double buffering, virtual-screen scrolling (640x480 and 1600x1200, 16-bit); **Quake 1.01 and 1.06** in every VESA mode from 320x200 to 1280x1024, **timedemo 22 fps at 640x480** | The ELSA BIOS reports 8 MB to VESA programs on a 16 MB card (being checked) |
 | Linux | XFree86 `nv`, `rivafb` | | | Not tested |
 
 Not emulated: the TV encoders and video capture (PME), the DirectX 3 triangle class (0x48), 3D drawn into a swizzled surface. Nothing found so far needs them.
