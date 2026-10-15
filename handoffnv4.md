@@ -470,6 +470,74 @@ nvdd32.dll (capstone; `scratchpad dis.py` + header scan for
   same driver path; the VM needed hard stops. work-7184 is back to a
   clean shutdown but its desktop is now 800x600 (was 1024x768).
 
+**NVIDIA 45.23 on the TNT2, July 1999 / ASUS Detonators (2026-10-15 day).**
+VM `work-4523` (copy of work-tnt2: P6BAP-AP VIA 694X, Celeron 233, ERAZOR
+III TNT2, Win98 SE, DirectX 8.1). 45.23 lists only the TNT2 family and
+Vanta (NV5 IDs 0028/0029/002C/002D): Setup refuses a TNT (0020).
+- July 1999 Detonator 2.08 (`july_1999_0208.zip`, work-jul99, TNT):
+  3DMark 99 2792, GLQuake 85.9 fps. ASUS December 1998 (work-asus, ASUS
+  V3400TNT): 3DMark 99 2805, GLQuake 85.9 fps. Both fine.
+- **Mode-change deadlock, fixed (nv4_pgraph.c).** Switching colour depth
+  (16 <-> 8) hung about one time in three: the resman's mode set resets
+  PGRAPH and reinitialises it with FIFO ACCESS off and CTX_CONTROL CHID
+  invalid, then expects the next channel's method to raise
+  CONTEXT_SWITCH -- its context-switch handler loads the channel and
+  turns FIFO access back on (STB tree GR.C grService). We checked FIFO
+  access first and stalled silently. Now a method from another channel
+  (or with CHID invalid) raises CONTEXT_SWITCH whatever the FIFO access
+  bit says (only once while it is pending); same-channel methods still
+  stall while access is off. PGRAPH reset values also set (FIFO = 1,
+  BLIMIT0-5 = 0x80000000, nv4_ref.h "I" values). `depthsw` guest tool
+  (tools/nv4/guest/depthsw.c: N ChangeDisplaySettings flips, log in
+  C:\DEPTHSW.TXT) ran 8 flips + restore without a hang. A slow mode set
+  can show a black screen for ~30 s first; that is not a hang.
+- **Direct3D 6/7 HAL missing ("3DMark needs a 3D-accelerator that is
+  capable of using textures", DxDiag D3D7 "step 8 Creating 3D Device
+  0x80004005"; DX8 passed): a VIA chipset emulation bug, fixed
+  (src/chipset/via_apollo.c).** Found by dumping 45.23's nvdd32.dll from
+  guest memory (most of its .text is encrypted on disk; decrypted in RAM:
+  `peek`/`peekp` page dump, scratchpad memdump.sh) and breakpoints:
+  D3DHAL ContextCreate (b0127970) allocates a 4 KB buffer from its AGP
+  heap; the heap commits AGP memory through NvRmAllocMemory (class 0x3e,
+  flags 0x2100 = AGP, write-combined) -> resman osAllocPages ->
+  VGARTD _GARTReserve/_GARTCommit -> VIA's miniport VIAGART.VXD (VIA
+  4in1 4.25, now installed in work-4523, AGP part only, Standard mode).
+  VIAGART's init requires the host bridge (0:0.0) to have a capability
+  list (status bit 4) with an AGP capability (ID 2); ours reported
+  status 0xa0 for every VIA chipset because of
+  `(dev->id >= VIA_585) || (dev->id < VIA_597)` -- always true, VIA_585
+  is the lowest id (came with upstream's "Merged the VIA VPX and AMD 640
+  on the common Apollo tree", 22cdad8c7; still in upstream). Fixed for
+  the status register only (VP3 on: 0x90, cap list at A0h). **The same
+  always-true test still sets 0x52 (0x02), 0x59, 0x64 (0xab) and the
+  0x05/0x0f write masks for every VIA chipset -- probably meant
+  `id < VIA_597`; left alone, ask the owner.** Without a working GART
+  driver 45.23's D3D 6/7 should fail the same way on real VIA boards
+  (a forum report of the same DxDiag "step 8" failure with 45.23 on
+  Win98 SE; card not named).
+- **8-bpp desktop icons drawn as silhouettes, fixed (nv4_pgraph_2d.c
+  nv4_img_color_data).** At 8 bpp the display driver sets IFC/SIFC's
+  colour format to X8R8G8B8 and sends four 8-bit indices a word (sizeIn
+  rounded to 4) -- the STB tree's dmaenab.c does the same (it sets
+  X8R8G8B8 "if colorDepth == 32 || colorDepth == 8" and packs
+  translated indices). We took one pixel a word, so only the top quarter
+  of each 32x32 icon was drawn. Now a 32-bit colour format into a Y8
+  surface (index mode) unpacks four Y8 pixels a word. Every NVIDIA driver
+  at 8 bpp was affected, not only 45.23.
+- Results on 45.23 after the fixes (work-4523, 2 threads + GPU lane):
+  3DMark 99 Max **2679** (800x600x16; rendering correct; Esc abort is
+  clean, unlike 71.84); GLQuake (full Quake data in C:\GLQUAKE)
+  timedemo demo1 **969 frames, 17.4 s, 55.6 fps** at 640x480x16 -- lower
+  than 4.11's ~85 fps, most likely 45.23's OpenGL waiting for vsync at
+  60 Hz by default (not checked); DxDiag DX7/DX8 not rerun after the
+  AGP fix (3DMark 99 is DX6). Once, after a hard stop, Windows came up in
+  16-colour VGA; setting High Colour and restarting brought the driver
+  back.
+- Regression with all three fixes: work-tnt (TNT, 4.11, same VIA board)
+  3DMark 99 Max 2619 (was 2620), clean shutdown.
+- Guest automation tip: Win+R (`key e0,5b,13,93,e0,db`) opens Run
+  reliably; Ctrl+Esc then `r` often misses right after a console window.
+
 **Where the 2026-10-15 session stopped (read this first).** The owner
 asked for items 1-4 and 6 of the list they were given (= here: 71.84,
 NT4, the NV5 classes 0x64-0x66, Quake III/GLQuake/Quake II, DOS/VESA).
@@ -901,3 +969,8 @@ them with `dev 3d` before optimising.
   (P200). VBE reports 8 MB of 16 (open).
 - 2026-10-15 (night): 71.84 D3D on the TNT is a driver limit (its TNT path
   never programs a 3D surface; real TNT2s fail too). Bind/novtx trace aids.
+- 2026-10-15 (day): 45.23 on TNT2 -- mode-change deadlock (context switch
+  with FIFO access off) and the VIA host bridge's missing capability list
+  (VIAGART, so no AGP memory, so no D3D 6/7 HAL) and 8-bpp IFC index
+  packing fixed. 3DMark 99 2679 on 45.23. July 1999 and ASUS Dec 1998
+  Detonators pass.
