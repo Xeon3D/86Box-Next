@@ -536,6 +536,53 @@ nv4_dma_push(nv4_t *nv4)
 }
 
 /* ------------------------------------------------------------------ */
+/* 2D engine time.                                                     */
+/* ------------------------------------------------------------------ */
+/* Methods run as soon as they are queued, so a blit costs the guest no
+   time at all. A program that copies whole frames in a loop until some
+   guest time has passed (3DMark 2000 between tests: ~300 1024x768
+   blits per host second) then ran at 1% speed. Pixels are charged at
+   one per NVCLK; the guest CPU only waits when it queues work while
+   the engine is more than NV4_GR_BACKLOG_MS behind, as it would on a
+   full FIFO, so frames that overlap CPU work cost nothing. */
+#define NV4_GR_BACKLOG_MS 20.0
+
+static void
+nv4_gr_account(nv4_t *nv4)
+{
+    uint64_t now = tsc;
+
+    if (!nv4->gr_px || (cpuclock <= 0.0) || (nv4->nvclk_hz <= 0.0)) {
+        nv4->gr_px = 0;
+        return;
+    }
+    if (nv4->gr_busy_tsc < now)
+        nv4->gr_busy_tsc = now;
+    nv4->gr_busy_tsc += (uint64_t) ((double) nv4->gr_px * cpuclock / nv4->nvclk_hz);
+    nv4->gr_px = 0;
+}
+
+static void
+nv4_gr_wait(nv4_t *nv4)
+{
+    uint64_t now     = tsc;
+    uint64_t backlog = (uint64_t) (cpuclock * NV4_GR_BACKLOG_MS / 1000.0);
+    uint64_t wait;
+
+    if (nv4->gr_busy_tsc <= now + backlog)
+        return;
+    wait = nv4->gr_busy_tsc - now - backlog;
+    if (wait > (uint64_t) cpuclock) {
+        /* the TSC was reset (speed change) */
+        nv4->gr_busy_tsc = now;
+        return;
+    }
+    if (wait > (uint64_t) (cpuclock / 10.0))
+        wait = (uint64_t) (cpuclock / 10.0);
+    cycles -= (int) wait;
+}
+
+/* ------------------------------------------------------------------ */
 /* The run loop.                                                       */
 /* ------------------------------------------------------------------ */
 void
@@ -576,6 +623,7 @@ nv4_pfifo_run(nv4_t *nv4)
        moves PUT every few triangles, and nothing can see the pixels
        until a sync point (nv4_pgraph_3d.c) draws them. */
     p->busy = 0;
+    nv4_gr_account(nv4);
 }
 
 /* ------------------------------------------------------------------ */
@@ -631,6 +679,7 @@ nv4_user_write(nv4_t *nv4, uint32_t addr, uint32_t val)
                 p->dma |= 1u << chid;
             }
             nv4_pfifo_run(nv4);
+            nv4_gr_wait(nv4);
         } else
             nv4_runout(nv4, chid, (subc << 13) | off, val, RO_ILLEGAL_ACCESS);
         return;
@@ -654,6 +703,7 @@ nv4_user_write(nv4_t *nv4, uint32_t addr, uint32_t val)
     }
     nv4_cache1_push(p, (subc << 13) | off, val);
     nv4_pfifo_run(nv4);
+    nv4_gr_wait(nv4);
 }
 
 /* ------------------------------------------------------------------ */

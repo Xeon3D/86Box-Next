@@ -661,6 +661,7 @@ nv4_put(nv4_draw_t *d, int32_t x, int32_t y, nv4_px_t sp, uint32_t s)
         return;
     if (d->chroma && ((s & d->cmask) == d->chroma_val))
         return;
+    nv4->gr_px++;
     if (d->defer) {
         /* the 3D batch keeps a row's pixels on its row's bytes */
         if ((uint32_t) (x + 1) * d->dst.bpp <= d->dst.pitch) {
@@ -749,8 +750,11 @@ nv4_fill(nv4_draw_t *d, int32_t x0, int32_t y0, int32_t x1, int32_t y1, nv4_px_t
     if (!d->dst.swz && !d->chroma && (((d->op != 1) && (d->op != 2) && (d->op != 4) && (d->op != 5)) || ((d->op == 1) && (d->rop == 0xcc)))
         && ((uint32_t) x1 * d->dst.bpp <= d->dst.pitch)
         && nv4_3d_fill(nv4, d->dst.base + d->dst.off, d->dst.pitch, d->dst.base + d->dst.limit, d->dst.bpp, x0, y0, x1, y1,
-                       s))
+                       s)) {
+        if ((x1 > x0) && (y1 > y0))
+            nv4->gr_px += (uint64_t) (x1 - x0) * (uint64_t) (y1 - y0);
         return;
+    }
     /* (nv4_draw_begin waited for the 3D work if it reaches these bytes,
        or the pixels join the batch as runs) */
     for (int32_t y = y0; y < y1; y++)

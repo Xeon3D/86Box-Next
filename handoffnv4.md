@@ -1008,3 +1008,9 @@ them with `dev 3d` before optimising.
 - 2026-10-15 (evening): VIA Apollo's always-true VPX tests fixed across
   the board (POST on six VIA boards unchanged, Win98 + 3DMark unchanged);
   `pci` debug command, cpuspeed guest tool.
+- 2026-10-15 (late): 3DMark 2000 test exit (owner report: black screen,
+  1% speed for ~4 min) = the program presents black frames by 1024x768
+  blits in a loop until ~2 s of guest time pass; blits cost host time but
+  no guest time. 2D engine time modeled (nv4_pfifo.c nv4_gr_account /
+  nv4_gr_wait): pixels at one per NVCLK, CPU stalls on PUT only past a
+  20 ms backlog. Exit is instant now; in-test fps unchanged (27).

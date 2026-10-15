@@ -491,6 +491,11 @@ typedef struct nv4_s {
     double     ptimer_frac;
     pc_timer_t ptimer_timer;
 
+    /* 2D engine time: methods run at once, but pixels drawn since the
+       last PUT keep the engine busy until gr_busy_tsc (guest time) */
+    uint64_t gr_px;
+    uint64_t gr_busy_tsc;
+
     /* PFB and PEXTDEV */
     uint32_t pfb_boot_0;
     uint32_t pfb_debug_0;
