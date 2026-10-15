@@ -52,8 +52,17 @@
 #include <86box/vid_ati_rage128.h>
 #include <86box/vid_ati_rage128_regs.h>
 
+/* The device's routine log lines (mode changes, the speed line, startup
+   and close summaries) print only when logging is on. The build flag
+   ENABLE_RAGE128_LOG sets the default, and the RAGE128_LOG environment
+   variable overrides it at startup in any build ("1" on, "0" off), so a
+   tester can produce a full log without a special build. Real failures
+   print through pclog whatever this says. */
 #ifdef ENABLE_RAGE128_LOG
 int rage128_do_log = ENABLE_RAGE128_LOG;
+#else
+int rage128_do_log = 0;
+#endif
 
 void
 rage128_log(const char *fmt, ...)
@@ -66,7 +75,6 @@ rage128_log(const char *fmt, ...)
         va_end(ap);
     }
 }
-#endif
 
 /* Bus clocks per CPU access, which video_inform turns into CPU cycles.
    The framebuffer and register read handlers charge them: a read stalls
@@ -2453,8 +2461,12 @@ rage128_reset(void *priv)
 rage128_t *
 rage128_chip_init(const device_t *info, const rage128_chip_cfg_t *cfg)
 {
-    rage128_t *dev  = calloc(1, sizeof(rage128_t));
-    svga_t    *svga = &dev->svga;
+    rage128_t  *dev  = calloc(1, sizeof(rage128_t));
+    svga_t     *svga = &dev->svga;
+    const char *log  = getenv("RAGE128_LOG");
+
+    if (log && log[0])
+        rage128_do_log = strcmp(log, "0") != 0;
 
     dev->is_agp = !!(info->flags & DEVICE_AGP);
     if (dev->is_agp) {
@@ -2529,6 +2541,17 @@ rage128_chip_init(const device_t *info, const rage128_chip_cfg_t *cfg)
     dev->render_threads = device_get_config_int("render_threads");
     if (dev->render_threads < 1)
         dev->render_threads = 1;
+    /* A stored count above the maximum is not one of the option's
+       choices. It is written back as the maximum, so the machine's cfg
+       and the settings dialog agree from the next save on. The GPU and
+       capture cuts below apply to this session only and are not written
+       back. */
+    if (dev->render_threads > RAGE128_MAX_RENDER_THREADS) {
+        rage128_log("RAGE128: render_threads=%d above the maximum, migrated to %d\n",
+                    dev->render_threads, RAGE128_MAX_RENDER_THREADS);
+        device_set_config_int("render_threads", RAGE128_MAX_RENDER_THREADS);
+        dev->render_threads = RAGE128_MAX_RENDER_THREADS;
+    }
     if (rage128_gpu_mode() != R128_GPU_OFF && dev->render_threads > 1) {
         rage128_log("RAGE128 GPU: forcing render_threads=1 (was %d)\n",
                     dev->render_threads);
@@ -2550,23 +2573,6 @@ rage128_chip_init(const device_t *info, const rage128_chip_cfg_t *cfg)
     }
     rage128_raster_init(dev);
 
-    /* Realtime pacer: any non-zero value of the realtime_pacing option
-       means strict, which also covers values from older configs. The
-       R128_PACE_BAND environment variable sets how far, in percent,
-       emulated time may fall behind real time before the governor acts
-       (default 0.5); it is a diagnostic setting, not a user option. */
-    dev->pace_enabled = device_get_config_int("realtime_pacing") != 0;
-    dev->pace_band_x  = 5;
-    {
-        const char *pb = getenv("R128_PACE_BAND");
-
-        if (pb && pb[0]) {
-            double pct = atof(pb);
-
-            if (pct >= 0.0 && pct <= 100.0)
-                dev->pace_band_x = (int) (pct * 10.0 + 0.5);
-        }
-    }
     {
         const char *mp = getenv("R128_MMIO_PROF");
 
@@ -2578,9 +2584,7 @@ rage128_chip_init(const device_t *info, const rage128_chip_cfg_t *cfg)
         dev->slice_prof = sp && sp[0] && strcmp(sp, "0") != 0;
     }
     dev->conv_verify = getenv("R128_CONV_VERIFY") != NULL;
-    rage128_log("RAGE128 pacer: %s (band %d.%d%%) mmio-prof %s slice-prof %s\n",
-                dev->pace_enabled ? "strict" : "off",
-                dev->pace_band_x / 10, dev->pace_band_x % 10,
+    rage128_log("RAGE128 profiling: mmio-prof %s slice-prof %s\n",
                 dev->mmio_prof ? "on" : "off",
                 dev->slice_prof ? "on" : "off");
 
@@ -2774,21 +2778,6 @@ const device_config_t rage128_config[] = {
     },
 #endif
     {
-        .name           = "realtime_pacing",
-        .description    = "Realtime pacing",
-        .type           = CONFIG_SELECTION,
-        .default_string = NULL,
-        .default_int    = 0,
-        .file_filter    = NULL,
-        .spinner        = { 0 },
-        .selection      = {
-            { .description = "Off (max fps)",            .value = 0 },
-            { .description = "Strict (hold 100% speed)", .value = 1 },
-            { .description = ""                                     }
-        },
-        .bios           = { { 0 } }
-    },
-    {
         .name           = "render_threads",
         .description    = "Render threads",
         .type           = CONFIG_SELECTION,
@@ -2801,8 +2790,6 @@ const device_config_t rage128_config[] = {
             { .description = "2", .value = 2 },
             { .description = "3", .value = 3 },
             { .description = "4", .value = 4 },
-            { .description = "6", .value = 6 },
-            { .description = "8", .value = 8 },
             { .description = ""              }
         },
         .bios           = { { 0 } }
@@ -2826,7 +2813,7 @@ const device_config_t rage128_config[] = {
 };
 
 const device_t ati_rage128_pro_device = {
-    .name          = "ATI Rage Fury Pro AGP",
+    .name          = "ATI Rage 128 Pro (Fury Pro)",
     .internal_name = "ati_rage128_pro",
     .flags         = DEVICE_AGP,
     .local         = 0,
@@ -2845,7 +2832,7 @@ const device_t ati_rage128_pro_device = {
    Windows 98 and Windows 2000 INFs list as "Xpert 128" (see
    RAGE128_PCI_VENDOR in vid_ati_rage128_regs.h). */
 const device_t ati_xpert128_pci_device = {
-    .name          = "ATI Xpert 128 PCI",
+    .name          = "ATI Rage 128 (Xpert 128)",
     .internal_name = "ati_xpert128_pci",
     .flags         = DEVICE_PCI,
     .local         = 0,

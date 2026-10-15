@@ -12,6 +12,7 @@ add_subdirectory(modem)
 add_subdirectory(network)
 add_subdirectory(soundcanvas)
 add_subdirectory(machine)
+add_subdirectory(utils)
 
 if(BUILD_TESTING)
     add_library(pcjx_floppy_engine OBJECT

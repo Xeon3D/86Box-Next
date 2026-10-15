@@ -29,6 +29,7 @@ add_library(vid OBJECT
     ramdac/vid_ramdac_bt48x.c 
     ramdac/vid_ramdac_bt481.c 
     ramdac/vid_ramdac_ibm_rgb528.c
+    ramdac/vid_ramdac_mu9c1880.c
     ramdac/vid_ramdac_sc1148x.c 
     ramdac/vid_ramdac_sc1502x.c 
     ramdac/vid_ramdac_sdac.c 
@@ -165,6 +166,9 @@ add_library(vid OBJECT
     vid_s3.c 
     vid_s3_virge.c
 
+    # SiS
+    vid_sis6306.c
+
     # Matrox
     vid_mga.c
 
@@ -259,7 +263,11 @@ if(XL24)
     target_compile_definitions(vid PRIVATE USE_XL24)
 endif()
 
-option(ENABLE_RAGE128_LOG "Enable ATI Rage 128 debug logging" OFF)
+if(RAGE128_MAXX)
+    target_compile_definitions(vid PRIVATE USE_RAGE128_MAXX)
+endif()
+
+option(ENABLE_RAGE128_LOG "Turn ATI Rage 128 logging on by default (RAGE128_LOG overrides it at run time)" OFF)
 if(ENABLE_RAGE128_LOG)
     set_property(SOURCE
         vid_ati_rage128.c
