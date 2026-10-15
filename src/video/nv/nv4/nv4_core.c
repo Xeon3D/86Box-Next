@@ -845,14 +845,18 @@ nv4_debug_hook(const char *args)
         return;
     }
     if (args && !strncmp(args, "trace", 5)) {
-        /* trace N [CH]: the next N methods, pushes and user writes (of channel CH) */
-        char *end;
+        /* trace N [CH] [novtx]: the next N methods, pushes and user writes
+           (of channel CH); novtx: methods and object binds only, without
+           the 3D classes' vertex methods */
+        char *end, *end2;
+        long  ch;
 
-        nv4->dbg_trace    = strtoul(args + 5, &end, 0);
-        nv4->dbg_trace_ch = (*end && strtol(end, NULL, 0) >= 0) ? (int) strtol(end, NULL, 0) : -1;
-        if (!*end)
-            nv4->dbg_trace_ch = -1;
-        pclog("nv4: tracing %u methods, channel %d\n", nv4->dbg_trace, nv4->dbg_trace_ch);
+        nv4->dbg_trace_novtx = strstr(args, "novtx") != NULL;
+        nv4->dbg_trace       = strtoul(args + 5, &end, 0);
+        ch                   = strtol(end, &end2, 0);
+        nv4->dbg_trace_ch    = ((end2 != end) && (ch >= 0)) ? (int) ch : -1;
+        pclog("nv4: tracing %u methods, channel %d%s\n", nv4->dbg_trace, nv4->dbg_trace_ch,
+              nv4->dbg_trace_novtx ? ", no vertices" : "");
         return;
     }
     if (args && !strncmp(args, "reads", 5)) {

@@ -310,6 +310,11 @@ nv4_pgraph_method(nv4_t *nv4, int chid, int subc, uint32_t mthd, uint32_t data)
         if (mthd == 0) {
             GR(NV4_PGRAPH_CTX_CACHE4 + subc * 4) = data & 0xffff;
             nv4_pgraph_load_grobj(nv4, subc, data & 0xffff);
+            if (NV4_TRACE(nv4, chid))
+                pclog("nv4 trace: ch %d sub %d bind inst %04x class %02x words %08x %08x %08x %08x\n", chid, subc,
+                      data & 0xffff, GR(NV4_PGRAPH_CTX_CACHE1 + subc * 4) & 0xff, nv4_ramin_read32(nv4, (data & 0xffff) << 4),
+                      nv4_ramin_read32(nv4, ((data & 0xffff) << 4) + 4), nv4_ramin_read32(nv4, ((data & 0xffff) << 4) + 8),
+                      nv4_ramin_read32(nv4, ((data & 0xffff) << 4) + 12));
             nv4_pgraph_2d_reset_chan(&nv4->gr_chan[chid]);
         } else if (GR(NV4_PGRAPH_DEBUG_1) & (1u << 15))
             nv4_pgraph_load_grobj(nv4, subc, GR(NV4_PGRAPH_CTX_CACHE4 + subc * 4) & 0xffff);
@@ -326,7 +331,9 @@ nv4_pgraph_method(nv4_t *nv4, int chid, int subc, uint32_t mthd, uint32_t data)
 
     cls = GR(NV4_PGRAPH_CTX_SWITCH1) & 0xff;
     nv4->dbg_cls_count[cls]++;
-    if (NV4_TRACE(nv4, chid) || (cls == nv4->dbg_log_cls)) {
+    if (nv4->dbg_trace_novtx && ((cls == 0x54) || (cls == 0x55)) && (mthd >= 0x400) && (mthd < 0x600))
+        ;
+    else if (NV4_TRACE(nv4, chid) || (cls == nv4->dbg_log_cls)) {
         pclog("nv4 trace: ch %d sub %d class %02x mthd %04x data %08x\n", chid, subc, cls, mthd, data);
     }
     /* 2D pixels waiting to join the 3D batch go before this method */

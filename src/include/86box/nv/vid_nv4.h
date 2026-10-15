@@ -558,6 +558,7 @@ typedef struct nv4_s {
     } dbg_user[16];
     uint32_t      dbg_trace;          /* methods left to log */
     int           dbg_trace_ch;       /* only this channel's, or -1 */
+    int           dbg_trace_novtx;    /* methods and binds only, no 3D vertices or pushes */
     int           dbg_log_cls;        /* log every method of this class ("dev logclass", NV4_LOGCLASS), or -1 */
     uint32_t      dbg_regtrace;       /* register writes left to log */
     /* "dev reads N": the registers read most over the next N reads */

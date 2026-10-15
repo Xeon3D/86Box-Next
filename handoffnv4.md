@@ -436,6 +436,40 @@ work-tnt (ERAZOR II AGP, 4.11 ICD, Celeron 233, 2 threads + GPU lane,
 - The owner's software library for any OS is G:\Old OS\ (Games,
   Drivers, Apps).
 
+**71.84 Direct3D (2026-10-15 night): a driver limit, not ours.** Traced a
+whole 3DMark 99 run on work-7184 (Creative TNT) with the new bind trace
+(`dev trace N [CH] novtx`: object binds with their instance words,
+methods without 3D vertex data or push words) and disassembled 71.84's
+nvdd32.dll (capstone; `scratchpad dis.py` + header scan for
+`(count<<18)|(subc<<13)|mthd` immediates):
+- The D3D channel (ch 1 here) binds 0x54/0x55 on subchannel 7 with
+  SetContextSurface (0x18c) = the 0x53 object d3d05301 (inst 28d1), which
+  only ever gets SET_CONTEXT_DMA_COLOR/ZETA. No 0x53 FORMAT/PITCH/OFFSET,
+  no 0x58-0x5b, and no RM register write to BOFFSET/BPITCH/BPIXEL
+  (`dev regs`) in the whole run. Per frame the driver clears Z (0xd08000,
+  Y16 0xffff) and the colour buffers (0xdf3000 / 0x1000, flipping) through
+  the 2D surfaces object (0x42, subchannel 1, DST offset) and writes a
+  Y32 fence at DST offset 0 (0x5e 1x1) before each draw batch.
+- In nvdd32.dll the only 0x53 FORMAT/PITCH/OFFSET writes are in the
+  GeForce (Celsius/Kelvin) init paths (variable subchannel, `or 0x40300`
+  at b0296f28 / b02b450f / b02d8985 / b0306632) and in a 3D blit helper
+  (b026c574, its own 0xd3d05301 bind). The TNT render-target code
+  (b0266070, called from b0266880 etc.) programs the 0x42 object: SRC =
+  Z buffer, DST = colour, PITCH = colour<<16 | Z.
+- envytools (d3d56 TLVERTEX test): a vertex with the colour surface
+  format 0 raises FORMAT_EXCEPTION (NSOURCE bit 9) when DEBUG_3 bit 22 is
+  set -- and the 71.84 RM sets that bit. Modelled as an experiment: the
+  RM just acks it, nothing fixes the surfaces, and 3DMark then hangs.
+  Reverted (triangles are dropped as before, counted by `dev 3d`).
+- Real hardware: VOGONS reports 71.84 on a TNT2 Ultra running no 3DMark
+  99/2000 tests (back to the desktop; other cards froze or bluescreened)
+  and older drivers fixing it. README row updated.
+- Aborting 3DMark under 71.84 (Esc) crashes it in KERNEL32 with FS=0
+  (0167:bff71ec8, EDI in nvdd32's globals at b03e8ae8), followed by
+  Explorer/Msgsrv32 faults; reproducible twice. Not chased: probably the
+  same driver path; the VM needed hard stops. work-7184 is back to a
+  clean shutdown but its desktop is now 800x600 (was 1024x768).
+
 **Where the 2026-10-15 session stopped (read this first).** The owner
 asked for items 1-4 and 6 of the list they were given (= here: 71.84,
 NT4, the NV5 classes 0x64-0x66, Quake III/GLQuake/Quake II, DOS/VESA).
@@ -865,3 +899,5 @@ them with `dev 3d` before optimising.
 - 2026-10-15 (later): full Quake data -> fullscreen GLQuake 85.3 fps; README
   table pushed; DOS/VESA: VBETest passes, DOS Quake 22 fps at 640x480 VESA
   (P200). VBE reports 8 MB of 16 (open).
+- 2026-10-15 (night): 71.84 D3D on the TNT is a driver limit (its TNT path
+  never programs a 3D surface; real TNT2s fail too). Bind/novtx trace aids.
