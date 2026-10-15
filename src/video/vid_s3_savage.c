@@ -369,7 +369,10 @@ savage_render_tiled(svga_t *svga, int bytespp)
     for (int x = 0; x <= (svga->hdisp + svga->scrollcache); x++) {
         uint32_t va = savage_tiled_addr(base, tiles, x * bytespp, y) & SAVAGE_VRAM_MASK;
 
-        if (bytespp == 2)
+        /* Past the tile row's end the next tile row would show. */
+        if ((x * bytespp) >= (tiles << 7))
+            p[x] = 0;
+        else if (bytespp == 2)
             p[x] = svga->conv_16to32(svga, *(uint16_t *) &svga->vram[va], (svga->bpp == 15) ? 15 : 16);
         else
             p[x] = lookup_lut(*(uint32_t *) &svga->vram[va] & 0xffffff);
