@@ -1111,10 +1111,16 @@ nv4_img_color_data(nv4_t *nv4, nv4_gr_chan_t *ch, uint32_t data, int oclip)
 {
     nv4_draw_t d;
     int        cfmt = nv4_src_fmt(nv4);
+    int        dst  = (GR(NV4_PGRAPH_CTX_SWITCH1) & (1u << 14)) ? NV4_SURF_SWZ : NV4_SURF_DST;
     int        ok;
 
     if (nv4_img_done(ch))
         return;
+    /* Into a Y8 surface (index mode) a 32-bit colour format carries four
+       8-bit indices a word: NVIDIA's drivers set X8R8G8B8 at 8 bpp and
+       pack indices (the STB tree's dmaenab.c; 45.23's desktop icons). */
+    if ((nv4_surf_fmt(nv4, dst) == 1) && ((cfmt == CF_A8R8G8B8) || (cfmt == CF_X8R8G8B8)))
+        cfmt = CF_Y8;
     ok = nv4_draw_begin(nv4, &d, oclip, 1);
     switch (cfmt) {
         case CF_Y8:
