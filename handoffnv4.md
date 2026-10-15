@@ -369,8 +369,11 @@ work-tnt (ERAZOR II AGP, 4.11 ICD, Celeron 233, 2 threads + GPU lane,
   fence surface, Z at the top of VRAM with pitch 32, clip x=8 width 0).
   Restoring the window (`c:\winlist.exe r 10 <cmd>`, see below) makes
   it render: **timedemo demo1 = 969 frames, 11.7 s, 82.7 fps**, ~80%
-  emulation speed; console, particles, models all correct. A real
-  install with the registered PAK1 would not hit it.
+  emulation speed; console, particles, models all correct.
+  Confirmed with the owner's full Quake (G:\Old OS\Games\DOS\Quake,
+  on games.iso as QUAKEFUL\, its PAK0/PAK1 copied over
+  C:\GLQUAKE\ID1): fullscreen GLQuake then works straight from
+  Start > Run, **timedemo demo1 = 969 frames, 11.4 s, 85.3 fps**, 83%.
 - **Quake II 3.05** (C:\QUAKE2, `quake2.exe +set basedir c:\quake2 +set
   vid_ref gl`; the owner's config has vid_ref soft): fullscreen OpenGL
   correct (textures, lightmaps, models, HUD). **timedemo 1 / demomap
@@ -399,8 +402,9 @@ work-tnt (ERAZOR II AGP, 4.11 ICD, Celeron 233, 2 threads + GPU lane,
   WSL), partition at sector 2048, `mtype -i raw@@1048576 ::WINLIST.TXT`.
   nv4ogl.dll disassembles fine with capstone + pefile (py), as does
   GLQUAKE.EXE.
-- Still to do from this list: DOS/VESA on work-dos-tnt; GLQuake/Quake II
-  on the TNT2 with registered data if wanted.
+- Still to do from this list: DOS/VESA on work-dos-tnt (games.iso now
+  also has the full DOS Quake in QUAKEFUL\, GO.EXE). The owner's
+  software library for any OS is G:\Old OS\ (Games, Drivers, Apps).
 
 **Where the 2026-10-15 session stopped (read this first).** The owner
 asked for items 1-4 and 6 of the list they were given (= here: 71.84,
