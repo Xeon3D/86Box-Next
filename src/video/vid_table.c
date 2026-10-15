@@ -207,6 +207,7 @@ video_cards[] = {
     { .device = &s3_vision964_pci_device,                       .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &s3_vision868_pci_device,                       .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &s3_vision968_pci_device,                       .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &permedia2_stb_glyder_max2_pci_device,          .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &tgui9440_pci_device,                           .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &tgui9660_pci_device,                           .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &tgui9680_pci_device,                           .flags = VIDEO_FLAG_TYPE_NONE      },
@@ -234,6 +235,7 @@ video_cards[] = {
 #endif /*USE_G100 */
     { .device = &s3_trio3d2x_agp_device,                        .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &s3_virge_gx2_agp_device,                       .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &permedia2_stb_glyder_max2_agp_device,          .flags = VIDEO_FLAG_TYPE_NONE      },
     /* LPT */
     { .device = &hd44780_device,                                .flags = VIDEO_FLAG_TYPE_SPECIAL   },
     { .device = NULL,                                           .flags = VIDEO_FLAG_TYPE_NONE      }

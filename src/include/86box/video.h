@@ -672,6 +672,10 @@ enum {
     HD44780_COLOR_MAX
 };
 
+/* 3Dlabs / TI Permedia 2 */
+extern const device_t permedia2_stb_glyder_max2_pci_device;
+extern const device_t permedia2_stb_glyder_max2_agp_device;
+
 /* Nvidia */
 extern const device_t nv3_device_pci;
 extern const device_t nv3_device_agp;
