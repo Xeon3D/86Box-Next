@@ -37,6 +37,7 @@
 #include <86box/plat_unused.h>
 #include <86box/bswap.h>
 #include <assert.h>
+#include <86box/debug_cmd.h>
 
 #pragma pack(push, 1)
 typedef struct chips_69000_bitblt_t
@@ -159,9 +160,22 @@ typedef struct chips_69000_t {
     void *i2c, *ddc;
 
     uint8_t st01;
+
+    uint8_t  chip;      /* CHIPS_69000 or CHIPS_65554 */
+    uint16_t device_id; /* PCI device ID: 00C0h (69000), 00E4h (65554) */
+    uint8_t  rev;       /* XR04 */
 } chips_69000_t;
 
 static chips_69000_t *reset_state = NULL;
+
+/* device_t local: bit 0 = on-board, bits 15-8 = the chip. */
+enum {
+    CHIPS_69000 = 0,
+    CHIPS_65554 = 1 /* 6555x HiQV: the 69000's core with external DRAM (1-4 MB) */
+};
+
+#define ROM_CHIPS_69000         "roms/video/chips/69000.ROM"
+#define ROM_STB_MONOCLE_65554   "roms/video/chips/stb_monocle_65554_110.bin"
 
 /* TODO: Probe timings on real hardware. */
 static video_timings_t timing_chips = { .type = VIDEO_PCI, .write_b = 2, .write_w = 2, .write_l = 1, .read_b = 10, .read_w = 10, .read_l = 10 };
@@ -1100,8 +1114,13 @@ chips_69000_recalctimings(svga_t *svga)
         svga->rowoffset |= (svga->crtc[0x41] & 0xF) << 8;
 
         svga->interlace = !!(svga->crtc[0x70] & 0x80);
-        if (svga->interlace)
+        if (svga->interlace) {
+            /* The vertical registers count frame lines; each field is half that. */
             svga->dispend >>= 1;
+            svga->vtotal >>= 1;
+            svga->vsyncstart >>= 1;
+            svga->vblankstart >>= 1;
+        }
 
         switch (chips->ext_regs[0x81] & 0xF) {
             default:
@@ -1130,7 +1149,11 @@ chips_69000_recalctimings(svga_t *svga)
                 break;
         }
 #if 1
-        if (chips->flat_panel_regs[0x01] & 0x2) {
+        /* The Monocle's BIOS and Windows' 65554 driver run the flat panel path
+           (FR01 = 2, with the DAC on: simultaneous display) although no panel is
+           attached; what is emulated is its CRT connector, so it shows the CRTC
+           timing rather than the picture cut to the panel size. */
+        if ((chips->flat_panel_regs[0x01] & 0x2) && (chips->chip != CHIPS_65554)) {
             /* TODO: Fix horizontal parameter calculations. */
             if (svga->hdisp > (((chips->flat_panel_regs[0x20] | ((chips->flat_panel_regs[0x25] & 0xF) << 8)) + 1) << 3)) {
                 svga->hdisp = ((chips->flat_panel_regs[0x20] | ((chips->flat_panel_regs[0x25] & 0xF) << 8)) + 1) << 3;
@@ -1783,13 +1806,13 @@ chips_69000_read_ext_reg(chips_69000_t* chips)
             val = 0x10;
             break;
         case 0x02:
-            val = 0xC0;
+            val = chips->device_id & 0xff;
             break;
         case 0x03:
-            val = 0x00;
+            val = chips->device_id >> 8;
             break;
         case 0x04:
-            val = 0x62;
+            val = chips->rev;
             break;
         case 0x05:
             val = 0x00;
@@ -2154,10 +2177,10 @@ chips_69000_pci_read(UNUSED(int func), int addr, UNUSED(int len), void *priv)
             ret = 0x10;
             break;
         case 0x02:
-            ret = 0xc0;
+            ret = chips->device_id & 0xff;
             break;
         case 0x03:
-            ret = 0x00;
+            ret = chips->device_id >> 8;
             break;
 
         case 0x04:
@@ -2544,7 +2567,7 @@ chips_69000_readb_linear(uint32_t addr, void *priv)
     if (addr & 0x400000)
         return chips_69000_readb_mmio(addr, chips);
 
-    return svga_readb_linear(addr & 0x1FFFFF, priv);
+    return svga_readb_linear(addr & svga->vram_mask, priv);
 }
 
 uint16_t
@@ -2557,13 +2580,13 @@ chips_69000_readw_linear(uint32_t addr, void *priv)
         if (addr & 0x400000)
             return bswap16(chips_69000_readw_mmio(addr, chips));
 
-        return bswap16(svga_readw_linear(addr & 0x1FFFFF, priv));
+        return bswap16(svga_readw_linear(addr & svga->vram_mask, priv));
     }
 
     if (addr & 0x400000)
         return chips_69000_readw_mmio(addr, chips);
 
-    return svga_readw_linear(addr & 0x1FFFFF, priv);
+    return svga_readw_linear(addr & svga->vram_mask, priv);
 }
 
 uint32_t
@@ -2576,13 +2599,13 @@ chips_69000_readl_linear(uint32_t addr, void *priv)
         if (addr & 0x400000)
             return bswap32(chips_69000_readl_mmio(addr, chips));
 
-        return bswap32(svga_readl_linear(addr & 0x1FFFFF, priv));
+        return bswap32(svga_readl_linear(addr & svga->vram_mask, priv));
     }
 
     if (addr & 0x400000)
         return chips_69000_readl_mmio(addr, chips);
 
-    return svga_readl_linear(addr & 0x1FFFFF, priv);
+    return svga_readl_linear(addr & svga->vram_mask, priv);
 }
 
 void
@@ -2594,7 +2617,7 @@ chips_69000_writeb_linear(uint32_t addr, uint8_t val, void *priv)
     if (addr & 0x400000)
         return chips_69000_writeb_mmio(addr, val, chips);
 
-    svga_writeb_linear(addr & 0x1FFFFF, val, priv);
+    svga_writeb_linear(addr & svga->vram_mask, val, priv);
 }
 
 void
@@ -2609,7 +2632,7 @@ chips_69000_writew_linear(uint32_t addr, uint16_t val, void *priv)
     if (addr & 0x400000)
         return chips_69000_writew_mmio(addr, val, chips);
 
-    svga_writew_linear(addr & 0x1FFFFF, val, priv);
+    svga_writew_linear(addr & svga->vram_mask, val, priv);
 }
 
 void
@@ -2624,7 +2647,7 @@ chips_69000_writel_linear(uint32_t addr, uint32_t val, void *priv)
     if (addr & 0x400000)
         return chips_69000_writel_mmio(addr, val, chips);
 
-    svga_writel_linear(addr & 0x1FFFFF, val, priv);
+    svga_writel_linear(addr & svga->vram_mask, val, priv);
 }
 
 void
@@ -2813,29 +2836,88 @@ chips_69000_reset(void *priv)
     }
 }
 
+/* Debug dump for tests (debug_cmd "dev"): the XR, FR and CR registers and the
+   timings worked out from them. */
+static chips_69000_t *chips_debug;
+
+static void
+chips_69000_debug_hook(UNUSED(const char *args))
+{
+    const chips_69000_t *chips = chips_debug;
+    char                 line[128];
+
+    if (chips == NULL)
+        return;
+    for (int bank = 0; bank < 3; bank++) {
+        const uint8_t *regs = (bank == 0) ? chips->ext_regs : ((bank == 1) ? chips->flat_panel_regs : chips->svga.crtc);
+        const char    *name = (bank == 0) ? "XR" : ((bank == 1) ? "FR" : "CR");
+
+        for (int row = 0; row < ((bank == 2) ? 0x80 : 0x100); row += 16) {
+            int pos = sprintf(line, "%s%02X:", name, row);
+
+            for (int i = 0; i < 16; i++)
+                pos += sprintf(line + pos, " %02x", regs[row + i]);
+            always_log("chips: %s\n", line);
+        }
+    }
+    always_log("chips: misc %02x hdisp %d htotal %d dispend %d vtotal %d bpp %d rowoffset %d ma_latch %06x vram %d KB\n",
+               chips->svga.miscout, chips->svga.hdisp, chips->svga.htotal, chips->svga.dispend, chips->svga.vtotal,
+               chips->svga.bpp, chips->svga.rowoffset, chips->svga.memaddr_latch, chips->svga.vram_max >> 10);
+    always_log("chips: SR %02x %02x %02x %02x %02x GR %02x %02x %02x %02x %02x %02x %02x %02x %02x "
+               "AR10-14 %02x %02x %02x %02x %02x chain4 %d packed_chain4 %d lowres %d\n",
+               chips->svga.seqregs[0], chips->svga.seqregs[1], chips->svga.seqregs[2], chips->svga.seqregs[3],
+               chips->svga.seqregs[4], chips->svga.gdcreg[0], chips->svga.gdcreg[1], chips->svga.gdcreg[2],
+               chips->svga.gdcreg[3], chips->svga.gdcreg[4], chips->svga.gdcreg[5], chips->svga.gdcreg[6],
+               chips->svga.gdcreg[7], chips->svga.gdcreg[8], chips->svga.attrregs[0x10], chips->svga.attrregs[0x11],
+               chips->svga.attrregs[0x12], chips->svga.attrregs[0x13], chips->svga.attrregs[0x14],
+               chips->svga.chain4, chips->svga.packed_chain4, chips->svga.lowres);
+}
+
 static void *
 chips_69000_init(const device_t *info)
 {
     chips_69000_t *chips = calloc(1, sizeof(chips_69000_t));
     reset_state = calloc(1, sizeof(chips_69000_t));
 
-    /* Appears to have an odd VBIOS size. */
-    if (!info->local) {
-        rom_init(&chips->bios_rom, "roms/video/chips/69000.ROM", 0xc0000, 0x10000, 0xffff, 0x0000, MEM_MAPPING_EXTERNAL);
+    uint32_t vram_size;
+
+    chips->chip    = (info->local >> 8) & 0xff;
+    chips->on_board = !!(info->local & 1);
+    if (chips->chip == CHIPS_65554) {
+        /* External DRAM; the BIOS sizes it by where the banked window wraps (XR0E). */
+        vram_size        = device_get_config_int("memory") << 20;
+        chips->device_id = 0x00e4;
+        chips->rev       = 0x00;
+    } else {
+        vram_size        = 1 << 21; /*2048kb*/
+        chips->device_id = 0x00c0;
+        chips->rev       = 0x62;
+    }
+
+    if (!chips->on_board) {
+        /* The 69000 appears to have an odd VBIOS size; the 65554's is 32 KB. */
+        if (chips->chip == CHIPS_65554)
+            rom_init(&chips->bios_rom, ROM_STB_MONOCLE_65554, 0xc0000, 0x8000, 0x7fff, 0x0000, MEM_MAPPING_EXTERNAL);
+        else
+            rom_init(&chips->bios_rom, ROM_CHIPS_69000, 0xc0000, 0x10000, 0xffff, 0x0000, MEM_MAPPING_EXTERNAL);
         mem_mapping_disable(&chips->bios_rom.mapping);
     }
 
     video_inform(VIDEO_FLAG_TYPE_SPECIAL, &timing_chips);
 
-    svga_init(info, &chips->svga, chips, 1 << 21, /*2048kb*/
+    svga_init(info, &chips->svga, chips, vram_size,
               chips_69000_recalctimings,
               chips_69000_in, chips_69000_out,
               chips_69000_hwcursor_draw,
               NULL);
 
+    /* Addresses past the DRAM wrap around; the 65554's BIOS sizes its memory by that. */
+    if (chips->chip == CHIPS_65554)
+        chips->svga.decode_mask = vram_size - 1;
+
     io_sethandler(0x03a0, 0x0040, chips_69000_in, NULL, NULL, chips_69000_out, NULL, NULL, chips);
 
-    pci_add_card(info->local ? PCI_ADD_VIDEO : PCI_ADD_NORMAL, chips_69000_pci_read, chips_69000_pci_write, chips, &chips->slot);
+    pci_add_card(chips->on_board ? PCI_ADD_VIDEO : PCI_ADD_NORMAL, chips_69000_pci_read, chips_69000_pci_write, chips, &chips->slot);
 
     chips->svga.bpp              = 8;
     chips->svga.miscout          = 1;
@@ -2848,7 +2930,6 @@ chips_69000_init(const device_t *info)
 
     chips->quit            = 0;
     chips->engine_active   = 0;
-    chips->on_board        = !!(info->local);
 
     chips->svga.packed_chain4 = 1;
 
@@ -2864,13 +2945,16 @@ chips_69000_init(const device_t *info)
     chips->pci_rom_enable  = 0x00;
     chips->rom_addr        = 0x0000;
     chips->subsys_vid      = 0x102c;
-    chips->subsys_pid      = 0x00c0;
+    chips->subsys_pid      = chips->device_id;
 
     io_removehandler(0x03a0, 0x0040, chips_69000_in, NULL, NULL, chips_69000_out, NULL, NULL, chips);
     mem_mapping_disable(&chips->linear_mapping);
     mem_mapping_disable(&chips->svga.mapping);
     if (!chips->on_board)
         mem_mapping_disable(&chips->bios_rom.mapping);
+
+    chips_debug = chips;
+    debug_cmd_set_device_hook(chips_69000_debug_hook);
 
     *reset_state = *chips;
 
@@ -2880,7 +2964,13 @@ chips_69000_init(const device_t *info)
 static int
 chips_69000_available(void)
 {
-    return rom_present("roms/video/chips/69000.ROM");
+    return rom_present(ROM_CHIPS_69000);
+}
+
+static int
+chips_65554_available(void)
+{
+    return rom_present(ROM_STB_MONOCLE_65554);
 }
 
 void
@@ -2889,6 +2979,11 @@ chips_69000_close(void *priv)
     chips_69000_t *chips = (chips_69000_t *) priv;
 
     chips->quit = 1;
+
+    if (chips_debug == chips) {
+        debug_cmd_set_device_hook(NULL);
+        chips_debug = NULL;
+    }
 //    thread_set_event(chips->fifo_event);
  //   thread_wait(chips->accel_thread);
     ddc_close(chips->ddc);
@@ -2943,4 +3038,40 @@ const device_t chips_69000_onboard_device = {
     .speed_changed = chips_69000_speed_changed,
     .force_redraw  = chips_69000_force_redraw,
     .config        = NULL
+};
+
+static const device_config_t chips_65554_config[] = {
+    // clang-format off
+    {
+        .name           = "memory",
+        .description    = "Memory size",
+        .type           = CONFIG_SELECTION,
+        .default_string = NULL,
+        .default_int    = 2,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = {
+            { .description = "1 MB", .value = 1 },
+            { .description = "2 MB", .value = 2 },
+            { .description = "4 MB", .value = 4 },
+            { .description = ""                 }
+        },
+        .bios           = { { 0 } }
+    },
+    { .name = "", .description = "", .type = CONFIG_END }
+    // clang-format on
+};
+
+const device_t chips_65554_device = {
+    .name          = "Chips & Technologies 65554 (STB Monocle)",
+    .internal_name = "chips_65554_stb_monocle",
+    .flags         = DEVICE_PCI,
+    .local         = CHIPS_65554 << 8,
+    .init          = chips_69000_init,
+    .close         = chips_69000_close,
+    .reset         = chips_69000_reset,
+    .available     = chips_65554_available,
+    .speed_changed = chips_69000_speed_changed,
+    .force_redraw  = chips_69000_force_redraw,
+    .config        = chips_65554_config
 };
