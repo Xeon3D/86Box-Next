@@ -491,6 +491,13 @@ typedef struct nv4_s {
     double     ptimer_frac;
     pc_timer_t ptimer_timer;
 
+    /* Engine time: the puller hands PGRAPH a method only once the
+       work before it is done in guest time (nv4_pfifo.c) */
+    uint64_t   eng_tsc;   /* when PGRAPH finishes what it was given */
+    uint64_t   eng_bytes; /* framebuffer bytes moved by the current method */
+    uint64_t   eng_px3d;  /* 3D pixels drawn by the current method */
+    pc_timer_t eng_timer;
+
     /* PFB and PEXTDEV */
     uint32_t pfb_boot_0;
     uint32_t pfb_debug_0;
@@ -693,6 +700,9 @@ extern uint32_t nv4_pfifo_pending(nv4_t *nv4);
 extern uint32_t nv4_user_read(nv4_t *nv4, uint32_t addr);
 extern void     nv4_user_write(nv4_t *nv4, uint32_t addr, uint32_t val);
 extern void     nv4_pfifo_run(nv4_t *nv4);
+extern void     nv4_pfifo_init(nv4_t *nv4);
+extern void     nv4_pfifo_close(nv4_t *nv4);
+extern int      nv4_pfifo_engine_busy(nv4_t *nv4);
 
 /* subsystems/nv4_pgraph.c: the puller's way in */
 extern nv4_mthd_result_t nv4_pgraph_method(nv4_t *nv4, int chid, int subc, uint32_t mthd, uint32_t data);

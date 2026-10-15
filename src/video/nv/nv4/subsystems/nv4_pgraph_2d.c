@@ -661,6 +661,7 @@ nv4_put(nv4_draw_t *d, int32_t x, int32_t y, nv4_px_t sp, uint32_t s)
         return;
     if (d->chroma && ((s & d->cmask) == d->chroma_val))
         return;
+    nv4->eng_bytes += d->dst.bpp * (d->rop_d ? 2 : 1);
     if (d->defer) {
         /* the 3D batch keeps a row's pixels on its row's bytes */
         if ((uint32_t) (x + 1) * d->dst.bpp <= d->dst.pitch) {
@@ -749,8 +750,11 @@ nv4_fill(nv4_draw_t *d, int32_t x0, int32_t y0, int32_t x1, int32_t y1, nv4_px_t
     if (!d->dst.swz && !d->chroma && (((d->op != 1) && (d->op != 2) && (d->op != 4) && (d->op != 5)) || ((d->op == 1) && (d->rop == 0xcc)))
         && ((uint32_t) x1 * d->dst.bpp <= d->dst.pitch)
         && nv4_3d_fill(nv4, d->dst.base + d->dst.off, d->dst.pitch, d->dst.base + d->dst.limit, d->dst.bpp, x0, y0, x1, y1,
-                       s))
+                       s)) {
+        if ((x1 > x0) && (y1 > y0))
+            nv4->eng_bytes += (uint64_t) (x1 - x0) * (uint64_t) (y1 - y0) * d->dst.bpp;
         return;
+    }
     /* (nv4_draw_begin waited for the 3D work if it reaches these bytes,
        or the pixels join the batch as runs) */
     for (int32_t y = y0; y < y1; y++)
@@ -1007,6 +1011,69 @@ nv4_triangle(nv4_t *nv4, const int32_t *vx, const int32_t *vy, uint32_t color)
     }
 }
 
+/* A plain copy between linear surfaces of one format: whole rows,
+   with the per-pixel path's results (clipped to the destination's
+   clip, the source read as is). Returns 0 when it does not apply. */
+static int
+nv4_blit_rows(nv4_t *nv4, nv4_gr_chan_t *ch, nv4_draw_t *d, const nv4_surf_t *src, uint32_t w, uint32_t h)
+{
+    uint8_t *v   = nv4->svga.vram;
+    int      bpp = d->dst.bpp;
+    int32_t  dx0 = ch->blit_dx, dy0 = ch->blit_dy;
+    int32_t  dx1 = dx0 + (int32_t) w, dy1 = dy0 + (int32_t) h;
+    int32_t  sx, sy, n, rows, step;
+    uint32_t sa, da, len, s_end, d_end;
+
+    if (!d->plain || d->defer || src->swz || (src->fmt != d->dst.fmt) || (src->bpp != bpp))
+        return 0;
+    if (dx0 < d->cx0)
+        dx0 = d->cx0;
+    if (dy0 < d->cy0)
+        dy0 = d->cy0;
+    if (dx1 > d->cx1)
+        dx1 = d->cx1;
+    if (dy1 > d->cy1)
+        dy1 = d->cy1;
+    if ((dx0 >= dx1) || (dy0 >= dy1))
+        return 1;
+    sx   = ch->blit_sx + (dx0 - ch->blit_dx);
+    sy   = ch->blit_sy + (dy0 - ch->blit_dy);
+    n    = dx1 - dx0;
+    rows = dy1 - dy0;
+    if ((sx < 0) || (sy < 0) || (dx0 < 0) || (dy0 < 0))
+        return 0;
+    len = (uint32_t) n * bpp;
+    /* every byte inside both surfaces' limits and the VRAM */
+    s_end = src->off + (uint32_t) (sy + rows - 1) * src->pitch + (uint32_t) sx * bpp + len - 1;
+    d_end = d->dst.off + (uint32_t) (dy0 + rows - 1) * d->dst.pitch + (uint32_t) dx0 * bpp + len - 1;
+    if ((s_end > src->limit) || (d_end > d->dst.limit) || (src->base + s_end > nv4->vram_mask)
+        || (d->dst.base + d_end > nv4->vram_mask))
+        return 0;
+    sa = src->base + src->off + (uint32_t) sy * src->pitch + (uint32_t) sx * bpp;
+    da = d->dst.base + d->dst.off + (uint32_t) dy0 * d->dst.pitch + (uint32_t) dx0 * bpp;
+    if ((src->pitch != d->dst.pitch) && (sa <= src->base + s_end) && (da <= d->dst.base + d_end)
+        && (da <= src->base + s_end) && (sa <= d->dst.base + d_end))
+        return 0; /* overlapping with different pitches */
+    if (d->touch) {
+        nv4_3d_touch(nv4, d->lo, d->hi, GR(NV4_PGRAPH_CTX_SWITCH1) & 0xff);
+        d->touch = 0;
+    }
+    /* the source is read before it is overwritten, as the per-pixel
+       path reads all of it first */
+    step = (da > sa) ? -1 : 1;
+    for (int32_t i = 0; i < rows; i++) {
+        int32_t  r  = (step > 0) ? i : (rows - 1 - i);
+        uint32_t s0 = sa + (uint32_t) r * src->pitch;
+        uint32_t d0 = da + (uint32_t) r * d->dst.pitch;
+
+        memmove(&v[d0], &v[s0], len);
+        for (uint32_t pg = d0 >> 12; pg <= ((d0 + len - 1) >> 12); pg++)
+            nv4->svga.changedvram[pg] = nv4->svga.monitor->mon_changeframecount;
+    }
+    nv4->eng_bytes += (uint64_t) n * rows * bpp * 2;
+    return 1;
+}
+
 /* Copies a rectangle from the source surface to the destination. */
 static void
 nv4_blit(nv4_t *nv4, nv4_gr_chan_t *ch, uint32_t size)
@@ -1019,6 +1086,8 @@ nv4_blit(nv4_t *nv4, nv4_gr_chan_t *ch, uint32_t size)
 
     if (!w || !h || !nv4_draw_begin(nv4, &d, 0, 1) || !nv4_surf_get(nv4, NV4_SURF_SRC, &src))
         return;
+    if (nv4_blit_rows(nv4, ch, &d, &src, w, h))
+        return;
     /* read it all first: the rectangles may overlap */
     buf = malloc(w * h * sizeof(uint32_t));
     if (!buf)
@@ -1026,6 +1095,7 @@ nv4_blit(nv4_t *nv4, nv4_gr_chan_t *ch, uint32_t size)
     for (uint32_t y = 0; y < h; y++)
         for (uint32_t x = 0; x < w; x++)
             buf[y * w + x] = nv4_surf_read(nv4, &src, ch->blit_sx + x, ch->blit_sy + y);
+    nv4->eng_bytes += (uint64_t) w * h * src.bpp;
     for (uint32_t y = 0; y < h; y++) {
         for (uint32_t x = 0; x < w; x++) {
             uint32_t raw = buf[y * w + x];

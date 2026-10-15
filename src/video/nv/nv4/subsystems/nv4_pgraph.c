@@ -404,8 +404,8 @@ nv4_pgraph_read(nv4_t *nv4, uint32_t addr)
     addr &= ~3u;
     switch (addr) {
         case NV4_PGRAPH_STATUS:
-            /* the engine finishes each method before taking the next */
-            return 0;
+            /* STATE: busy until the last method's time is up */
+            return nv4_pfifo_engine_busy(nv4) ? 0x00000001 : 0;
         default:
             return GR(addr);
     }
