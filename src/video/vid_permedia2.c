@@ -2356,7 +2356,9 @@ p2_format_color(p2_t *p2, uint32_t v, int x, int y)
     /* Front and Back formats carry the value in both halves. */
     if (pos <= 8)
         return (packed | (packed << 8)) * 0x00010001;
-    return packed | (packed << 16);
+    if (pos <= 16)
+        return packed | (packed << 16);
+    return packed;
 }
 
 static int
