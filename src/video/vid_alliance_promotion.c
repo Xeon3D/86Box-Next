@@ -117,7 +117,7 @@ typedef struct pm_t {
     } blt;
 } pm_t;
 
-static int pm_do_log = 1;
+static int pm_do_log = 0;
 
 static void
 pm_log(const char *fmt, ...)

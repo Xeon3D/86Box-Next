@@ -27,9 +27,10 @@ Keep this file updated as the work moves.
 `F:\Claude\86Box-Next\work-pmdos` (copy of work-p2dos: tc430hx, Pentium 200, DOS 6.22,
 VBETEST.EXE + UNIVBE in C:\). `tools/alliance/pm.sh start|cmd|shot|stop` (PM_DIR selects the VM),
 `tools/alliance/vbe.sh "0 1 3" NAME` boots, runs VBETest and picks menu entries.
-Debug: `dev` dumps SR/CR/XR state, `dev log N` sets the log level (1 = extended register
-writes, 2 = everything). Logging is ON by default while bringing the card up -- turn the
-default (`pm_do_log`) to 0 before merging.
+Debug: `dev` dumps SR/CR/XR state, the pixel clock and refresh, the cursor; `dev log N` sets
+the log level (1 = extended register writes and every engine command as "PM: BLT", 2 =
+everything). Off by default since 2026-10-16 -- send `dev log 1` before a test that greps
+the log.
 
 ## What the BIOS (PM6410, PhoenixVIEW) taught
 
@@ -156,6 +157,19 @@ skipped). Comes up at 1024x768 High Color, accelerated, slider works.
 Shut down: Ctrl+Esc, U, Enter.
 
 
+## Video window (done 2026-10-16, 13b7f1fac)
+
+First design only (XR82-XR9F, one window, STB's VIDWINDOW_V1; see the comment above
+pm_update_overlay). The drivers pick V1/V2 by whether XR202 holds a value and 2D V1/V2 by
+whether XR40 bit 16 sticks -- both now ignore writes on the 6410/6422. No colour key on V1
+(DDCAPS_OVERLAYCANTCLIP). Nearest-neighbour stretch; VC_INTERP (bit 10) not modelled.
+Verified: Win98 SE + 1600 driver, Media Player 6.4 (`mplayer2 d:test.mpg`; the clip is
+work-pmw98\video2.iso, TEST.MPG from dl\iso-extra\VIDEO) at 800x600x16: control 0F4Bh
+(UYVY, YUV->RGB, stretch), triple-buffered flips through XR90, 1:1 and stretched (maximised
+player). At 8 bpp the decoder does not use the overlay (software, dithered).
+HC800.REG on that ISO sets HKCC Display\Settings to 800x600x16 (desk.cpl's Colors list
+ignores our keys and clicks on this VM; regedit is the reliable route).
+
 ## Not done / next
 
 1. Interlaced modes: XRD2 bit 0 (STB's InterlaceControl) is set by the drivers' 43 Hz
@@ -165,9 +179,11 @@ Shut down: Ctrl+Esc, U, Enter.
    from the BIOS's 6422 PLL table at 6775h, /2 for 15/16/32 bpp through the 20C498.
    The 6422's 16 bpp 1024x768 runs at 96.6 MHz / 93.7 Hz from the drivers' own timing
    tables -- plausible (85 Hz class), not checked against hardware.
-3. Op 3 (stretch), 8x8 colour patterns, destination update bits, the video overlay window
-   (XR82-XRC0, physical.h VIDWINDOW); the STB build's DirectDraw.
-4. NT 4 on the 6410 (pm6410_pci).
+3. Op 3 (stretch blit), 8x8 colour patterns, destination update bits, overlay interpolation,
+   the second overlay design (tiles, XR200 on; GXM/6424 and later); the STB build's
+   DirectDraw HAL (does not come up).
+4. Done: NT 4 on the 6410. work-pmnt4 is left configured as pm6410_pci, work-pmw98 and
+   work-pmw95 as pm6422_pci; work-pmdos as pm6410_pci.
 5. AT3D/AT25 with the Stingray/GA-RUSH6 BIOSes (16 MB aperture: VGA regs at +FFF000h, XR at
    +FFEC00h; X.org apm_driver.c), no Voodoo Rush 3D.
 6. Before merging: pm_do_log default 0, ROM into Xeon3D/roms, README.
