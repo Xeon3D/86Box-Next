@@ -2203,7 +2203,10 @@ p2_texture_color(p2_t *p2, int *raw)
             *raw = 1;
             return v;
         }
-        v = (v + ((lutm >> 2) & 0xff)) & 0xff;
+        /* Without DirectIndex the index counts from TexelLUTIndex: the
+           3Dlabs Win9x driver loads a 4-bit DIB's 16 colours at 80h and
+           sets TexelLUTIndex back to 80h before each draw, LUTOffset 0. */
+        v = (v + ((lutm >> 2) & 0xff) + ((lutm & 2) ? 0 : p2->gp[TAG_TEXEL_LUT_INDEX])) & 0xff;
         return (v < 16) ? p2->gp[TAG_TEXEL_LUT0 + v] : p2->texel_lut[v];
     }
 
