@@ -2460,6 +2460,18 @@ p2_raster_start(p2_t *p2, uint32_t command)
     if (r->prim == PRIM_RECT) {
         r->columns = p2->gp[TAG_RECT_SIZE] & 0xffff;
         r->rows    = p2->gp[TAG_RECT_SIZE] >> 16;
+        /* A rectangle leaves the trapezoid registers describing it: Windows
+           2000's perm2 uploads an 8x8 brush as a rectangle, then widens it
+           with trapezoid copies that set only StartXDom/StartXSub (tooltip
+           and balloon backgrounds came out black but for every fourth
+           8 pixels). */
+        p2->gp[TAG_START_X_DOM] = (uint32_t) r->origin_x << 16;
+        p2->gp[TAG_START_X_SUB] = (uint32_t) (r->origin_x + (int) r->columns) << 16;
+        p2->gp[TAG_START_Y]     = (uint32_t) r->origin_y << 16;
+        p2->gp[TAG_DX_DOM]      = 0;
+        p2->gp[TAG_DX_SUB]      = 0;
+        p2->gp[TAG_DY]          = 1 << 16;
+        p2->gp[TAG_COUNT]       = r->rows;
         /* Packed rectangles count DWORD groups; the framebuffer unit widens them. */
         if ((rm & FBRM_PACKED) && !(command & RENDER_FAST_FILL) && !p2_upload_cmd(p2, command) && (r->bpp != 3)) {
             r->origin_x *= 4 / r->bpp;
