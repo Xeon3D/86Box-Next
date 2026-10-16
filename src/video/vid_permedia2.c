@@ -2260,8 +2260,12 @@ p2_chroma_in_bounds(p2_t *p2, uint32_t c)
 
 /* YUVMode: bit 0 converts the texel to RGB; bits 2:1 test it against the
    chroma bounds (1 passes texels inside, 2 rejects them -- the source colour
-   key); bit 3 tests the converted colour rather than the texel. Returns 0
-   when the fragment is rejected. */
+   key); bit 3 tests the converted colour rather than the texel; bit 5 keeps
+   the texel out of the fragment's colour, which then comes from the colour
+   DDA or the framebuffer source as without texturing (the 3Dlabs driver's
+   overlay emulation: it marks the destination colour key's pixels with the
+   5551 alpha bit, then copies the converted overlay onto the marked ones).
+   Returns 0 when the fragment is rejected. */
 static int
 p2_yuv_unit(p2_t *p2, uint32_t *color)
 {
@@ -2282,6 +2286,12 @@ p2_yuv_unit(p2_t *p2, uint32_t *color)
             break;
     }
     return pass;
+}
+
+static int
+p2_texel_test_only(p2_t *p2)
+{
+    return !!(p2->gp[TAG_YUV_MODE] & 0x20);
 }
 
 /* A texel for texture copies: nearest sampling of S/T (integer at bit 20),
@@ -2464,7 +2474,7 @@ p2_draw_step(p2_t *p2)
         draw = r->payload & 1;
         r->payload >>= 1;
         r->payload_left--;
-    } else if ((cmd & RENDER_TEXTURE) && !(cmd & RENDER_FAST_FILL)) {
+    } else if ((cmd & RENDER_TEXTURE) && !(cmd & RENDER_FAST_FILL) && !p2_texel_test_only(p2)) {
         color = p2_texture_color(p2, &raw);
         if (!raw)
             draw = p2_yuv_unit(p2, &color);
@@ -2505,6 +2515,13 @@ p2_draw_step(p2_t *p2)
 
         color = p2_fb_read(p2, src * bpp, bpp);
         raw   = 1;
+    }
+    if ((cmd & RENDER_TEXTURE) && !(cmd & RENDER_FAST_FILL) && p2_texel_test_only(p2)) {
+        int      texel_raw;
+        uint32_t texel = p2_texture_color(p2, &texel_raw);
+
+        if (!texel_raw)
+            draw &= p2_yuv_unit(p2, &texel);
     }
 
     if (draw)
