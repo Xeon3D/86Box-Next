@@ -212,6 +212,8 @@ typedef struct p2_t {
     uint32_t bypass_mask;
     uint32_t fb_write_mask;
     uint32_t vs_regs[0x400];     /* 0x5000-0x5fff, kept for read back. */
+    uint32_t flip_base;          /* SuspendUntilFrameBlank: ScreenBase at the next blank. */
+    int      flip_pending;
     uint32_t ext_brd[2];
     uint32_t vtg[VTG_NUM];
 
@@ -273,6 +275,7 @@ static void     p2_gp_write(p2_t *p2, uint32_t tag, uint32_t val);
 static void     p2_gp_command(p2_t *p2, uint32_t tag, uint32_t val);
 static void     p2_gp_reset(p2_t *p2);
 static void     p2_out_space(p2_t *p2);
+static void     p2_frame_blank(p2_t *p2);
 
 /* ------------------------------------------------------------------------- */
 /* Interrupts                                                                */
@@ -311,6 +314,7 @@ p2_vsync_callback(svga_t *svga)
     /* The border follows the palette entry, which the BIOS loads after AR11. */
     svga->overscan_color = p2_vtg_active(p2) ? 0x000000 : svga->pallook[svga->attrregs[0x11]];
 
+    p2_frame_blank(p2);
     p2_raise_int(p2, INT_VRETRACE);
 }
 
@@ -1287,6 +1291,17 @@ p2_vtg_write(p2_t *p2, int idx, uint32_t val)
     }
 }
 
+/* Frame blank: a page flip queued with SuspendUntilFrameBlank takes effect.
+   DirectDraw's flip status waits for ScreenBase to read back the new page. */
+static void
+p2_frame_blank(p2_t *p2)
+{
+    if (p2->flip_pending) {
+        p2->flip_pending = 0;
+        p2_vtg_write(p2, VTG_SCREEN_BASE, p2->flip_base);
+    }
+}
+
 static void
 p2_ctrl_write_int(p2_t *p2, uint32_t addr, uint32_t val)
 {
@@ -1755,6 +1770,7 @@ p2_gp_write(p2_t *p2, uint32_t tag, uint32_t val)
 #define TAG_FB_READ_PIXEL       0x15a
 #define TAG_FB_WRITE_CONFIG     0x15d
 #define TAG_FB_BLOCK_COLOR_U    0x18d
+#define TAG_SUSPEND_FRAME_BLANK 0x18f
 #define TAG_FB_BLOCK_COLOR_L    0x18e
 #define TAG_FB_SOURCE_BASE      0x1b0
 #define TAG_FB_SOURCE_DELTA     0x1b1
@@ -2153,6 +2169,121 @@ p2_tex_wrap(int64_t v, int bits, int mode)
     }
 }
 
+/* ------------------------------------------------------------------------- */
+/* YUV unit: video playback                                                  */
+/*                                                                           */
+/* The chip has no overlay scaler: its video streams unit (control space     */
+/* 5000h-5FFFh) is the VMI capture port and the TV encoder port, and neither */
+/* reaches the monitor. Drivers show video by texture-mapping YUV surfaces   */
+/* onto the screen (DirectDraw FourCC stretch blits: YUY2, Y411), with the   */
+/* YUV unit converting to RGB and its chroma test giving the colour key.     */
+/* ------------------------------------------------------------------------- */
+
+#define TAG_YUV_MODE      0x1e0
+#define TAG_CHROMA_UPPER  0x1e1
+#define TAG_CHROMA_LOWER  0x1e2
+
+#define TEXFMT_YUV444 18
+#define TEXFMT_YUV422 19
+
+/* A YUV texel as an internal colour: Y in the red byte, U in green, V in
+   blue (the BGR column of the TextureDataFormat table). YUV 4:2:2 texels are
+   16 bits, luma and one chroma sample each, U in the even texel of a pair
+   and V in the odd one; ColorOrder swaps the bytes (YUY2 / UYVY). */
+static uint32_t
+p2_texel_yuv(p2_t *p2, int fmt, int64_t tex, uint32_t v, int rgb_order)
+{
+    uint32_t y;
+    uint32_t u;
+    uint32_t w;
+
+    if (fmt == TEXFMT_YUV444) {
+        if (rgb_order)
+            v = (v & 0xff00ff00) | ((v >> 16) & 0xff) | ((v & 0xff) << 16);
+        return v;
+    }
+
+    w = p2_fb_read(p2, (tex ^ 1) * 2, 2);
+    if (rgb_order) {
+        y = (v >> 8) & 0xff;
+        u = v & 0xff;
+        w &= 0xff;
+    } else {
+        y = v & 0xff;
+        u = (v >> 8) & 0xff;
+        w = (w >> 8) & 0xff;
+    }
+    if (tex & 1) {
+        const uint32_t tmp = u; /* This texel carries V, its partner U. */
+
+        u = w;
+        w = tmp;
+    }
+    return y | (u << 8) | (w << 16) | 0xff000000;
+}
+
+static uint8_t
+p2_clamp8(int v)
+{
+    return (v < 0) ? 0 : ((v > 255) ? 255 : v);
+}
+
+/* ITU-R BT.601 (CCIR 601) YCbCr to RGB, Y 16-235, in 16.16 fixed point. */
+static uint32_t
+p2_yuv_to_rgb(uint32_t c)
+{
+    const int y = ((int) (c & 0xff) - 16) * 76284;
+    const int u = (int) ((c >> 8) & 0xff) - 128;
+    const int v = (int) ((c >> 16) & 0xff) - 128;
+    const int r = (y + 104595 * v + 32768) >> 16;
+    const int g = (y - 25690 * u - 53281 * v + 32768) >> 16;
+    const int b = (y + 132186 * u + 32768) >> 16;
+
+    return p2_clamp8(r) | (p2_clamp8(g) << 8) | (p2_clamp8(b) << 16) | (c & 0xff000000);
+}
+
+/* Each byte of a colour within ChromaLowerBound..ChromaUpperBound. */
+static int
+p2_chroma_in_bounds(p2_t *p2, uint32_t c)
+{
+    const uint32_t lo = p2->gp[TAG_CHROMA_LOWER];
+    const uint32_t hi = p2->gp[TAG_CHROMA_UPPER];
+
+    for (int i = 0; i < 32; i += 8) {
+        const uint32_t b = (c >> i) & 0xff;
+
+        if ((b < ((lo >> i) & 0xff)) || (b > ((hi >> i) & 0xff)))
+            return 0;
+    }
+    return 1;
+}
+
+/* YUVMode: bit 0 converts the texel to RGB; bits 2:1 test it against the
+   chroma bounds (1 passes texels inside, 2 rejects them -- the source colour
+   key); bit 3 tests the converted colour rather than the texel. Returns 0
+   when the fragment is rejected. */
+static int
+p2_yuv_unit(p2_t *p2, uint32_t *color)
+{
+    const uint32_t mode = p2->gp[TAG_YUV_MODE];
+    const uint32_t in   = *color;
+    int            pass = 1;
+
+    if (mode & 1)
+        *color = p2_yuv_to_rgb(in);
+    switch ((mode >> 1) & 3) {
+        case 1:
+            pass = p2_chroma_in_bounds(p2, (mode & 8) ? *color : in);
+            break;
+        case 2:
+            pass = !p2_chroma_in_bounds(p2, (mode & 8) ? *color : in);
+            break;
+        default:
+            break;
+    }
+    return pass;
+}
+
 /* A texel for texture copies: nearest sampling of S/T (integer at bit 20),
    stepped per pixel (d?dx) and per scanline (d?dyDom). Returns an internal
    AABBGGRR colour (*raw clear) or, for indexes without the LUT, the index
@@ -2198,6 +2329,8 @@ p2_texture_color(p2_t *p2, int *raw)
             break;
     }
 
+    if ((fmt == TEXFMT_YUV444) || (fmt == TEXFMT_YUV422))
+        return p2_texel_yuv(p2, fmt, tex, v, !!(tdf & 0x20));
     if ((fmt == 14) || (fmt == 15)) {
         if (!(lutm & 1)) {
             *raw = 1;
@@ -2333,6 +2466,8 @@ p2_draw_step(p2_t *p2)
         r->payload_left--;
     } else if ((cmd & RENDER_TEXTURE) && !(cmd & RENDER_FAST_FILL)) {
         color = p2_texture_color(p2, &raw);
+        if (!raw)
+            draw = p2_yuv_unit(p2, &color);
     } else if (mask) {
         const uint32_t rmode  = p2->gp[TAG_RASTERIZER_MODE];
         const int      mirror = rmode & 1;
@@ -2592,6 +2727,12 @@ p2_gp_command(p2_t *p2, uint32_t tag, uint32_t val)
             break;
         case TAG_FB_BLOCK_COLOR:
             p2->gp[TAG_FB_BLOCK_COLOR_L] = p2->gp[TAG_FB_BLOCK_COLOR_U] = val;
+            break;
+        case TAG_SUSPEND_FRAME_BLANK:
+            /* A page flip: the new ScreenBase loads at the next frame blank
+               (the drivers render nothing to the old page until then). */
+            p2->flip_base    = val;
+            p2->flip_pending = 1;
             break;
 
         case TAG_TEXEL_LUT_DATA:
