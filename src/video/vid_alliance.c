@@ -112,7 +112,7 @@ static void
 pm_update_banks(pm_t *pm)
 {
     svga_t  *svga = &pm->svga;
-    uint32_t bank = (pm->xr[0xc0] | (pm->xr[0xc1] << 8)) << 16;
+    uint32_t bank = (pm->xr[0xc0] | (pm->xr[0xc1] << 8)) << 12; /* 4 KB units */
 
     svga->write_bank = bank & pm->vram_mask;
     svga->read_bank  = svga->write_bank;
@@ -126,9 +126,15 @@ static uint32_t
 pm_translate_address(uint32_t addr, void *priv)
 {
     const svga_t *svga = (svga_t *) priv;
+    const pm_t   *pm   = (pm_t *) svga->priv;
 
     if ((svga->gdcreg[6] & 0x08) && svga->chain4 && svga->packed_chain4)
         addr += svga->write_bank;
+    /* XRC4 bit 0 selects the 2 MB organisation, where address bit 16
+       picks the second row of DRAM: absent on a 1 MB board (this is how
+       the BIOS sizes memory). */
+    if ((pm->xr[XR_MEM_CONFIG] & 0x01) && (pm->vram_size <= 0x100000) && (addr & 0x10000))
+        return svga->vram_max;
     return addr;
 }
 
@@ -165,6 +171,9 @@ pm_xr_write(pm_t *pm, uint32_t addr, uint8_t val)
     pm->xr[addr] = val;
 
     switch (addr) {
+        case 0x80:
+            svga_recalctimings(&pm->svga);
+            break;
         case 0xc0:
         case 0xc1:
             pm_update_banks(pm);
@@ -467,6 +476,11 @@ pm_in(uint16_t addr, void *priv)
     switch (addr) {
         case 0x3c5:
             if (svga->seqaddr >= 0x08) {
+                /* The first 6410s read SR20-SR2F from the scratch
+                   registers XRF0-XRFF (the BIOS keeps the memory size and
+                   DAC type there); writes do not reach them this way. */
+                if ((pm->chip == PM_6410) && (svga->seqaddr >= 0x20) && (svga->seqaddr < 0x30))
+                    return pm->xr[XR_SCRATCH + svga->seqaddr - 0x20];
                 if (!pm_sr_present(pm, svga->seqaddr))
                     return 0xff;
                 ret = pm->sr[(svga->seqaddr & 0x3f) - 8];
@@ -511,14 +525,74 @@ pm_in(uint16_t addr, void *priv)
 /* Display                                                                   */
 /* ------------------------------------------------------------------------- */
 
+/* XR80 bits 3:0, the pixel format of the extended (packed) modes. */
+static int
+pm_ext_bpp(pm_t *pm)
+{
+    switch (pm->xr[0x80] & 0x0f) {
+        case 0x02:
+            return 8;
+        case 0x0c:
+            return 15;
+        case 0x0d:
+            return 16;
+        case 0x0e:
+            return 24;
+        case 0x0f:
+            return 32;
+        default:
+            return 0;
+    }
+}
+
 static void
 pm_recalctimings(svga_t *svga)
 {
-    pm_t *pm = (pm_t *) svga->priv;
+    pm_t *pm  = (pm_t *) svga->priv;
+    int   bpp = pm_ext_bpp(pm);
 
-    /* CR1C bits 3:0: start address bits 19:16; bits 7:4: offset bits 11:8. */
-    svga->memaddr_latch |= (pm->cr[0x1c] & 0x0f) << 16;
-    svga->rowoffset |= (pm->cr[0x1c] & 0xf0) << 4;
+    svga->force_old_addr = 0;
+    if (!bpp)
+        return;
+
+    /* Extended modes: start address in dwords (CR1C bits 3:0 are bits
+       19:16), offset in 8-byte units (CR1C bits 7:4 are bits 11:8). */
+    svga->force_old_addr = 1;
+    svga->memaddr_latch  = (((pm->cr[0x1c] & 0x0f) << 16) | (svga->crtc[0x0c] << 8) | svga->crtc[0x0d]) << 2;
+    svga->rowoffset      = svga->crtc[0x13] | ((pm->cr[0x1c] & 0xf0) << 4);
+    svga->lowres         = 0;
+
+    /* An external RAMDAC (the 6410's) assembles wider pixels itself. */
+    if (pm->ramdac && (bpp == 8) && (svga->bpp > 8))
+        bpp = svga->bpp;
+
+    if ((svga->miscout & 0x0c) == 0x0c) {
+        /* TODO: the programmable/external clock; until it is known, run
+           the mode at 60 Hz. */
+        const double hz = (double) (svga->htotal * 8) * (double) svga->vtotal * 60.0;
+
+        if (hz > 0.0)
+            svga->clock = (cpuclock * (double) (1ULL << 32)) / hz;
+    }
+
+    switch (bpp) {
+        case 15:
+            svga->render = svga_render_15bpp_highres;
+            break;
+        case 16:
+            svga->render = svga_render_16bpp_highres;
+            break;
+        case 24:
+            svga->render = svga_render_24bpp_highres;
+            break;
+        case 32:
+            svga->render = svga_render_32bpp_highres;
+            break;
+        default:
+            svga->map8   = svga->pallook;
+            svga->render = svga_render_8bpp_highres;
+            break;
+    }
 }
 
 /* ------------------------------------------------------------------------- */
