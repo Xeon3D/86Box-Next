@@ -784,6 +784,18 @@ savage_render_streams(svga_t *svga)
     }
 
     dev->primary_render(svga);
+
+    /* The line renderers work in blocks of 8 pixels and so draw a few past
+       the display width; where the right border does not reach, those would
+       show the start of the next line. They are border. */
+    if (((svga->displine + svga->y_add) >= 0) && (svga->monitor->target_buffer != NULL) &&
+        (svga->monitor->target_buffer->line[svga->displine + svga->y_add] != NULL)) {
+        uint32_t *p = &svga->monitor->target_buffer->line[svga->displine + svga->y_add][svga->x_add + svga->hdisp];
+
+        for (int x = 0; x < (svga->scrollcache + 8); x++)
+            p[x] = svga->overscan_color;
+    }
+
     if (dev->ov.h > 0)
         savage_overlay_line(dev);
 }
@@ -792,12 +804,11 @@ savage_render_streams(svga_t *svga)
 /* Interrupts                                                               */
 /* ------------------------------------------------------------------------ */
 
-/* MM8504 status bits, as on the ViRGE: S3's mini-VDD (KMVT.ASM) enables
-   bit 8 for DirectDraw's vertical sync interrupt, with CR32 bit 4 as the
-   master enable, and acknowledges by writing the status bits back. */
-#define SUBSYS_VSY      0x01
-#define SUBSYS_GE_DONE  0x02
-#define SUBSYS_FIFO_EMP 0x08
+/* MM8504: S3's mini-VDD (KMVT.ASM) enables bit 8 for DirectDraw's vertical
+   sync interrupt, with CR32 bit 4 as the master enable, reads status bit 0
+   and acknowledges by writing the status bits back. Nothing for the GX3
+   uses the ViRGE's other sources there (the BCI reports through 48C00). */
+#define SUBSYS_VSY 0x01
 
 static void
 s3_savage_update_irq(savage_t *dev)
@@ -1646,12 +1657,6 @@ s3_savage_mmio_writel_off(savage_t *dev, uint32_t addr, uint32_t val)
 {
     if ((addr >= 0x10000) && (addr < 0x30000)) {
         s3_savage_bci_write(dev, val);
-
-        /* The BCI runs each dword as it arrives: its FIFO is always empty,
-           and the engine is done whenever no command is half received. */
-        dev->subsys_stat |= SUBSYS_FIFO_EMP | ((dev->bci.state == BCI_IDLE) ? SUBSYS_GE_DONE : 0);
-        if (dev->subsys_cntl & (SUBSYS_FIFO_EMP | SUBSYS_GE_DONE))
-            s3_savage_update_irq(dev);
         return;
     }
 

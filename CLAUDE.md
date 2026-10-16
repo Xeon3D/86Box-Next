@@ -325,7 +325,7 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   filter), MM81EC bit 0 horizontal interpolation, MM8190 source width + format (YVYU, YUY2
   CCIR/full range, Y211, RGB 555/565/888/8888), MM819C colour adjust, MM81A0 compose modes and
   keys (dest key compares the primary's raw bits, YUV source keys whole bytes). Interrupts:
-  MM8504 status 7:0 (vsync, engine done, FIFO empty) / enables 15:8, CR32 bit 4 master, INTA
+  MM8504 status 7:0 (bit 0 vsync) / enables 15:8, CR32 bit 4 master, INTA
   (KMVT.ASM's scheme). DDC2 on CRAA, as the BIOS's VBE 4F15 and both drivers use it. Tests:
   OVTEST.EXE modes 1-7 and IRQTEST.COM (savage3d-tools in the notes folder). "dev" in the debug
   command file dumps the BCI parser, 3D, overlay and interrupt state; "dev bcilog 1|0" logs every BCI dword and MMIO register write; "dev texdump <TexAddr>
