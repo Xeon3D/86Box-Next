@@ -412,6 +412,7 @@ extern const device_t ati28800_wonderxl24_device;
 extern const device_t bochs_svga_device;
 
 /* Chips & Technologies */
+extern const device_t chips_65554_device;
 extern const device_t chips_69000_device;
 extern const device_t chips_69000_onboard_device;
 
@@ -605,6 +606,7 @@ extern const device_t s3_virge_375_onboard_pci_device;
 extern const device_t s3_virge_gx_pci_device;
 extern const device_t s3_virge_gx2_pci_device;
 extern const device_t s3_virge_gx2_agp_device;
+extern const device_t s3_virge_mx_pci_device;
 extern const device_t s3_trio3d2x_pci_device;
 extern const device_t s3_trio3d2x_agp_device;
 

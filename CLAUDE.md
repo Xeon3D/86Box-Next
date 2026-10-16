@@ -281,6 +281,22 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   rebuilds the status bar. A new icon group needs a key there and a name in `iconGroupName()`.
   Preferences OK replaces `MachineStatus`; `adoptMenus()` carries the PC Card/USB/modem/Sound
   Canvas hooks over (they were lost before).
+- STB video cards from STB's own release BIOSes (in `ROMS-EXTRA`, not the 86Box ROM set):
+  - S3 ViRGE/MX (86C260, 5333:8C01), STB Symmetry 3D (`vid_s3_virge.c`, `S3_VIRGEMX`: the GX2
+    core, 4 MB SGRAM, ROM `video/s3virge/stb_symmetry3d_m5_17_14.rom`). SR26 routes CRTC writes
+    (40h IGA1, 44h both, 4Eh/4Fh IGA2 = the panel/TV CRTC); IGA2 is a read-back shadow
+    (`crtc_iga2`), only IGA1 is displayed -- without it Windows' panel timings overwrote the CRT's.
+    The ROM (1.0B0) holds its sign-on 20-25 s by itself. Win98 SE: its CD's
+    `drivers\display\s3\86c260m5` driver.
+  - C&T 65554, STB Monocle (`vid_chips_69000.c`, `CHIPS_65554`: the 69000 code with 1/2/4 MB
+    external DRAM that wraps (the BIOS sizes it so), ROM `video/chips/stb_monocle_65554_110.bin`).
+    The BIOS and Windows run the panel path (FR01 = 2) with no panel: the 65554 shows the CRTC
+    timing, not the picture cut to the panel. Interlaced modes halve all vertical timings.
+    Its packed 16-colour modes (20h-2Ah: GR05 bit 6 without AR10 bit 6) show each nibble as a
+    pixel. SciTech VBETest draws those modes with planar writes (it resets GR05), so its 4-bit
+    "Banked+Linear" tests look wrong -- VBETest's doing, not the card's. Win98 SE's built-in
+    "Chips & Technologies 65554 PCI" driver works; its 1024x600 entry fails.
+  - `debug_cmd dev` dumps both cards' registers.
 - Upstream's CI workflows and Dependabot are disabled/removed in this repo; only
   `sync-upstream.yml` runs.
 - Build number in the title bar / About box: `.build-number` (git-ignored, repo root)

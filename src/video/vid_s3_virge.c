@@ -40,6 +40,7 @@
 #include <86box/vid_xga.h>
 #include <86box/vid_svga.h>
 #include <86box/vid_svga_render.h>
+#include <86box/debug_cmd.h>
 
 #ifdef MIN
     #undef MIN
@@ -71,6 +72,7 @@ static int dither[4][4] = {
 #define ROM_VIRGE_GX2                 "roms/video/s3virge/flagpoint.VBI"
 #define ROM_DIAMOND_STEALTH3D_4000    "roms/video/s3virge/DS3D4K v1.03 Brightness bug fix.bin"
 #define ROM_TRIO3D2X                  "roms/video/s3virge/TRIO3D2X_8mbsdr.VBI"
+#define ROM_STB_SYMMETRY_3D           "roms/video/s3virge/stb_symmetry3d_m5_17_14.rom"
 
 #define RB_SIZE 256
 #define RB_MASK (RB_SIZE - 1)
@@ -104,6 +106,7 @@ enum {
     S3_VIRGE_GX2,
     S3_DIAMOND_STEALTH3D_4000,
     S3_TRIO_3D2X,
+    S3_STB_SYMMETRY_3D,
     S3_VIRGE_USE_CONFIG_BIOS
 };
 
@@ -112,6 +115,7 @@ enum {
     S3_VIRGEVX,
     S3_VIRGEDX,
     S3_VIRGEGX2,
+    S3_VIRGEMX, /* 86C260: the GX2 core plus a second CRTC (IGA2) for flat panels and TV */
     S3_TRIO3D2X
 };
 
@@ -121,6 +125,8 @@ enum {
     FIFO_WRITE_WORD  = (0x02 << 24),
     FIFO_WRITE_DWORD = (0x03 << 24)
 };
+
+#define VIRGE_IS_GX2_CORE(v) (((v)->chip == S3_VIRGEGX2) || ((v)->chip == S3_VIRGEMX))
 
 typedef struct {
     uint32_t addr_type;
@@ -210,6 +216,9 @@ typedef struct virge_t {
     uint8_t virge_id_high;
     uint8_t virge_id_low;
     uint8_t virge_rev;
+
+    /* ViRGE/MX: the second CRTC (IGA2, flat panel/TV), as far as it reads back. */
+    uint8_t crtc_iga2[256];
 
     uint32_t linear_base;
     uint32_t linear_size;
@@ -602,6 +611,17 @@ s3_virge_out(uint16_t addr, uint8_t val, void *priv)
             svga->crtcreg = val;
             return;
         case 0x3d5:
+            /* ViRGE/MX SR26 picks the CRTC(s) a write goes to: 40h IGA1, 44h both,
+               4Eh/4Fh IGA2 only. Only IGA1 drives the CRT, so IGA2's panel timings
+               are kept aside for reading back. */
+            if (virge->chip == S3_VIRGEMX) {
+                if ((svga->crtcreg >= 0x40) && ((svga->crtc[0x39] & 0xe0) != 0xa0))
+                    return;
+                if (svga->seqregs[0x26] & 0x04)
+                    virge->crtc_iga2[svga->crtcreg] = val;
+                if (svga->seqregs[0x26] & 0x0a)
+                    return;
+            }
             if ((svga->crtcreg < 7) && (svga->crtc[0x11] & 0x80))
                 return;
             if ((svga->crtcreg == 7) && (svga->crtc[0x11] & 0x80))
@@ -830,6 +850,11 @@ s3_virge_in(uint16_t addr, void *priv)
             ret = svga->crtcreg;
             break;
         case 0x3d5:
+            if ((virge->chip == S3_VIRGEMX) && (svga->seqregs[0x26] & 0x01) &&
+                (svga->crtcreg != 0x2d) && (svga->crtcreg != 0x2e) && (svga->crtcreg != 0x2f)) {
+                ret = virge->crtc_iga2[svga->crtcreg];
+                break;
+            }
             switch (svga->crtcreg) {
                 case 0x2d:
                     ret = virge->virge_id_high;
@@ -1046,7 +1071,7 @@ s3_virge_recalctimings(svga_t *svga)
             switch (svga->bpp) {
                 case 8:
                     svga->render = svga_render_8bpp_highres;
-                    if (virge->chip == S3_VIRGEGX2) {
+                    if (VIRGE_IS_GX2_CORE(virge)) {
                         if (svga->seqregs[0x18] & 0x80) {
                             svga->hdisp <<= 1;
                             svga->dots_per_clock <<= 1;
@@ -5111,7 +5136,7 @@ s3_virge_hwcursor_draw(svga_t *svga, int displine)
 
     switch (svga->bpp) {
         default:
-            if (virge->chip != S3_VIRGEGX2) {
+            if (!VIRGE_IS_GX2_CORE(virge)) {
                 fg = svga->pallook[virge->hwc_fg_col & 0xff];
                 bg = svga->pallook[virge->hwc_bg_col & 0xff];
                 break;
@@ -5119,7 +5144,7 @@ s3_virge_hwcursor_draw(svga_t *svga, int displine)
             fallthrough;
 
         case 15:
-            if (virge->chip != S3_VIRGEGX2) {
+            if (!VIRGE_IS_GX2_CORE(virge)) {
                 fg = video_15to32[virge->hwc_fg_col & 0xffff];
                 bg = video_15to32[virge->hwc_bg_col & 0xffff];
                 break;
@@ -5127,7 +5152,7 @@ s3_virge_hwcursor_draw(svga_t *svga, int displine)
             fallthrough;
 
         case 16:
-            if (virge->chip != S3_VIRGEGX2) {
+            if (!VIRGE_IS_GX2_CORE(virge)) {
                 fg = video_16to32[virge->hwc_fg_col & 0xffff];
                 bg = video_16to32[virge->hwc_bg_col & 0xffff];
                 break;
@@ -5151,7 +5176,7 @@ s3_virge_hwcursor_draw(svga_t *svga, int displine)
             /*X11*/
             for (xx = 0; xx < 16; xx++) {
                 if (offset >= svga->hwcursor_latch.x) {
-                    if (virge->chip == S3_VIRGEGX2)
+                    if (VIRGE_IS_GX2_CORE(virge))
                         dat[0] ^= 0x8000;
 
                     if (dat[0] & 0x8000)
@@ -5817,7 +5842,7 @@ s3_virge_pci_write(UNUSED(int func), int addr, UNUSED(int len), uint8_t val, voi
             virge->pci_regs[addr] = val;
             if (virge->pci_regs[0x30] & 0x01) {
                 uint32_t biosaddr = (virge->pci_regs[0x32] << 16) | (virge->pci_regs[0x33] << 24);
-                if (virge->chip == S3_VIRGEGX2)
+                if (VIRGE_IS_GX2_CORE(virge))
                     mem_mapping_set_addr(&virge->bios_rom.mapping, biosaddr, 0x10000);
                 else
                     mem_mapping_set_addr(&virge->bios_rom.mapping, biosaddr, 0x8000);
@@ -5911,6 +5936,41 @@ s3_virge_reset(void *priv)
     }
 }
 
+/* Debug dump for tests (debug_cmd "dev"): the CRTC and sequencer registers
+   and the timings worked out from them. */
+static virge_t *virge_debug;
+
+static void
+s3_virge_debug_hook(UNUSED(const char *args))
+{
+    const virge_t *virge = virge_debug;
+    const svga_t  *svga;
+    char           line[128];
+
+    if (virge == NULL)
+        return;
+    svga = &virge->svga;
+    for (int bank = 0; bank < 2; bank++) {
+        const uint8_t *regs = bank ? svga->seqregs : svga->crtc;
+
+        for (int row = 0; row < 256; row += 16) {
+            int pos = sprintf(line, "%s%02X:", bank ? "SR" : "CR", row);
+
+            for (int i = 0; i < 16; i++)
+                pos += sprintf(line + pos, " %02x", regs[row + i]);
+            always_log("virge: %s\n", line);
+        }
+    }
+    always_log("virge: misc %02x hdisp %d htotal %d dispend %d vtotal %d vsyncstart %d vblankstart %d "
+               "interlace %d bpp %d rowoffset %d ma_latch %06x clock %.0f Hz\n",
+               svga->miscout, svga->hdisp, svga->htotal, svga->dispend, svga->vtotal, svga->vsyncstart,
+               svga->vblankstart, svga->interlace, svga->bpp, svga->rowoffset, svga->memaddr_latch,
+               virge->clock.freq);
+    always_log("virge: streams pri_ctrl %08x pri_fb0 %08x pri_stride %08x pri_w %d pri_h %d blend %08x\n",
+               virge->streams.pri_ctrl, virge->streams.pri_fb0, virge->streams.pri_stride,
+               virge->streams.pri_w, virge->streams.pri_h, virge->streams.blend_ctrl);
+}
+
 static void *
 s3_virge_init(const device_t *info)
 {
@@ -5984,6 +6044,9 @@ s3_virge_init(const device_t *info)
             case S3_TRIO_3D2X:
                 bios_fn = ROM_TRIO3D2X;
                 break;
+            case S3_STB_SYMMETRY_3D:
+                bios_fn = ROM_STB_SYMMETRY_3D;
+                break;
             default:
                 free(virge);
                 return NULL;
@@ -5998,7 +6061,8 @@ s3_virge_init(const device_t *info)
     virge->svga.conv_16to32        = tvp3026_conv_16to32;
 
     if (bios_fn != NULL) {
-        if (virge->type == S3_VIRGE_GX2)
+        /* The GX2's BIOS is 64 KB, the ViRGE/MX's 47 KB (5Eh 512-byte blocks). */
+        if ((virge->type == S3_VIRGE_GX2) || (virge->type == S3_STB_SYMMETRY_3D))
             rom_init(&virge->bios_rom, bios_fn, 0xc0000, 0x10000, 0xffff, 0, MEM_MAPPING_EXTERNAL);
         else
             rom_init(&virge->bios_rom, bios_fn, 0xc0000, 0x8000, 0x7fff, 0, MEM_MAPPING_EXTERNAL);
@@ -6087,6 +6151,21 @@ s3_virge_init(const device_t *info)
             video_inform(VIDEO_FLAG_TYPE_SPECIAL, virge->is_agp ? &timing_virge_agp : &timing_virge_dx_pci);
             break;
 
+        case S3_STB_SYMMETRY_3D:
+            /* ViRGE/MX (M5): 8C01h; the M5+ is 8C03h. The STB BIOS (1.0B0, built from
+               S3's M5 3.05.01-17) holds its sign-on for 20-25 s (a GateTimer of
+               0AFFFh PIT wraps, an STB test left in that build): genuine. */
+            virge->fifo_slots_num    = 16;
+            virge->svga.decode_mask  = (4 << 20) - 1;
+            virge->virge_id_high     = 0x8c;
+            virge->virge_id_low      = 0x01;
+            virge->svga.crtc[0x6c]   = 1;
+            virge->svga.crtc[0x59]   = 0x70;
+            virge->svga.vblank_start = s3_virge_vblank_start;
+            virge->chip              = S3_VIRGEMX;
+            video_inform(VIDEO_FLAG_TYPE_SPECIAL, &timing_virge_dx_pci);
+            break;
+
         case S3_TRIO_3D2X:
             virge->fifo_slots_num    = 16;
             virge->svga.decode_mask  = (8 << 20) - 1;
@@ -6117,11 +6196,15 @@ s3_virge_init(const device_t *info)
             break;
     }
 
-    if (virge->chip == S3_VIRGEGX2) {
+    if (VIRGE_IS_GX2_CORE(virge)) {
         virge->vram_mask       = (4 << 20) - 1;
         virge->svga.vram_mask  = (4 << 20) - 1;
         virge->svga.vram_max   = 4 << 20;
-        virge->svga.crtc[0x36] = 2 | (2 << 2) | (1 << 4) | (1 << 5);
+        if (virge->chip == S3_VIRGEMX)
+            /* CR36: 7-6 = 01 4 MB (11 = 2 MB), 3-2 = 11 SGRAM; the BIOS sizes and rewrites it. */
+            virge->svga.crtc[0x36] = (1 << 6) | (3 << 2) | 2;
+        else
+            virge->svga.crtc[0x36] = 2 | (2 << 2) | (1 << 4) | (1 << 5);
     } else {
         switch (virge->memory_size) {
             case 2:
@@ -6194,6 +6277,9 @@ s3_virge_init(const device_t *info)
 
     virge->local = local;
 
+    virge_debug = virge;
+    debug_cmd_set_device_hook(s3_virge_debug_hook);
+
     *reset_state = *virge;
 
     return virge;
@@ -6203,6 +6289,11 @@ static void
 s3_virge_close(void *priv)
 {
     virge_t *virge = (virge_t *) priv;
+
+    if (virge_debug == virge) {
+        debug_cmd_set_device_hook(NULL);
+        virge_debug = NULL;
+    }
 
     virge->fifo_thread_run = 0;
     thread_set_event(virge->wake_fifo_thread);
@@ -6240,6 +6331,12 @@ static int
 s3_virge_357_available(void)
 {
     return rom_present(ROM_VIRGE_GX2);
+}
+
+static int
+s3_stb_symmetry3d_available(void)
+{
+    return rom_present(ROM_STB_SYMMETRY_3D);
 }
 
 static int
@@ -6938,6 +7035,20 @@ const device_t s3_virge_gx2_agp_device = {
     .speed_changed = s3_virge_speed_changed,
     .force_redraw  = s3_virge_force_redraw,
     .config        = s3_virge_gx2_agp_config
+};
+
+const device_t s3_virge_mx_pci_device = {
+    .name          = "S3 ViRGE/MX (STB Symmetry 3D) PCI",
+    .internal_name = "virge_mx_stb_symmetry3d",
+    .flags         = DEVICE_PCI,
+    .local         = S3_STB_SYMMETRY_3D,
+    .init          = s3_virge_init,
+    .close         = s3_virge_close,
+    .reset         = s3_virge_reset,
+    .available     = s3_stb_symmetry3d_available,
+    .speed_changed = s3_virge_speed_changed,
+    .force_redraw  = s3_virge_force_redraw,
+    .config        = &s3_virge_gx2_pci_config[1] /* the GX2's options but the memory size: 4 MB */
 };
 
 const device_t s3_trio3d2x_pci_device = {
