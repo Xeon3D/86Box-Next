@@ -2340,6 +2340,127 @@ p2_tex_wrap(int64_t v, int bits, int mode)
     }
 }
 
+/* ------------------------------------------------------------------------- */
+/* YUV unit: video playback                                                  */
+/*                                                                           */
+/* The chip has no overlay scaler: its video streams unit (control space     */
+/* 5000h-5FFFh) is the VMI capture port and the TV encoder port, and neither */
+/* reaches the monitor. Drivers show video by texture-mapping YUV surfaces   */
+/* onto the screen (DirectDraw FourCC stretch blits: YUY2, Y411), with the   */
+/* YUV unit converting to RGB and its chroma test giving the colour key.     */
+/* ------------------------------------------------------------------------- */
+
+#define TEXFMT_YUV444 18
+#define TEXFMT_YUV422 19
+
+/* A YUV texel as an internal colour: Y in the red byte, U in green, V in
+   blue (the BGR column of the TextureDataFormat table). YUV 4:2:2 texels are
+   16 bits, luma and one chroma sample each, U in the even texel of a pair
+   and V in the odd one; ColorOrder swaps the bytes (YUY2 / UYVY). */
+static uint32_t
+p2_texel_yuv(p2_t *p2, int fmt, int64_t tex, uint32_t v, int rgb_order)
+{
+    uint32_t y;
+    uint32_t u;
+    uint32_t w;
+
+    if (fmt == TEXFMT_YUV444) {
+        if (rgb_order)
+            v = (v & 0xff00ff00) | ((v >> 16) & 0xff) | ((v & 0xff) << 16);
+        return v;
+    }
+
+    w = p2_fb_read(p2, (tex ^ 1) * 2, 2);
+    if (rgb_order) {
+        y = (v >> 8) & 0xff;
+        u = v & 0xff;
+        w &= 0xff;
+    } else {
+        y = v & 0xff;
+        u = (v >> 8) & 0xff;
+        w = (w >> 8) & 0xff;
+    }
+    if (tex & 1) {
+        const uint32_t tmp = u; /* This texel carries V, its partner U. */
+
+        u = w;
+        w = tmp;
+    }
+    return y | (u << 8) | (w << 16) | 0xff000000;
+}
+
+static uint8_t
+p2_clamp8(int v)
+{
+    return (v < 0) ? 0 : ((v > 255) ? 255 : v);
+}
+
+/* ITU-R BT.601 (CCIR 601) YCbCr to RGB, Y 16-235, in 16.16 fixed point. */
+static uint32_t
+p2_yuv_to_rgb(uint32_t c)
+{
+    const int y = ((int) (c & 0xff) - 16) * 76284;
+    const int u = (int) ((c >> 8) & 0xff) - 128;
+    const int v = (int) ((c >> 16) & 0xff) - 128;
+    const int r = (y + 104595 * v + 32768) >> 16;
+    const int g = (y - 25690 * u - 53281 * v + 32768) >> 16;
+    const int b = (y + 132186 * u + 32768) >> 16;
+
+    return p2_clamp8(r) | (p2_clamp8(g) << 8) | (p2_clamp8(b) << 16) | (c & 0xff000000);
+}
+
+/* Each byte of a colour within ChromaLowerBound..ChromaUpperBound. */
+static int
+p2_chroma_in_bounds(p2_t *p2, uint32_t c)
+{
+    const uint32_t lo = p2->gp[TAG_CHROMA_LOWER];
+    const uint32_t hi = p2->gp[TAG_CHROMA_UPPER];
+
+    for (int i = 0; i < 32; i += 8) {
+        const uint32_t b = (c >> i) & 0xff;
+
+        if ((b < ((lo >> i) & 0xff)) || (b > ((hi >> i) & 0xff)))
+            return 0;
+    }
+    return 1;
+}
+
+/* YUVMode: bit 0 converts the texel to RGB; bits 2:1 test it against the
+   chroma bounds (1 passes texels inside, 2 rejects them -- the source colour
+   key); bit 3 tests the converted colour rather than the texel; bit 5 keeps
+   the texel out of the fragment's colour, which then comes from the colour
+   DDA or the framebuffer source as without texturing (the 3Dlabs driver's
+   overlay emulation: it marks the destination colour key's pixels with the
+   5551 alpha bit, then copies the converted overlay onto the marked ones).
+   Returns 0 when the fragment is rejected. */
+static int
+p2_yuv_unit(p2_t *p2, uint32_t *color)
+{
+    const uint32_t mode = p2->gp[TAG_YUV_MODE];
+    const uint32_t in   = *color;
+    int            pass = 1;
+
+    if (mode & 1)
+        *color = p2_yuv_to_rgb(in);
+    switch ((mode >> 1) & 3) {
+        case 1:
+            pass = p2_chroma_in_bounds(p2, (mode & 8) ? *color : in);
+            break;
+        case 2:
+            pass = !p2_chroma_in_bounds(p2, (mode & 8) ? *color : in);
+            break;
+        default:
+            break;
+    }
+    return pass;
+}
+
+static int
+p2_texel_test_only(p2_t *p2)
+{
+    return !!(p2->gp[TAG_YUV_MODE] & 0x20);
+}
+
 /* A texel for texture copies: nearest sampling of S/T (integer at bit 20),
    stepped per pixel (d?dx) and per scanline (d?dyDom). Returns an internal
    AABBGGRR colour (*raw clear) or, for indexes without the LUT, the index
@@ -2385,6 +2506,8 @@ p2_texture_color(p2_t *p2, int *raw)
             break;
     }
 
+    if ((fmt == TEXFMT_YUV444) || (fmt == TEXFMT_YUV422))
+        return p2_texel_yuv(p2, fmt, tex, v, !!(tdf & 0x20));
     if ((fmt == 14) || (fmt == 15)) {
         if (!(lutm & 1)) {
             *raw = 1;
@@ -2531,17 +2654,11 @@ p2_tex_read(p2_t *p2, int64_t addr, int bytes)
     return p2_fb_read(p2, addr, bytes);
 }
 
-/* ITU-R BT.601 YCbCr (Y 16-235) to RGB, 16.16 fixed point. */
+/* The YUV unit's conversion on unpacked R/G/B/A (Y, U, V in R, G, B). */
 static void
-p2_yuv_to_rgb(uint32_t c[4])
+p2_yuv_to_rgb_c(uint32_t c[4])
 {
-    const int y = ((int) c[0] - 16) * 76284;
-    const int u = (int) c[1] - 128;
-    const int v = (int) c[2] - 128;
-
-    c[0] = p2_clamp255((y + 104595 * v + 32768) >> 16);
-    c[1] = p2_clamp255((y - 25690 * u - 53281 * v + 32768) >> 16);
-    c[2] = p2_clamp255((y + 132186 * u + 32768) >> 16);
+    p2_unpack_abgr(p2_yuv_to_rgb(p2_pack_abgr(c)), c);
 }
 
 static int
@@ -2690,7 +2807,7 @@ p2_texture_3d(p2_t *p2, int64_t ss, int64_t tt, int64_t qq, uint32_t c[4])
 
         memcpy(pre, c, sizeof(pre));
         if ((yuv & 1) && ((fmt == 18) || (fmt == 19)))
-            p2_yuv_to_rgb(c);
+            p2_yuv_to_rgb_c(c);
         if (yuv & 6) {
             const uint32_t *k    = (yuv & 8) ? c : pre;
             const int       in   = p2_in_bounds(k, p2->gp[TAG_CHROMA_LOWER], p2->gp[TAG_CHROMA_UPPER]);
@@ -3080,6 +3197,8 @@ p2_need_3d(p2_t *p2, uint32_t cmd)
         return 0;
     if (p2_upload_cmd(p2, cmd))
         return 0;
+    if (p2->gp[TAG_YUV_MODE] & 0x20)
+        return 0; /* Texel-test-only copies (overlay emulation) read the framebuffer source. */
     if ((p2->gp[TAG_DEPTH_MODE] & 1) || (p2->gp[TAG_STENCIL_MODE] & 1) ||
         ((p2->gp[TAG_LB_WRITE_MODE] & 1) && (p2->gp[TAG_WINDOW] & 8)))
         return 1;
@@ -3090,8 +3209,10 @@ p2_need_3d(p2_t *p2, uint32_t cmd)
     if (cmd & RENDER_TEXTURE) {
         const uint32_t tcm = p2->gp[TAG_TEXTURE_COLOR_MODE];
 
+        /* YUV conversion and the chroma test alone stay on the 2D path (the
+           drivers' video blits and overlay colour keys). */
         if ((p2->gp[TAG_TEXTURE_ADDR_MODE] & 2) || (p2->gp[TAG_TEXTURE_READ_MODE] & (1 << 17)) ||
-            (p2->gp[TAG_YUV_MODE] & 6) || (p2->gp[TAG_TEXTURE_DATA_FORMAT] & 0x180))
+            (p2->gp[TAG_TEXTURE_DATA_FORMAT] & 0x180))
             return 1;
         if ((tcm & 1) && ((tcm & 0x1e) != 6))
             return 1;
@@ -3198,8 +3319,10 @@ p2_draw_step(p2_t *p2)
         draw = r->payload & 1;
         r->payload >>= 1;
         r->payload_left--;
-    } else if ((cmd & RENDER_TEXTURE) && !(cmd & RENDER_FAST_FILL)) {
+    } else if ((cmd & RENDER_TEXTURE) && !(cmd & RENDER_FAST_FILL) && !p2_texel_test_only(p2)) {
         color = p2_texture_color(p2, &raw);
+        if (!raw)
+            draw = p2_yuv_unit(p2, &color);
     } else if (mask) {
         const uint32_t rmode  = p2->gp[TAG_RASTERIZER_MODE];
         const int      mirror = rmode & 1;
@@ -3246,6 +3369,13 @@ p2_draw_step(p2_t *p2)
 
         color = p2->gp[TAG_FB_SOURCE_DATA] >> (lane << 3);
         raw   = 1;
+    }
+    if ((cmd & RENDER_TEXTURE) && !(cmd & RENDER_FAST_FILL) && p2_texel_test_only(p2)) {
+        int      texel_raw;
+        uint32_t texel = p2_texture_color(p2, &texel_raw);
+
+        if (!texel_raw)
+            draw &= p2_yuv_unit(p2, &texel);
     }
 
     if (draw)
