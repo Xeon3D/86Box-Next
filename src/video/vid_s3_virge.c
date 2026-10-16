@@ -73,6 +73,8 @@ static int dither[4][4] = {
 #define ROM_DIAMOND_STEALTH3D_4000    "roms/video/s3virge/DS3D4K v1.03 Brightness bug fix.bin"
 #define ROM_TRIO3D2X                  "roms/video/s3virge/TRIO3D2X_8mbsdr.VBI"
 #define ROM_STB_SYMMETRY_3D           "roms/video/s3virge/stb_symmetry3d_m5_17_14.rom"
+#define ROM_VIRGE_MX                  "roms/video/s3virge/s3_virge_mx_3.05.01-26.rom"
+#define ROM_SPECTRAH_LD_S500          "roms/video/s3virge/spectrah_ld-s500_a1.3a.bin"
 
 #define RB_SIZE 256
 #define RB_MASK (RB_SIZE - 1)
@@ -107,6 +109,8 @@ enum {
     S3_DIAMOND_STEALTH3D_4000,
     S3_TRIO_3D2X,
     S3_STB_SYMMETRY_3D,
+    S3_VIRGE_MX,
+    S3_SPECTRAH_LD_S500,
     S3_VIRGE_USE_CONFIG_BIOS
 };
 
@@ -838,7 +842,12 @@ s3_virge_in(uint16_t addr, void *priv)
             break;
 
         case 0x3c5:
-            if (svga->seqaddr >= 8)
+            if ((virge->chip == S3_VIRGEMX) && (svga->seqaddr == 0x46))
+                /* Flat panel power sequencing status: bit 6 = powered down, which with no
+                   panel is at once once SR31 bit 4 turns the panel off (S3's own MX BIOS
+                   waits for it). */
+                ret = (svga->seqregs[0x46] & ~0x40) | ((svga->seqregs[0x31] & 0x10) ? 0x00 : 0x40);
+            else if (svga->seqaddr >= 8)
                 ret = svga->seqregs[svga->seqaddr];
             else if (svga->seqaddr <= 4)
                 ret = svga_in(addr, svga);
@@ -1109,6 +1118,21 @@ s3_virge_recalctimings(svga_t *svga)
 
                 default:
                     break;
+            }
+
+            /* ViRGE/MX low-resolution VESA modes (320x200 to 512x384) halve the dot clock
+               (SR01 bit 3): each pixel is shown twice. */
+            if ((virge->chip == S3_VIRGEMX) && (svga->seqregs[1] & 0x08)) {
+                if (svga->render == svga_render_8bpp_highres)
+                    svga->render = svga_render_8bpp_lowres;
+                else if (svga->render == svga_render_15bpp_highres)
+                    svga->render = svga_render_15bpp_lowres;
+                else if (svga->render == svga_render_16bpp_highres)
+                    svga->render = svga_render_16bpp_lowres;
+                else if (svga->render == svga_render_24bpp_highres)
+                    svga->render = svga_render_24bpp_lowres;
+                else if (svga->render == svga_render_32bpp_highres)
+                    svga->render = svga_render_32bpp_lowres;
             }
         }
         svga->vram_display_mask = (!(svga->crtc[0x31] & 0x08) && (svga->crtc[0x32] & 0x40)) ? 0x3ffff : virge->vram_mask;
@@ -6047,6 +6071,12 @@ s3_virge_init(const device_t *info)
             case S3_STB_SYMMETRY_3D:
                 bios_fn = ROM_STB_SYMMETRY_3D;
                 break;
+            case S3_VIRGE_MX:
+                bios_fn = ROM_VIRGE_MX;
+                break;
+            case S3_SPECTRAH_LD_S500:
+                bios_fn = ROM_SPECTRAH_LD_S500;
+                break;
             default:
                 free(virge);
                 return NULL;
@@ -6061,8 +6091,9 @@ s3_virge_init(const device_t *info)
     virge->svga.conv_16to32        = tvp3026_conv_16to32;
 
     if (bios_fn != NULL) {
-        /* The GX2's BIOS is 64 KB, the ViRGE/MX's 47 KB (5Eh 512-byte blocks). */
-        if ((virge->type == S3_VIRGE_GX2) || (virge->type == S3_STB_SYMMETRY_3D))
+        /* The GX2's BIOS is 64 KB, the ViRGE/MX's 47 KB (5Eh/5Fh 512-byte blocks). */
+        if ((virge->type == S3_VIRGE_GX2) || (virge->type == S3_STB_SYMMETRY_3D) || (virge->type == S3_VIRGE_MX) ||
+            (virge->type == S3_SPECTRAH_LD_S500))
             rom_init(&virge->bios_rom, bios_fn, 0xc0000, 0x10000, 0xffff, 0, MEM_MAPPING_EXTERNAL);
         else
             rom_init(&virge->bios_rom, bios_fn, 0xc0000, 0x8000, 0x7fff, 0, MEM_MAPPING_EXTERNAL);
@@ -6152,18 +6183,20 @@ s3_virge_init(const device_t *info)
             break;
 
         case S3_STB_SYMMETRY_3D:
+        case S3_VIRGE_MX:
+        case S3_SPECTRAH_LD_S500:
             /* ViRGE/MX (M5): 8C01h; the M5+ is 8C03h. The STB BIOS (1.0B0, built from
                S3's M5 3.05.01-17) holds its sign-on for 20-25 s (a GateTimer of
                0AFFFh PIT wraps, an STB test left in that build): genuine. */
             virge->fifo_slots_num    = 16;
             virge->svga.decode_mask  = (4 << 20) - 1;
             virge->virge_id_high     = 0x8c;
-            virge->virge_id_low      = 0x01;
+            virge->virge_id_low      = (virge->type == S3_SPECTRAH_LD_S500) ? 0x03 : 0x01;
             virge->svga.crtc[0x6c]   = 1;
             virge->svga.crtc[0x59]   = 0x70;
             virge->svga.vblank_start = s3_virge_vblank_start;
             virge->chip              = S3_VIRGEMX;
-            video_inform(VIDEO_FLAG_TYPE_SPECIAL, &timing_virge_dx_pci);
+            video_inform(VIDEO_FLAG_TYPE_SPECIAL, virge->is_agp ? &timing_virge_agp : &timing_virge_dx_pci);
             break;
 
         case S3_TRIO_3D2X:
@@ -6337,6 +6370,18 @@ static int
 s3_stb_symmetry3d_available(void)
 {
     return rom_present(ROM_STB_SYMMETRY_3D);
+}
+
+static int
+s3_virge_mx_available(void)
+{
+    return rom_present(ROM_VIRGE_MX);
+}
+
+static int
+s3_virge_mx_plus_available(void)
+{
+    return rom_present(ROM_SPECTRAH_LD_S500);
 }
 
 static int
@@ -7046,6 +7091,37 @@ const device_t s3_virge_mx_pci_device = {
     .close         = s3_virge_close,
     .reset         = s3_virge_reset,
     .available     = s3_stb_symmetry3d_available,
+    .speed_changed = s3_virge_speed_changed,
+    .force_redraw  = s3_virge_force_redraw,
+    .config        = &s3_virge_gx2_pci_config[1] /* the GX2's options but the memory size: 4 MB */
+};
+
+/* An unbranded AGP card ("S3 VIRGE/MX 260 Rev 1.1") with S3's own BIOS 3.05.01-26 (11/18/98). */
+const device_t s3_virge_mx_agp_device = {
+    .name          = "S3 ViRGE/MX AGP",
+    .internal_name = "virge_mx_agp",
+    .flags         = DEVICE_AGP,
+    .local         = S3_VIRGE_MX,
+    .init          = s3_virge_init,
+    .close         = s3_virge_close,
+    .reset         = s3_virge_reset,
+    .available     = s3_virge_mx_available,
+    .speed_changed = s3_virge_speed_changed,
+    .force_redraw  = s3_virge_force_redraw,
+    .config        = &s3_virge_gx2_pci_config[1] /* the GX2's options but the memory size: 4 MB */
+};
+
+/* ViRGE/MX+ (86C280, 8C03h: the MX with a TV encoder), Spectrah LD-S500: AGP, with a
+   SiI140 for its digital flat panel port (not emulated); BIOS A1.3A (12/16/98). */
+const device_t s3_virge_mx_plus_agp_device = {
+    .name          = "S3 ViRGE/MX+ (Spectrah LD-S500) AGP",
+    .internal_name = "virge_mx_plus_spectrah_ld_s500",
+    .flags         = DEVICE_AGP,
+    .local         = S3_SPECTRAH_LD_S500,
+    .init          = s3_virge_init,
+    .close         = s3_virge_close,
+    .reset         = s3_virge_reset,
+    .available     = s3_virge_mx_plus_available,
     .speed_changed = s3_virge_speed_changed,
     .force_redraw  = s3_virge_force_redraw,
     .config        = &s3_virge_gx2_pci_config[1] /* the GX2's options but the memory size: 4 MB */

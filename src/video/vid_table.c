@@ -237,6 +237,8 @@ video_cards[] = {
 #endif /*USE_G100 */
     { .device = &s3_trio3d2x_agp_device,                        .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &s3_virge_gx2_agp_device,                       .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &s3_virge_mx_agp_device,                        .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &s3_virge_mx_plus_agp_device,                   .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &permedia2_stb_glyder_max2_agp_device,          .flags = VIDEO_FLAG_TYPE_NONE      },
     /* LPT */
     { .device = &hd44780_device,                                .flags = VIDEO_FLAG_TYPE_SPECIAL   },
