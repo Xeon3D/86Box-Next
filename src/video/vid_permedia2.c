@@ -242,6 +242,8 @@ typedef struct p2_t {
     int         mode_log;           /* Debug: "dev p2 modes" logs each new 3D mode set. */
     int         modes_seen;
     uint32_t    modes[256][9];
+    uint32_t    dl_start; /* Debug: the current texture download. */
+    uint32_t    dl_words;
     uint32_t    texel_lut[256];
     p2_raster_t raster;
     double      vtx[3][16];      /* Delta vertex parameters (see p2_delta_vertex). */
@@ -1292,14 +1294,15 @@ p2_fifo_write(p2_t *p2, uint32_t val)
     p2->fifo_hdr_count--;
 }
 
-/* Input DMA: feeds the input FIFO from system memory, pausing while the
-   graphics processor is stalled (p2_out_space resumes it). */
+/* Input DMA: feeds the input FIFO from system memory. DMACount counts words
+   moved into the FIFO, not executed ones: behind a stalled graphics processor
+   it goes on until the 256-entry FIFO is full (p2_out_space resumes it). */
 static void
 p2_dma_run(p2_t *p2)
 {
     if (!p2->dma_count)
         return;
-    while (p2->dma_count && !p2_gp_stalled(p2) && !p2->hold_count) {
+    while (p2->dma_count && (p2->hold_count < 256)) {
         p2_fifo_write(p2, p2_dma_swap(p2, mem_readl_phys(p2->dma_address)));
         p2->dma_address += 4;
         p2->dma_count--;
@@ -1517,7 +1520,9 @@ p2_ctrl_read_int(p2_t *p2, uint32_t addr)
                 ret = (p2->hold_count >= 256) ? 0 : (256 - p2->hold_count);
             break;
         case P2_OUT_FIFO_WORDS:
-            ret = p2->out_count;
+            /* The real FIFO holds 8 words: drivers read as many as this says
+               into buffers sized for the transfer (3Dlabs' 3dextdd). */
+            ret = MIN(p2->out_count, 8);
             break;
         case P2_DMA_ADDRESS:
             ret = p2->dma_address;
@@ -2530,13 +2535,14 @@ p2_texel(p2_t *p2, int64_t s, int64_t t, uint32_t c[4])
     }
 
     if ((fmt == 14) || (fmt == 15)) {
-        /* Colour index through the texel LUT (entries are 8888). */
+        /* Colour index through the texel LUT (entries are BGR 888, no alpha:
+           the texel is opaque). */
         if (lutm & 1) {
             v = (v + ((lutm >> 2) & 0xff)) & 0xff;
             v = (v < 16) ? p2->gp[TAG_TEXEL_LUT0 + v] : p2->texel_lut[v];
         } else
-            v = v | (v << 8) | (v << 16) | 0xff000000;
-        p2_unpack(v, 0, 0, 0, 0, c);
+            v = v | (v << 8) | (v << 16);
+        p2_unpack(v | 0xff000000, 0, 0, 0, 0, c);
     } else if ((fmt == 18) || (fmt == 19)) {
         /* YUV, left unconverted here (Y, U, V in R, G, B): the YUV unit
            converts after filtering. */
@@ -3224,6 +3230,16 @@ p2_raster_start(p2_t *p2, uint32_t command)
     r->command  = command;
     r->prim     = command & RENDER_PRIM_MASK;
     r->bpp      = p2_fb_bpp(p2);
+    if (p2->gp[TAG_FB_WRITE_CONFIG] & (1 << 18)) {
+        /* PatchEnable: a texture download through the framebuffer unit
+           (the ICD's glTexImage) writes texels of the texture map's size,
+           whatever FBReadPixel says (CI8 indices sent as 32-bit colours to
+           a byte address). The patch permutation itself is not modelled:
+           downloads and texture reads both stay linear. */
+        static const int texel_bytes[8] = { 1, 2, 4, 1, 3, 4, 4, 4 };
+
+        r->bpp = texel_bytes[(p2->gp[TAG_TEXTURE_MAP_FORMAT] >> 19) & 7];
+    }
     r->origin_x = p2_sext(p2->gp[TAG_RECT_ORIGIN], 16);
     r->origin_y = p2_sext(p2->gp[TAG_RECT_ORIGIN] >> 16, 16);
     r->xdom     = p2_sext(p2->gp[TAG_START_X_DOM], 32);
@@ -3256,11 +3272,12 @@ p2_raster_start(p2_t *p2, uint32_t command)
         if (!seen && (p2->modes_seen < 256)) {
             memcpy(p2->modes[p2->modes_seen++], m, sizeof(m));
             pclog("P2: 3D render %08X tcm %X abm %X dm %X tdf %X trm %X yuv %X fog %X sm %X | tmf %X lut %X dither %X "
-                  "fbrm %X lbrm %X lbf %X win %X cdda %X key %08X-%08X amap %08X-%08X\n",
+                  "fbrm %X lbrm %X lbf %X win %X cdda %X key %08X-%08X amap %08X-%08X base %X\n",
                   m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], p2->gp[TAG_TEXTURE_MAP_FORMAT],
                   p2->gp[TAG_TEXEL_LUT_MODE], p2->gp[TAG_DITHER_MODE], p2->gp[TAG_FB_READ_MODE],
                   p2->gp[TAG_LB_READ_MODE], p2->gp[TAG_LB_READ_FORMAT], p2->gp[TAG_WINDOW], p2->gp[TAG_COLOR_DDA_MODE],
-                  p2->gp[TAG_CHROMA_LOWER], p2->gp[TAG_CHROMA_UPPER], p2->gp[TAG_ALPHA_MAP_LOWER], p2->gp[TAG_ALPHA_MAP_UPPER]);
+                  p2->gp[TAG_CHROMA_LOWER], p2->gp[TAG_CHROMA_UPPER], p2->gp[TAG_ALPHA_MAP_LOWER], p2->gp[TAG_ALPHA_MAP_UPPER],
+                  p2->gp[TAG_TEXTURE_BASE]);
         }
     }
     if (r->use3d) {
@@ -3828,7 +3845,11 @@ p2_gp_command(p2_t *p2, uint32_t tag, uint32_t val)
             break;
 
         case TAG_TEXTURE_DL_OFFSET:
+            if (p2->mode_log && p2->dl_words)
+                pclog("P2: texture download at %06X: %u words\n", p2->dl_start, p2->dl_words);
             p2->gp[TAG_TEXTURE_DL_OFFSET] = val & 0x3fffff;
+            p2->dl_start                  = val & 0x3fffff;
+            p2->dl_words                  = 0;
             break;
         case TAG_TEXTURE_DATA:
             /* Raw texture download (cached glyph masks, textures): a dword
@@ -3836,6 +3857,7 @@ p2_gp_command(p2_t *p2, uint32_t tag, uint32_t val)
                offset steps. */
             p2_fb_write(p2, (int64_t) (p2->gp[TAG_TEXTURE_DL_OFFSET] & 0x3fffff) * 4, 4, val, p2->gp[TAG_FB_HW_WRITE_MASK]);
             p2->gp[TAG_TEXTURE_DL_OFFSET] = (p2->gp[TAG_TEXTURE_DL_OFFSET] + 1) & 0x3fffff;
+            p2->dl_words++;
             break;
 
         default:
@@ -4066,6 +4088,18 @@ p2_debug_hook(const char *args)
                 pclog("P2: tag %03X n %8u = %08X\n", i, p2->tag_count[i], p2->gp[i]);
         }
         memset(p2->tag_count, 0, sizeof(p2->tag_count));
+        return;
+    }
+
+    if (!strncmp(args, "dump ", 5)) {
+        /* The whole framebuffer memory to a file (texture layouts etc.). */
+        FILE *f = plat_fopen(args + 5, "wb");
+
+        if (f) {
+            fwrite(svga->vram, 1, p2->vram_size, f);
+            fclose(f);
+        }
+        pclog("P2: VRAM dump to %s %s\n", args + 5, f ? "done" : "failed");
         return;
     }
 

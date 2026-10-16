@@ -242,8 +242,9 @@ debug_cmd_bp_check(uint32_t lin)
         debug_cmd_bp_left[i]--;
         uint32_t sp = ss + ESP;
         always_log("debug_cmd: bp %08x eax %08x ebx %08x ecx %08x edx %08x esi %08x edi %08x ebp %08x esp %08x | "
-                   "ds %08x es %08x | stack %08x %08x %08x %08x %08x %08x %08x %08x\n",
-                   lin, EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP, ds, es, debug_cmd_lin_read32(sp), debug_cmd_lin_read32(sp + 4),
+                   "ds %08x es %08x fs %04x:%08x-%08x | stack %08x %08x %08x %08x %08x %08x %08x %08x\n",
+                   lin, EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP, ds, es, FS, fs_seg, cpu_state.seg_fs.limit,
+                   debug_cmd_lin_read32(sp), debug_cmd_lin_read32(sp + 4),
                    debug_cmd_lin_read32(sp + 8), debug_cmd_lin_read32(sp + 12), debug_cmd_lin_read32(sp + 16),
                    debug_cmd_lin_read32(sp + 20), debug_cmd_lin_read32(sp + 24), debug_cmd_lin_read32(sp + 28));
     }
