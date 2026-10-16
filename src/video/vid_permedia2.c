@@ -2255,6 +2255,12 @@ p2_texture_color(p2_t *p2, int *raw)
             *raw = 1;
             return v;
         }
+        /* CI4 indexes count from TexelLUTIndex (without DirectIndex): the
+           3Dlabs Win9x driver loads a 4-bit DIB's 16 colours at 80h and
+           sets TexelLUTIndex back to 80h before each CI4 draw, LUTOffset 0;
+           its CI8 draws leave TexelLUTIndex wherever the last load left it. */
+        if ((fmt == 15) && !(lutm & 2))
+            v += p2->gp[TAG_TEXEL_LUT_INDEX];
         v = (v + ((lutm >> 2) & 0xff)) & 0xff;
         return (v < 16) ? p2->gp[TAG_TEXEL_LUT0 + v] : p2->texel_lut[v];
     }
@@ -2422,6 +2428,15 @@ p2_draw_step(p2_t *p2)
 
         color = p2_fb_read(p2, src * bpp, bpp);
         raw   = 1;
+    } else if (!(cmd & RENDER_FAST_FILL) && (rm & FBRM_PACKED) && !r->shade && !(p2->gp[TAG_COLOR_DDA_MODE] & 1)) {
+        /* Packed data with neither host data nor a source read is the
+           FBSourceData register, a byte lane per pixel: the 3Dlabs Win9x
+           driver's disabled (embossed) text XORs a rectangle with the
+           colour it writes there. */
+        const uint32_t lane = (uint32_t) ((p2->gp[TAG_FB_WINDOW_BASE] + p2->gp[TAG_FB_PIXEL_OFFSET] + x) * bpp) & 3;
+
+        color = p2->gp[TAG_FB_SOURCE_DATA] >> (lane << 3);
+        raw   = 1;
     }
 
     if (draw)
@@ -2497,6 +2512,18 @@ p2_raster_start(p2_t *p2, uint32_t command)
     if (r->prim == PRIM_RECT) {
         r->columns = p2->gp[TAG_RECT_SIZE] & 0xffff;
         r->rows    = p2->gp[TAG_RECT_SIZE] >> 16;
+        /* A rectangle leaves the trapezoid registers describing it: Windows
+           2000's perm2 uploads an 8x8 brush as a rectangle, then widens it
+           with trapezoid copies that set only StartXDom/StartXSub (tooltip
+           and balloon backgrounds came out black but for every fourth
+           8 pixels). */
+        p2->gp[TAG_START_X_DOM] = (uint32_t) r->origin_x << 16;
+        p2->gp[TAG_START_X_SUB] = (uint32_t) (r->origin_x + (int) r->columns) << 16;
+        p2->gp[TAG_START_Y]     = (uint32_t) r->origin_y << 16;
+        p2->gp[TAG_DX_DOM]      = 0;
+        p2->gp[TAG_DX_SUB]      = 0;
+        p2->gp[TAG_DY]          = 1 << 16;
+        p2->gp[TAG_COUNT]       = r->rows;
         /* Packed rectangles count DWORD groups; the framebuffer unit widens them. */
         if ((rm & FBRM_PACKED) && !(command & RENDER_FAST_FILL) && !p2_upload_cmd(p2, command) && (r->bpp != 3)) {
             r->origin_x *= 4 / r->bpp;
