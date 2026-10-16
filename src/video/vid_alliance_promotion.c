@@ -79,6 +79,7 @@ typedef struct pm_t {
     void    *ramdac;
     uint16_t xr_io_base; /* the XR I/O window (6422): SR1F:SR1E */
     int      blt_pending; /* a start (or quick start) seen in this register access */
+    uint8_t  qs_written;  /* quick-start registers written since the last start (bit per mode) */
     void    *i2c;
     void    *ddc;
     uint32_t vram_size;
@@ -102,6 +103,7 @@ typedef struct pm_t {
         int      w, h;
         int      dx, dy; /* direction: +1 or -1 */
         int      x, y;   /* destination X/Y of the current row */
+        int      x0, y0; /* destination X/Y at the start */
         uint32_t dst;    /* linear destination of the current row */
         int      row;    /* rows done */
 
@@ -427,6 +429,24 @@ pm_blt_next_row(pm_t *pm)
 static void
 pm_blt_done(pm_t *pm)
 {
+    /* XR40 bits 28:27: leave the destination just past the top right (1)
+       or the bottom left (2) corner, so the next operation can start
+       without rewriting it. STB's polygon fill (physsl.asm) depends on it:
+       bottom left with "start on destination X", one span after another,
+       never rewriting the Y (it adds the height itself for empty spans), so
+       the new Y is y + height. Lines (3, last pixel) stay where they end. */
+    const int upd = (pm->blt.ctrl >> 27) & 3;
+
+    if ((pm->blt.op != BLT_OP_NOP) && (pm->blt.op != BLT_OP_LINE) && (pm->blt.op != BLT_OP_LINE_NOEND) &&
+        !(pm->blt.ctrl & BLT_DST_LINEAR)) {
+        if (upd == 1) {
+            pm_xr_set16(pm, 0x54, pm->blt.x0 + pm->blt.w * pm->blt.dx);
+            pm_xr_set16(pm, 0x56, pm->blt.y0);
+        } else if (upd == 2) {
+            pm_xr_set16(pm, 0x54, pm->blt.x0);
+            pm_xr_set16(pm, 0x56, pm->blt.y0 + pm->blt.h * pm->blt.dy);
+        }
+    }
     pm->blt.op = BLT_OP_NOP;
 }
 
@@ -562,6 +582,8 @@ pm_blt_start(pm_t *pm)
     pm->blt.dy   = (ctrl & BLT_DIR_YNEG) ? -1 : 1;
     pm->blt.x    = (int16_t) pm_xr16(pm, 0x54);
     pm->blt.y    = (int16_t) pm_xr16(pm, 0x56);
+    pm->blt.x0   = pm->blt.x;
+    pm->blt.y0   = pm->blt.y;
     pm->blt.dst  = pm_lin_addr(pm_xr32(pm, 0x54)) * pm->blt.bpp;
     pm->blt.row  = 0;
     pm->blt.host_len = 0;
@@ -935,6 +957,13 @@ pm_xr_write(pm_t *pm, uint32_t addr, uint8_t val)
         case 0x43:
             if (val & 0x80)
                 pm->blt_pending = 1;
+            else if (pm->qs_written & (1 << ((val >> 5) & 3)))
+                /* Arming a quick start whose register was written after
+                   the last operation starts it: Alliance's polygon code
+                   clears XR40 at the end of a batch, writes the next
+                   span's extent and destination, then re-arms "start on
+                   destination" and expects that span drawn. */
+                pm->blt_pending = 1;
             break;
         case 0x50 ... 0x5b: {
             /* Quick start (XR40 bits 30:29) on the X extent (1), source (2)
@@ -943,9 +972,12 @@ pm_xr_write(pm_t *pm, uint32_t addr, uint8_t val)
                STB driver writes each glyph's width and height at once). */
             static const uint8_t qs_reg[4] = { 0, 0x58, 0x50, 0x54 };
             const int            qs        = (pm_xr32(pm, XR_BLT_CTRL) >> 29) & 3;
+            const int            mode      = ((addr & ~3) == 0x58) ? 1 : (((addr & ~3) == 0x50) ? 2 : 3);
 
             if (qs && ((addr & ~3) == qs_reg[qs]))
                 pm->blt_pending = 1;
+            else if ((addr & ~3) != 0x5c)
+                pm->qs_written |= 1 << mode;
             break;
         }
         case 0x80:
@@ -986,6 +1018,7 @@ pm_xr_access_done(pm_t *pm)
 {
     if (pm->blt_pending) {
         pm->blt_pending = 0;
+        pm->qs_written  = 0;
         pm_blt_start(pm);
     }
 }
