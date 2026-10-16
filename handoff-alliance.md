@@ -1,7 +1,7 @@
 # Alliance ProMotion -- living handoff
 
 Branch `alliance`, worktree `F:\Claude\86Box-Next\wt-alliance` (build-static there).
-Device: `src/video/vid_alliance.c`, `pm6410_pci` ("Alliance ProMotion 6410 PCI").
+Device: `src/video/vid_alliance_promotion.c`, `pm6410_pci` ("Alliance ProMotion 6410 PCI").
 Keep this file updated as the work moves.
 
 ## Material
@@ -18,7 +18,7 @@ Keep this file updated as the work moves.
 - X.org apm driver (MIT): `F:\Claude\86Box-Next\dl\xf86-video-apm\src` -- 6422/AT24/AT3D register
   use: `apm_regs.h` (drawing engine DEC bits, status), `apm_driver.c` (mode init, clocks
   comp_lmn, memory sizing), `apm_cursor.c`, `apm_funcs.c` (accel), `apm_video.c` (overlay).
-- ROM in `F:\Claude\86Box-Next\ROMS-EXTRA\video\alliance\pm6410\PCPartner-6410.BIN`
+- ROM in `F:\Claude\86Box-Next\ROMS-EXTRA\video\alliance\pcpartner_pm6410.bin`
   (not in the Xeon3D/roms fork yet).
 
 ## Test VM

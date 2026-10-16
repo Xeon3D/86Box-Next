@@ -48,7 +48,7 @@
 #include <86box/plat_unused.h>
 #include <86box/debug_cmd.h>
 
-#define BIOS_PM6410_PCPARTNER "roms/video/alliance/pm6410/PCPartner-6410.BIN"
+#define BIOS_PM6410_PCPARTNER "roms/video/alliance/pcpartner_pm6410.bin"
 
 enum {
     PM_6410 = 0, /* "GXX", PCI 1142:3210 */
