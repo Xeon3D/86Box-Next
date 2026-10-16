@@ -77,6 +77,7 @@ typedef struct pm_t {
 
     int      chip;
     void    *ramdac;
+    uint16_t xr_io_base; /* the XR I/O window (6422): SR1F:SR1E */
     void    *i2c;
     void    *ddc;
     uint32_t vram_size;
@@ -144,7 +145,7 @@ pm_update_banks(pm_t *pm)
     svga->write_bank = bank & pm->vram_mask;
     svga->read_bank  = svga->write_bank;
     /* A banked chain-4 window addresses video memory a byte at a time. */
-    svga->packed_chain4 = !!bank;
+    svga->packed_chain4 = !!bank || (pm->sr[0x1c - 8] & 0x10);
 }
 
 /* The bank applies to the 32 KB windows at B0000h/B8000h too (the BIOS sizes
@@ -161,6 +162,11 @@ pm_translate_address(uint32_t addr, void *priv)
        picks the second row of DRAM: absent on a 1 MB board (this is how
        the BIOS sizes memory). */
     if ((pm->xr[XR_MEM_CONFIG] & 0x01) && (pm->vram_size <= 0x100000) && (addr & 0x10000))
+        return svga->vram_max;
+    /* The 6422's BIOS sizes memory with XRC5 bit 0 and SR1C bit 4 instead: a
+       1 MB board then leaves the upper half of each 64-bit word empty. */
+    if ((pm->chip >= PM_6422) && (pm->xr[XR_MEM_CONFIG + 1] & 0x01) && (pm->sr[0x1c - 8] & 0x10) &&
+        (pm->vram_size <= 0x100000) && (addr & 4))
         return svga->vram_max;
     return addr;
 }
@@ -747,6 +753,11 @@ pm_xr_read(pm_t *pm, uint32_t addr)
                it here). The BIOS writes a VL-bus address of its choosing. */
             ret = pm->pci_regs[0x10 + (addr & 3)];
             break;
+        case 0x194 ... 0x195:
+            /* The XR I/O window's base (6422): PCI BAR 1. The BIOS copies it
+               into SR1E/SR1F. */
+            ret = (pm->chip >= PM_6422) ? (pm->pci_regs[0x14 + (addr & 1)] & ((addr & 1) ? 0xff : 0xfc)) : pm->xr[addr];
+            break;
         default:
             ret = pm->xr[addr];
             break;
@@ -795,8 +806,44 @@ pm_xr_write(pm_t *pm, uint32_t addr, uint8_t val)
             pm_blt_done(pm);
             pm->blt.rd_len = pm->blt.rd_pos = 0;
             break;
+        case 0xec ... 0xef:
+            svga_recalctimings(&pm->svga);
+            break;
         default:
             break;
+    }
+}
+
+/* The 6422's XR I/O window: four ports at SR1F:SR1E, SR1D the dword index. */
+static uint8_t
+pm_xr_io_read(uint16_t port, void *priv)
+{
+    pm_t *pm = (pm_t *) priv;
+
+    return pm_xr_read(pm, (pm->sr[0x1d - 8] << 2) + (port & 3));
+}
+
+static void
+pm_xr_io_write(uint16_t port, uint8_t val, void *priv)
+{
+    pm_t *pm = (pm_t *) priv;
+
+    pm_xr_write(pm, (pm->sr[0x1d - 8] << 2) + (port & 3), val);
+}
+
+static void
+pm_update_xr_io(pm_t *pm)
+{
+    const uint16_t base = (pm->sr[0x1f - 8] << 8) | (pm->sr[0x1e - 8] & 0xfc);
+
+    if (pm->xr_io_base)
+        io_removehandler(pm->xr_io_base, 4, pm_xr_io_read, NULL, NULL, pm_xr_io_write, NULL, NULL, pm);
+    pm->xr_io_base = 0;
+    /* Never over the VGA ports or the legacy ones below 100h. */
+    if ((pm->chip >= PM_6422) && (base >= 0x100) && ((base & 0xffe0) != 0x03c0) && ((base & 0xfff0) != 0x03b0) &&
+        (pm->pci_regs[PCI_REG_COMMAND] & PCI_COMMAND_IO)) {
+        pm->xr_io_base = base;
+        io_sethandler(base, 4, pm_xr_io_read, NULL, NULL, pm_xr_io_write, NULL, NULL, pm);
     }
 }
 
@@ -1019,9 +1066,14 @@ pm_out(uint16_t addr, uint8_t val, void *priv)
                     case 0x1b:
                     case 0x1c:
                         if (old != val) {
+                            pm_update_banks(pm);
                             pm_recalc_mappings(pm);
                             svga_recalctimings(svga);
                         }
+                        break;
+                    case 0x1e:
+                    case 0x1f:
+                        pm_update_xr_io(pm);
                         break;
                     default:
                         break;
@@ -1190,6 +1242,38 @@ pm_recalctimings(svga_t *svga)
 
     pm_update_cursor(pm);
     svga->force_old_addr = 0;
+
+    /* CR1A: vertical bit 10s (total, display end, blank start, retrace
+       start); CR1B: horizontal bit 8s (total, display end), X.org's
+       ApmModeInit. 1280x1024 needs them. */
+    if (pm->cr[0x1a] & 0x01)
+        svga->vtotal |= 0x400;
+    if (pm->cr[0x1a] & 0x02)
+        svga->dispend |= 0x400;
+    if (pm->cr[0x1a] & 0x04)
+        svga->vblankstart |= 0x400;
+    if (pm->cr[0x1a] & 0x08)
+        svga->vsyncstart |= 0x400;
+    if (pm->cr[0x1b] & 0x01)
+        svga->htotal |= 0x100;
+    if (pm->cr[0x1b] & 0x02) {
+        svga->hdisp_time |= 0x100;
+        svga->hdisp |= 0x100 * svga->dots_per_clock;
+    }
+
+    /* The 6422's pixel PLL, XREC: N in bits 23:16, M in 15:8, the post
+       divider (2^L) in bits 3:2, from the 14.318 MHz crystal (X.org's
+       comp_lmn). MISC clock select 3 picks it. */
+    if ((pm->chip >= PM_6422) && ((svga->miscout & 0x0c) == 0x0c)) {
+        const uint32_t v = pm_xr32(pm, 0xec);
+        const double   n = ((v >> 16) & 0xff) + 1;
+        const double   m = ((v >> 8) & 0xff) + 1;
+        const double   f = 14318180.0 * n / (m * (double) (1 << ((v >> 2) & 3)));
+
+        if ((v & 0xffff00) && (f > 1000000.0))
+            svga->clock = (cpuclock * (double) (1ULL << 32)) / f;
+    }
+
     if (!bpp)
         return;
 
@@ -1204,7 +1288,7 @@ pm_recalctimings(svga_t *svga)
     if (pm->ramdac && (bpp == 8) && (svga->bpp > 8))
         bpp = svga->bpp;
 
-    if ((svga->miscout & 0x0c) == 0x0c) {
+    if ((pm->chip == PM_6410) && ((svga->miscout & 0x0c) == 0x0c)) {
         /* TODO: the programmable/external clock; until it is known, run
            the mode at 60 Hz. */
         const double hz = (double) (svga->htotal * 8) * (double) svga->vtotal * 60.0;
@@ -1259,6 +1343,7 @@ pm_pci_write(UNUSED(int func), int addr, UNUSED(int len), uint8_t val, void *pri
         case PCI_REG_COMMAND:
             pm->pci_regs[addr] = val & 0x23;
             pm_recalc_mappings(pm);
+            pm_update_xr_io(pm);
             break;
         case 0x07:
             pm->pci_regs[addr] &= ~(val & 0xf8);
@@ -1274,6 +1359,13 @@ pm_pci_write(UNUSED(int func), int addr, UNUSED(int len), uint8_t val, void *pri
             if (addr == 0x12)
                 pm->pci_regs[addr] &= ~((pm->lfb_size - 1) >> 16);
             pm_recalc_mappings(pm);
+            break;
+
+        case 0x14:
+        case 0x15:
+            /* BAR 1 (6422): 4 I/O ports, the XR window's address. */
+            if (pm->chip >= PM_6422)
+                pm->pci_regs[addr] = (addr == 0x14) ? ((val & 0xfc) | 0x01) : val;
             break;
 
         case 0x30:
@@ -1315,6 +1407,8 @@ pm_init_pci_regs(pm_t *pm)
     pm->pci_regs[0x08] = 0x00; /* revision */
     pm->pci_regs[0x0b] = 0x03; /* VGA compatible display controller */
     pm->pci_regs[0x10] = 0x00; /* memory, 32-bit, not prefetchable */
+    if (pm->chip >= PM_6422)
+        pm->pci_regs[0x14] = 0x01; /* I/O */
     pm->pci_regs[0x32] = 0x0c;
     pm->pci_regs[0x3d] = PCI_INTA;
 }
@@ -1392,6 +1486,30 @@ pm_reset_state(pm_t *pm)
     /* The BIOS sizes memory before its first mode set and needs writes to
        land: start with all bits of the bit mask enabled. */
     pm->svga.gdcreg[8] = 0xff;
+    pm_update_xr_io(pm);
+}
+
+/* The BIOS is a unified ProMotion BIOS (it identifies the chip from its
+   registers), but the PCI data structure must match the device for the
+   system BIOS to run it: on the 6422, rewrite its device ID and keep the
+   32 KB image's checksum. */
+static void
+pm_patch_bios_id(pm_t *pm)
+{
+    uint8_t *rom = pm->bios_rom.rom;
+    uint16_t pcir;
+    int      diff;
+
+    if (!rom || (rom[0] != 0x55) || (rom[1] != 0xaa))
+        return;
+    pcir = rom[0x18] | (rom[0x19] << 8);
+    if ((pcir > 0x7ff0) || memcmp(&rom[pcir], "PCIR", 4))
+        return;
+    diff = rom[pcir + 6] + rom[pcir + 7];
+    rom[pcir + 6] = pm->pci_regs[0x02];
+    rom[pcir + 7] = pm->pci_regs[0x03];
+    diff -= rom[pcir + 6] + rom[pcir + 7];
+    rom[0x7fff] += diff;
 }
 
 static void *
@@ -1440,6 +1558,8 @@ pm_init(const device_t *info)
     pm->ddc = ddc_init(i2c_gpio_get_bus(pm->i2c));
 
     pm_init_pci_regs(pm);
+    if (pm->chip != PM_6410)
+        pm_patch_bios_id(pm);
     pm_reset_state(pm);
 
     io_sethandler(0x03c0, 0x0020, pm_in, NULL, NULL, pm_out, NULL, NULL, pm);
@@ -1529,6 +1649,23 @@ const device_t pm6410_pci_device = {
     .internal_name = "pm6410_pci",
     .flags         = DEVICE_PCI,
     .local         = PM_6410,
+    .init          = pm_init,
+    .close         = pm_close,
+    .reset         = pm_reset,
+    .available     = pm6410_available,
+    .speed_changed = pm_speed_changed,
+    .force_redraw  = pm_force_redraw,
+    .config        = pm6410_config
+};
+
+/* The 6422 ("GXS"): internal RAMDAC and pixel PLL, the XR I/O window, the
+   STB Horizon 64 Video and Alliance's own drivers' chip. The PM6410 BIOS
+   drives it too. */
+const device_t pm6422_pci_device = {
+    .name          = "Alliance ProMotion 6422 PCI",
+    .internal_name = "pm6422_pci",
+    .flags         = DEVICE_PCI,
+    .local         = PM_6422,
     .init          = pm_init,
     .close         = pm_close,
     .reset         = pm_reset,
