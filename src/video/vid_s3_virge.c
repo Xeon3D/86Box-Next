@@ -577,6 +577,40 @@ s3_virge_serialport_ddc_read(virge_t *virge, uint8_t reg)
     return temp;
 }
 
+/* ViRGE/MX CRTC registers that Controller 1 and Controller 2 each have (some only in
+   part; whole registers here): CR0-CR9, CRC, CRD, CR10-CR13 (CR12 per SR26's read
+   select), CR15-CR17, CR33, CR35, CR3B, CR3C, CR42,
+   CR51, CR5D, CR5E, CR63, CR65, CR67, CR69, CR71, CR90, CR91. */
+static int
+s3_virge_mx_paired(uint8_t reg)
+{
+    switch (reg) {
+        case 0x00 ... 0x09:
+        case 0x0c:
+        case 0x0d:
+        case 0x10 ... 0x13:
+        case 0x15 ... 0x17:
+        case 0x33:
+        case 0x35:
+        case 0x3b:
+        case 0x3c:
+        case 0x42:
+        case 0x51:
+        case 0x5d:
+        case 0x5e:
+        case 0x63:
+        case 0x65:
+        case 0x67:
+        case 0x69:
+        case 0x71:
+        case 0x90:
+        case 0x91:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 static void
 s3_virge_out(uint16_t addr, uint8_t val, void *priv)
 {
@@ -615,15 +649,17 @@ s3_virge_out(uint16_t addr, uint8_t val, void *priv)
             svga->crtcreg = val;
             return;
         case 0x3d5:
-            /* ViRGE/MX SR26 picks the CRTC(s) a write goes to: 40h IGA1, 44h both,
-               4Eh/4Fh IGA2 only. Only IGA1 drives the CRT, so IGA2's panel timings
-               are kept aside for reading back. */
-            if (virge->chip == S3_VIRGEMX) {
+            /* ViRGE/MX: the paired registers (s3_virge_mx_paired) exist once per CRT
+               controller; SR26 bit 3 disables writes to Controller 1's, bit 2 enables
+               writes to Controller 2's (40h C1, 44h both, 4Eh/4Fh C2 only). Only
+               Controller 1 is displayed (the CRT DAC source with no panel), Controller 2's
+               set is kept for reading back. */
+            if ((virge->chip == S3_VIRGEMX) && s3_virge_mx_paired(svga->crtcreg)) {
                 if ((svga->crtcreg >= 0x40) && ((svga->crtc[0x39] & 0xe0) != 0xa0))
                     return;
                 if (svga->seqregs[0x26] & 0x04)
                     virge->crtc_iga2[svga->crtcreg] = val;
-                if (svga->seqregs[0x26] & 0x0a)
+                if (svga->seqregs[0x26] & 0x08)
                     return;
             }
             if ((svga->crtcreg < 7) && (svga->crtc[0x11] & 0x80))
@@ -859,8 +895,12 @@ s3_virge_in(uint16_t addr, void *priv)
             ret = svga->crtcreg;
             break;
         case 0x3d5:
-            if ((virge->chip == S3_VIRGEMX) && (svga->seqregs[0x26] & 0x01) &&
-                (svga->crtcreg != 0x2d) && (svga->crtcreg != 0x2e) && (svga->crtcreg != 0x2f)) {
+            /* SR26 bit 1: all paired reads from Controller 2; bit 0: those of CR0-7,
+               CR10-12 and CR15-16. */
+            if ((virge->chip == S3_VIRGEMX) && s3_virge_mx_paired(svga->crtcreg) &&
+                ((svga->seqregs[0x26] & 0x02) ||
+                 ((svga->seqregs[0x26] & 0x01) && ((svga->crtcreg <= 0x07) ||
+                  ((svga->crtcreg >= 0x10) && (svga->crtcreg <= 0x12)) || (svga->crtcreg == 0x15) || (svga->crtcreg == 0x16))))) {
                 ret = virge->crtc_iga2[svga->crtcreg];
                 break;
             }
@@ -5974,11 +6014,11 @@ s3_virge_debug_hook(UNUSED(const char *args))
     if (virge == NULL)
         return;
     svga = &virge->svga;
-    for (int bank = 0; bank < 2; bank++) {
-        const uint8_t *regs = bank ? svga->seqregs : svga->crtc;
+    for (int bank = 0; bank < ((virge->chip == S3_VIRGEMX) ? 3 : 2); bank++) {
+        const uint8_t *regs = (bank == 2) ? virge->crtc_iga2 : (bank ? svga->seqregs : svga->crtc);
 
-        for (int row = 0; row < 256; row += 16) {
-            int pos = sprintf(line, "%s%02X:", bank ? "SR" : "CR", row);
+        for (int row = 0; row < ((bank == 2) ? 0x80 : 256); row += 16) {
+            int pos = sprintf(line, "%s%02X:", (bank == 2) ? "IGA2 CR" : (bank ? "SR" : "CR"), row);
 
             for (int i = 0; i < 16; i++)
                 pos += sprintf(line + pos, " %02x", regs[row + i]);
