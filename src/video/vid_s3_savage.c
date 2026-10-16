@@ -39,6 +39,7 @@
 #include <stdlib.h>
 #include <wchar.h>
 #include <stdbool.h>
+#include <math.h>
 #define HAVE_STDARG_H
 #include <86box/86box.h>
 #include "cpu.h"
@@ -99,7 +100,8 @@ enum {
     BCI_TEXT_HEADER, /* text: glyph width/height */
     BCI_TEXT_DATA,   /* text: glyph bits */
     BCI_SETREG,      /* register writes */
-    BCI_3DDATA,      /* vertices of a 3D primitive (not drawn) */
+    BCI_3DDATA,      /* indices of an indexed 3D primitive (not drawn) */
+    BCI_3DVERTS,     /* vertices of a 3D primitive */
     BCI_SKIP         /* unknown command: swallow dwords until the next command */
 };
 
@@ -209,7 +211,23 @@ typedef struct savage_t {
 
         int      setreg_index, setreg_count;
         int      skip_count;
+
+        /* 3D primitive being received. */
+        uint32_t prim_cmd;
+        int      prim_vert_dwords;
+        int      prim_dword;
+        uint32_t prim_buf[8];
     } bci;
+
+    /* 3D: the vertices of the triangle being assembled (strips and fans carry
+       two over to the next packet when its continue bit is set). */
+    struct {
+        float    x, y, z, w;
+        uint32_t diff, spec;
+        float    u, v;
+    } vtx[3];
+    int nvtx;
+    int prim_count;
 } savage_t;
 
 #ifdef ENABLE_S3_SAVAGE_LOG
@@ -234,6 +252,7 @@ static video_timings_t timing_savage_agp = { .type = VIDEO_AGP, .write_b = 2, .w
 static video_timings_t timing_savage_pci = { .type = VIDEO_PCI, .write_b = 2, .write_w = 2, .write_l = 3, .read_b = 28, .read_w = 28, .read_l = 45 };
 
 static void    s3_savage_updatemapping(savage_t *dev);
+static int     savage_bci_log;
 static void    s3_savage_bci_write(savage_t *dev, uint32_t val);
 static uint8_t s3_savage_in(uint16_t addr, void *priv);
 static void    s3_savage_out(uint16_t addr, uint8_t val, void *priv);
@@ -249,6 +268,15 @@ savage_tiled_addr(uint32_t base, int tiles_per_row, uint32_t xb, uint32_t y)
     return base + ((y >> 4) * tiles_per_row + (xb >> 7)) * 2048 + ((y & 15) << 7) + (xb & 127);
 }
 
+/* The same for 8 bpp surfaces, whose 2 KB tiles are 64 bytes by 32 lines. */
+static inline uint32_t
+savage_tiled_addr_8bpp(uint32_t base, int tiles_per_row, uint32_t xb, uint32_t y)
+{
+    return base + ((y >> 5) * tiles_per_row + (xb >> 6)) * 2048 + ((y & 31) << 6) + (xb & 63);
+}
+
+/* Tiled surface registers (MM48C40-48C54): base 23:0, width in tiles 29:24,
+   bits per pixel 31:30 (1 = 8, 2 = 16, 3 = 32). */
 static uint32_t
 savage_aperture_addr(savage_t *dev, uint32_t addr)
 {
@@ -260,6 +288,9 @@ savage_aperture_addr(savage_t *dev, uint32_t addr)
 
     if (!tiles)
         tiles = 1;
+
+    if ((reg >> 30) == 1)
+        return savage_tiled_addr_8bpp(reg & 0xffffff, tiles, xb, y) & SAVAGE_VRAM_MASK;
 
     return savage_tiled_addr(reg & 0xffffff, tiles, xb, y) & SAVAGE_VRAM_MASK;
 }
@@ -1072,6 +1103,9 @@ s3_savage_mmio_writel_reg(savage_t *dev, uint32_t addr, uint32_t val)
 {
     svga_t *svga = &dev->svga;
 
+    if (savage_bci_log)
+        pclog("MMW %05x %08x\n", addr, val);
+
     if ((addr >= 0x8180) && (addr < 0x8380)) {
         dev->streams[(addr - 0x8180) >> 2] = val;
         svga->fullchange                   = changeframecount;
@@ -1173,8 +1207,11 @@ s3_savage_mmio_write_off(savage_t *dev, uint32_t addr, uint8_t val)
         return;
     }
 
-    if ((addr >= 0x10000) && (addr < 0x30000))
+    if ((addr >= 0x10000) && (addr < 0x30000)) {
+        if (savage_bci_log)
+            pclog("BCIB %05x %02x\n", addr, val);
         return; /* The BCI only takes dwords. */
+    }
 
     {
         uint32_t reg   = addr & ~3;
@@ -1216,8 +1253,11 @@ s3_savage_mmio_writew(uint32_t addr, uint16_t val, void *priv)
     savage_t *dev = (savage_t *) priv;
     uint32_t  off = (addr - dev->bar0 - BAR0_MMIO) & (BAR0_MMIO_SIZE - 1);
 
-    if ((off >= 0x10000) && (off < 0x30000))
+    if ((off >= 0x10000) && (off < 0x30000)) {
+        if (savage_bci_log)
+            pclog("BCIW %05x %04x\n", off, val);
         return;
+    }
 
     s3_savage_mmio_write_off(dev, off, val & 0xff);
     s3_savage_mmio_write_off(dev, off + 1, val >> 8);
@@ -1996,15 +2036,548 @@ savage_set_register(savage_t *dev, int index, uint32_t val)
     s3_savage_mmio_writel_reg(dev, addr, val);
 }
 
+/* ------------------------------------------------------------------------ */
+/* 3D engine (GX3): DrawPrimitive triangles                                 */
+/* ------------------------------------------------------------------------ */
+
+/* 3D register indices (SetRegister), from S3's GX3PI.H. */
+#define R3D_TEX_PAL_ADDR 0x18
+#define R3D_TEX_XPR_CLR  0x19
+#define R3D_TEX_ADDR     0x1a
+#define R3D_TEX_DESCR    0x1b
+#define R3D_TEX_CTRL     0x1c
+#define R3D_DRAW_CTRL    0x31
+#define R3D_ZBUF_CTRL    0x32
+#define R3D_ZBUF_OFFSET  0x33
+#define R3D_DST_CTRL     0x34
+#define R3D_SCISSOR_TL   0x35
+#define R3D_SCISSOR_BR   0x36
+
+static inline float
+savage_float(uint32_t val)
+{
+    float f;
+
+    memcpy(&f, &val, sizeof(f));
+    return f;
+}
+
+static inline uint32_t
+savage_565_to_argb(uint32_t c)
+{
+    uint32_t r = (c >> 11) & 0x1f;
+    uint32_t g = (c >> 5) & 0x3f;
+    uint32_t b = c & 0x1f;
+
+    return 0xff000000 | (((r << 3) | (r >> 2)) << 16) | (((g << 2) | (g >> 4)) << 8) | ((b << 3) | (b >> 2));
+}
+
+static inline uint32_t
+savage_1555_to_argb(uint32_t c)
+{
+    uint32_t r = (c >> 10) & 0x1f;
+    uint32_t g = (c >> 5) & 0x1f;
+    uint32_t b = c & 0x1f;
+
+    return ((c & 0x8000) ? 0xff000000 : 0) | (((r << 3) | (r >> 2)) << 16) | (((g << 3) | (g >> 2)) << 8) | ((b << 3) | (b >> 2));
+}
+
+static inline uint32_t
+savage_4444_to_argb(uint32_t c)
+{
+    return (((c >> 12) & 0xf) * 0x11000000) | (((c >> 8) & 0xf) * 0x110000) | (((c >> 4) & 0xf) * 0x1100) | ((c & 0xf) * 0x11);
+}
+
+/* A texel of the texture in TexDescr/TexAddr as ARGB8888; *raw gets the 16-bit
+   colour the transparency compare looks at. Textures in video memory are tiled
+   in 2 KB tiles: 64x32 texels at 8 bpp, 64x16 at 16 bpp, 32x16 at 32 bpp. */
+static uint32_t
+savage_3d_texel(savage_t *dev, int u, int v, uint32_t *raw)
+{
+    const uint8_t *vram  = dev->svga.vram;
+    uint32_t       descr = dev->regs3d[R3D_TEX_DESCR];
+    int            w     = 1 << (descr & 0x0f);
+    uint32_t       base  = dev->regs3d[R3D_TEX_ADDR] & SAVAGE_VRAM_MASK & ~7;
+    uint32_t       pal   = dev->regs3d[R3D_TEX_PAL_ADDR] & SAVAGE_VRAM_MASK & ~7;
+    uint32_t       c;
+    int            tiles;
+
+    switch ((descr >> 16) & 7) {
+        case 1: /* palettized, 565 palette */
+        case 2: /* palettized, 1555 palette */
+        case 7: /* palettized, 4444 palette */
+            tiles = w >> 6;
+            c     = vram[savage_tiled_addr_8bpp(base, tiles ? tiles : 1, u, v) & SAVAGE_VRAM_MASK];
+            c     = *(const uint16_t *) &vram[(pal + (c << 1)) & SAVAGE_VRAM_MASK];
+            *raw  = c;
+            switch ((descr >> 16) & 7) {
+                case 1:
+                    return savage_565_to_argb(c);
+                case 2:
+                    return savage_1555_to_argb(c);
+                default:
+                    return savage_4444_to_argb(c);
+            }
+
+        case 3: /* ARGB8888 */
+            tiles = w >> 5;
+            c     = *(const uint32_t *) &vram[savage_tiled_addr(base, tiles ? tiles : 1, u << 2, v) & SAVAGE_VRAM_MASK & ~3];
+            *raw  = ((c >> 8) & 0xf800) | ((c >> 5) & 0x07e0) | ((c >> 3) & 0x001f);
+            return c;
+
+        case 4: /* ARGB1555 */
+        case 5: /* ARGB4444 */
+        case 6: /* RGB565 */
+            tiles = w >> 6;
+            c     = *(const uint16_t *) &vram[savage_tiled_addr(base, tiles ? tiles : 1, u << 1, v) & SAVAGE_VRAM_MASK & ~1];
+            *raw  = c;
+            if (((descr >> 16) & 7) == 4)
+                return savage_1555_to_argb(c);
+            if (((descr >> 16) & 7) == 5)
+                return savage_4444_to_argb(c);
+            return savage_565_to_argb(c);
+
+        default: /* S3TC: not emulated */
+            *raw = 0;
+            return 0xff000000;
+    }
+}
+
+static inline uint32_t
+savage_mul8(uint32_t a, uint32_t b)
+{
+    return (a * b + 127) / 255;
+}
+
+/* Blend factor for one channel: D3DBLEND - 1, with the source's 2/3 meaning
+   DESTCOLOR/INVDESTCOLOR and the destination's SRCCOLOR/INVSRCCOLOR. */
+static inline uint32_t
+savage_blend_factor(int mode, uint32_t sc, uint32_t dc, uint32_t sa, uint32_t da, int is_src)
+{
+    switch (mode) {
+        case 0:
+            return 0;
+        case 1:
+            return 255;
+        case 2:
+            return is_src ? dc : sc;
+        case 3:
+            return 255 - (is_src ? dc : sc);
+        case 4:
+            return sa;
+        case 5:
+            return 255 - sa;
+        case 6:
+            return da;
+        default:
+            return 255 - da;
+    }
+}
+
+static int
+savage_3d_compare(int func, uint32_t a, uint32_t b)
+{
+    switch (func) {
+        case 0:
+            return 0;
+        case 1:
+            return a < b;
+        case 2:
+            return a == b;
+        case 3:
+            return a <= b;
+        case 4:
+            return a > b;
+        case 5:
+            return a != b;
+        case 6:
+            return a >= b;
+        default:
+            return 1;
+    }
+}
+
+/* Shade, test, blend and write one pixel. */
+static void
+savage_3d_pixel(savage_t *dev, int x, int y, float z, float u, float v, const float *cd, const float *spc)
+{
+    uint32_t draw  = dev->regs3d[R3D_DRAW_CTRL];
+    uint32_t tex   = dev->regs3d[R3D_TEX_CTRL];
+    uint32_t zctrl = dev->regs3d[R3D_ZBUF_CTRL];
+    uint32_t dst   = dev->regs3d[R3D_DST_CTRL];
+    uint32_t dbase = ((dst >> 8) & 0x1fff) << 11;
+    int      dtile = dst & 0x7f;
+    int      d32   = ((dst >> 29) & 3) != 0;
+    uint32_t daddr;
+    uint32_t sr, sg, sb, sa;
+    uint32_t dr, dg, db, da;
+    uint32_t zaddr = 0, z16 = 0;
+    int      zbuf  = !!(zctrl & 0x20);
+
+    if (!dtile)
+        dtile = 1;
+
+    /* Diffuse colour (flat or Gouraud). */
+    sa = (uint32_t) cd[0];
+    sr = (uint32_t) cd[1];
+    sg = (uint32_t) cd[2];
+    sb = (uint32_t) cd[3];
+
+    if (tex & 0x10000) {
+        uint32_t descr = dev->regs3d[R3D_TEX_DESCR];
+        int      tw    = 1 << (descr & 0x0f);
+        int      th    = 1 << ((descr >> 8) & 0x0f);
+        int      tu    = (int) floorf(u * (float) tw);
+        int      tv    = (int) floorf(v * (float) th);
+        uint32_t raw;
+        uint32_t t, ta, tr, tg, tb;
+
+        tu = (tex & 0x1000) ? (tu & (tw - 1)) : ((tu < 0) ? 0 : ((tu >= tw) ? (tw - 1) : tu));
+        tv = (tex & 0x2000) ? (tv & (th - 1)) : ((tv < 0) ? 0 : ((tv >= th) ? (th - 1) : tv));
+        t  = savage_3d_texel(dev, tu, tv, &raw);
+
+        /* Colour-key transparency. */
+        if ((tex & 0x40000) && (raw == (dev->regs3d[R3D_TEX_XPR_CLR] & 0xffff)))
+            return;
+
+        ta = t >> 24;
+        tr = (t >> 16) & 0xff;
+        tg = (t >> 8) & 0xff;
+        tb = t & 0xff;
+
+        switch ((draw >> 26) & 7) {
+            case 1: /* modulate: the texture's alpha */
+                sr = savage_mul8(tr, sr);
+                sg = savage_mul8(tg, sg);
+                sb = savage_mul8(tb, sb);
+                sa = ta;
+                break;
+            case 3: /* modulate alpha */
+            case 5: /* modulate mask */
+                sr = savage_mul8(tr, sr);
+                sg = savage_mul8(tg, sg);
+                sb = savage_mul8(tb, sb);
+                sa = savage_mul8(ta, sa);
+                break;
+            case 2: /* decal alpha */
+                sr = (tr * ta + sr * (255 - ta) + 127) / 255;
+                sg = (tg * ta + sg * (255 - ta) + 127) / 255;
+                sb = (tb * ta + sb * (255 - ta) + 127) / 255;
+                break;
+            case 7: /* add */
+                sr = MIN(tr + sr, 255);
+                sg = MIN(tg + sg, 255);
+                sb = MIN(tb + sb, 255);
+                break;
+            default: /* decal, decal mask, copy */
+                sr = tr;
+                sg = tg;
+                sb = tb;
+                sa = ta;
+                break;
+        }
+    }
+
+    if (draw & 0x40) { /* specular */
+        sr = MIN(sr + (uint32_t) spc[1], 255);
+        sg = MIN(sg + (uint32_t) spc[2], 255);
+        sb = MIN(sb + (uint32_t) spc[3], 255);
+    }
+
+    /* Alpha test. */
+    if ((draw & 0x20000) && !savage_3d_compare((draw >> 14) & 7, sa, (draw >> 18) & 0xff))
+        return;
+
+    /* Z test (16-bit Z only). */
+    if (zbuf) {
+        uint32_t zoff   = dev->regs3d[R3D_ZBUF_OFFSET];
+        int      ztiles = (zoff >> 25) & 0x3f;
+        float    zc     = (z < 0.0f) ? 0.0f : ((z > 1.0f) ? 1.0f : z);
+
+        zaddr = savage_tiled_addr((zoff & 0x1fff) << 11, ztiles ? ztiles : 1, x << 1, y) & SAVAGE_VRAM_MASK & ~1;
+        z16   = (uint32_t) (zc * 65535.0f);
+        if (!savage_3d_compare(zctrl & 7, z16, *(uint16_t *) &dev->svga.vram[zaddr]))
+            return;
+    }
+
+    if (zctrl & 0x08) { /* draw buffer update */
+        int src_mode = (draw >> 10) & 7;
+        int dst_mode = (draw >> 7) & 7;
+
+        if (d32)
+            daddr = savage_tiled_addr(dbase, dtile, x << 2, y) & SAVAGE_VRAM_MASK & ~3;
+        else
+            daddr = savage_tiled_addr(dbase, dtile, x << 1, y) & SAVAGE_VRAM_MASK & ~1;
+
+        /* Anything but "source x 1 (or x its own opaque alpha) + destination x 0" reads the destination. */
+        if ((dst_mode != 0) || !((src_mode == 1) || ((src_mode == 4) && (sa == 255)))) {
+            uint32_t d = d32 ? *(uint32_t *) &dev->svga.vram[daddr] : savage_565_to_argb(*(uint16_t *) &dev->svga.vram[daddr]);
+            uint32_t fsr, fsg, fsb, fsa, fdr, fdg, fdb, fda;
+
+            da  = d32 ? (d >> 24) : 255;
+            dr  = (d >> 16) & 0xff;
+            dg  = (d >> 8) & 0xff;
+            db  = d & 0xff;
+            fsr = savage_blend_factor(src_mode, sr, dr, sa, da, 1);
+            fsg = savage_blend_factor(src_mode, sg, dg, sa, da, 1);
+            fsb = savage_blend_factor(src_mode, sb, db, sa, da, 1);
+            fsa = savage_blend_factor(src_mode, sa, da, sa, da, 1);
+            fdr = savage_blend_factor(dst_mode, sr, dr, sa, da, 0);
+            fdg = savage_blend_factor(dst_mode, sg, dg, sa, da, 0);
+            fdb = savage_blend_factor(dst_mode, sb, db, sa, da, 0);
+            fda = savage_blend_factor(dst_mode, sa, da, sa, da, 0);
+            sr  = MIN(savage_mul8(sr, fsr) + savage_mul8(dr, fdr), 255);
+            sg  = MIN(savage_mul8(sg, fsg) + savage_mul8(dg, fdg), 255);
+            sb  = MIN(savage_mul8(sb, fsb) + savage_mul8(db, fdb), 255);
+            sa  = MIN(savage_mul8(sa, fsa) + savage_mul8(da, fda), 255);
+        }
+
+        if (d32)
+            *(uint32_t *) &dev->svga.vram[daddr] = (sa << 24) | (sr << 16) | (sg << 8) | sb;
+        else
+            *(uint16_t *) &dev->svga.vram[daddr] = ((sr >> 3) << 11) | ((sg >> 2) << 5) | (sb >> 3);
+        dev->svga.changedvram[daddr >> 12] = changeframecount;
+    }
+
+    if (zbuf && (zctrl & 0x10)) {
+        *(uint16_t *) &dev->svga.vram[zaddr] = z16;
+        dev->svga.changedvram[zaddr >> 12]   = changeframecount;
+    }
+}
+
+static void
+savage_3d_unpack_color(uint32_t c, float *out)
+{
+    out[0] = (float) (c >> 24);
+    out[1] = (float) ((c >> 16) & 0xff);
+    out[2] = (float) ((c >> 8) & 0xff);
+    out[3] = (float) (c & 0xff);
+}
+
+/* Edge function, positive inside a triangle wound clockwise on the screen. */
+static inline double
+savage_edge(double ax, double ay, double bx, double by, double px, double py)
+{
+    return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+}
+
+/* Top-left fill rule: pixels on a top or left edge belong to the triangle. */
+static inline int
+savage_edge_top_left(double ax, double ay, double bx, double by)
+{
+    return ((ay == by) && (bx > ax)) || (by < ay);
+}
+
+static void
+savage_3d_triangle(savage_t *dev, int i0, int i1, int i2)
+{
+    uint32_t draw  = dev->regs3d[R3D_DRAW_CTRL];
+    uint32_t sc_tl = dev->regs3d[R3D_SCISSOR_TL];
+    uint32_t sc_br = dev->regs3d[R3D_SCISSOR_BR];
+    int      persp = !(draw & 0x80000000);
+    double   x0 = dev->vtx[i0].x, y0 = dev->vtx[i0].y;
+    double   x1 = dev->vtx[i1].x, y1 = dev->vtx[i1].y;
+    double   x2 = dev->vtx[i2].x, y2 = dev->vtx[i2].y;
+    double   area = savage_edge(x0, y0, x1, y1, x2, y2);
+    int      cull = (draw >> 2) & 3; /* D3DCULL: 1 none, 2 clockwise, 3 counter-clockwise */
+    int      minx, miny, maxx, maxy;
+    int      sx0, sy0, sx1, sy1;
+    int      tl0, tl1, tl2;
+    float    cd[3][4], spc[3][4];
+    float    w[3];
+
+    if (area == 0.0)
+        return;
+    if (((cull == 2) && (area > 0.0)) || ((cull == 3) && (area < 0.0)))
+        return;
+
+    /* Work with a clockwise triangle. */
+    if (area < 0.0) {
+        int t = i1;
+
+        i1   = i2;
+        i2   = t;
+        x1   = dev->vtx[i1].x;
+        y1   = dev->vtx[i1].y;
+        x2   = dev->vtx[i2].x;
+        y2   = dev->vtx[i2].y;
+        area = -area;
+    }
+
+    for (int i = 0; i < 3; i++) {
+        int n = (i == 0) ? i0 : ((i == 1) ? i1 : i2);
+
+        /* Flat shading takes the first vertex's colours. */
+        savage_3d_unpack_color(dev->vtx[(draw & 0x20) ? i0 : n].diff, cd[i]);
+        savage_3d_unpack_color(dev->vtx[(draw & 0x20) ? i0 : n].spec, spc[i]);
+        w[i] = (persp && (dev->vtx[n].w > 0.0f)) ? dev->vtx[n].w : 1.0f;
+    }
+
+    sx0 = sc_tl & 0x7ff;
+    sy0 = (sc_tl >> 16) & 0xfff;
+    sx1 = sc_br & 0x7ff;
+    sy1 = (sc_br >> 16) & 0xfff;
+
+    minx = MAX((int) floor(MIN(x0, MIN(x1, x2))), sx0);
+    maxx = MIN((int) ceil(MAX(x0, MAX(x1, x2))), sx1);
+    miny = MAX((int) floor(MIN(y0, MIN(y1, y2))), sy0);
+    maxy = MIN((int) ceil(MAX(y0, MAX(y1, y2))), sy1);
+
+    tl0 = savage_edge_top_left(x1, y1, x2, y2);
+    tl1 = savage_edge_top_left(x2, y2, x0, y0);
+    tl2 = savage_edge_top_left(x0, y0, x1, y1);
+
+    for (int y = miny; y <= maxy; y++) {
+        double py = y + 0.5;
+
+        for (int x = minx; x <= maxx; x++) {
+            double px = x + 0.5;
+            double e0 = savage_edge(x1, y1, x2, y2, px, py);
+            double e1 = savage_edge(x2, y2, x0, y0, px, py);
+            double e2 = savage_edge(x0, y0, x1, y1, px, py);
+            float  b0, b1, b2, q, u, v, z;
+            float  c[4], s[4];
+
+            if ((e0 < 0.0) || (e1 < 0.0) || (e2 < 0.0))
+                continue;
+            if (((e0 == 0.0) && !tl0) || ((e1 == 0.0) && !tl1) || ((e2 == 0.0) && !tl2))
+                continue;
+
+            /* Barycentric weights, perspective-corrected by the vertices' 1/W. */
+            b0 = (float) (e0 / area) * w[0];
+            b1 = (float) (e1 / area) * w[1];
+            b2 = (float) (e2 / area) * w[2];
+            q  = b0 + b1 + b2;
+            b0 /= q;
+            b1 /= q;
+            b2 /= q;
+
+            u = b0 * dev->vtx[i0].u + b1 * dev->vtx[i1].u + b2 * dev->vtx[i2].u;
+            v = b0 * dev->vtx[i0].v + b1 * dev->vtx[i1].v + b2 * dev->vtx[i2].v;
+            z = (float) ((e0 * dev->vtx[i0].z + e1 * dev->vtx[i1].z + e2 * dev->vtx[i2].z) / area);
+            for (int k = 0; k < 4; k++) {
+                c[k] = b0 * cd[0][k] + b1 * cd[1][k] + b2 * cd[2][k];
+                s[k] = b0 * spc[0][k] + b1 * spc[1][k] + b2 * spc[2][k];
+            }
+
+            savage_3d_pixel(dev, x, y, z, u, v, c, s);
+        }
+    }
+}
+
+/* A complete vertex: assemble triangles by the primitive type. */
+static void
+savage_3d_vertex(savage_t *dev)
+{
+    uint32_t cmd  = dev->bci.prim_cmd;
+    int      type = (cmd >> 25) & 3; /* 0 list, 1 strip, 2 fan */
+    int      n    = 0;
+    int      slot;
+
+    if (dev->nvtx < 3)
+        slot = dev->nvtx;
+    else
+        slot = 2;
+
+    /* Unpack X, Y, then the components the command does not switch off. */
+    {
+        const uint32_t *p = dev->bci.prim_buf;
+        float           x = savage_float(p[n++]);
+        float           y = savage_float(p[n++]);
+        float           z = (cmd & 0x01) ? 0.0f : savage_float(p[n++]);
+        float           w = (cmd & 0x02) ? 1.0f : savage_float(p[n++]);
+        uint32_t        d = (cmd & 0x04) ? 0xffffffff : p[n++];
+        uint32_t        s = (cmd & 0x08) ? 0x00000000 : p[n++];
+        float           u = (cmd & 0x10) ? 0.0f : savage_float(p[n++]);
+        float           v = (cmd & 0x20) ? 0.0f : savage_float(p[n++]);
+
+        if (dev->nvtx >= 3) {
+            /* Strip: drop the oldest; fan: keep the centre. */
+            if (type == 2)
+                dev->vtx[1] = dev->vtx[2];
+            else {
+                dev->vtx[0] = dev->vtx[1];
+                dev->vtx[1] = dev->vtx[2];
+            }
+        }
+
+        dev->vtx[slot].x  = x;
+        dev->vtx[slot].y  = y;
+        dev->vtx[slot].z  = z;
+        dev->vtx[slot].w  = w;
+        dev->vtx[slot].diff = d;
+        dev->vtx[slot].spec = s;
+        dev->vtx[slot].u  = u;
+        dev->vtx[slot].v  = v;
+    }
+
+    if (dev->nvtx < 3)
+        dev->nvtx++;
+    if (dev->nvtx < 3)
+        return;
+
+    savage_3d_triangle(dev, 0, 1, 2);
+    dev->prim_count++;
+
+    if (type == 0)
+        dev->nvtx = 0;
+}
+
+static void
+savage_3d_vertex_dword(savage_t *dev, uint32_t val)
+{
+    dev->bci.prim_buf[dev->bci.prim_dword++] = val;
+    if (dev->bci.prim_dword < dev->bci.prim_vert_dwords)
+        return;
+
+    dev->bci.prim_dword = 0;
+    savage_3d_vertex(dev);
+
+    if (--dev->bci.skip_count <= 0)
+        dev->bci.state = BCI_IDLE;
+}
+
+/* DrawPrimitive: vertex count 23:16, continue 24, type 26:25; bits 5:0 switch
+   off Z, W, diffuse, specular, U and V. Vertices are D3DTLVERTEX-ordered. */
+static void
+savage_3d_start(savage_t *dev, uint32_t cmd)
+{
+    int count = (cmd >> 16) & 0xff;
+
+    dev->bci.prim_cmd         = cmd;
+    dev->bci.prim_vert_dwords = 8 - __builtin_popcount(cmd & 0x3f);
+    dev->bci.prim_dword       = 0;
+    dev->bci.skip_count       = count;
+
+    /* Without the continue bit a list, strip or fan starts afresh. */
+    if (!(cmd & 0x01000000))
+        dev->nvtx = 0;
+
+    if (count)
+        dev->bci.state = BCI_3DVERTS;
+}
+
 static void
 s3_savage_bci_write(savage_t *dev, uint32_t val)
 {
     dev->bci_hist[dev->bci_hist_pos & 255] = val;
     dev->bci_hist_state[dev->bci_hist_pos & 255] = dev->bci.state;
     dev->bci_hist_pos++;
+    if (savage_bci_log)
+        pclog("BCI %08x %d\n", val, dev->bci.state);
 
     switch (dev->bci.state) {
         case BCI_PARAMS:
+            /* Coordinates never have bits 31:30 set: such a dword where one is
+               expected is the next command. The Win9x driver sends a fill's
+               command and colour, then a position and size for each clip
+               rectangle, so a fill clipped away entirely has none. */
+            if (val & 0xc0000000) {
+                int slot = dev->bci.slots[dev->bci.slot];
+
+                if ((slot == P_SRC_XY) || (slot == P_DST_XY) || (slot == P_WH))
+                    break;
+            }
             savage_param(dev, val);
             return;
 
@@ -2041,6 +2614,10 @@ s3_savage_bci_write(savage_t *dev, uint32_t val)
                 dev->bci.state = BCI_IDLE;
             return;
 
+        case BCI_3DVERTS:
+            savage_3d_vertex_dword(dev, val);
+            return;
+
         case BCI_SKIP:
             if (!(val & 0xc0000000))
                 return;
@@ -2069,9 +2646,7 @@ s3_savage_bci_write(savage_t *dev, uint32_t val)
             break;
 
         case 0x10: /* 3D draw primitive: X, Y and the vertex components not switched off */
-            dev->bci.skip_count = ((val >> 16) & 0xff) * (8 - __builtin_popcount(val & 0x3f));
-            if (dev->bci.skip_count)
-                dev->bci.state = BCI_3DDATA;
+            savage_3d_start(dev, val);
             break;
 
         case 0x11: /* 3D draw indexed primitive: two 16-bit indices a dword */
@@ -2317,6 +2892,8 @@ s3_savage_reset_regs(savage_t *dev)
     memset(&dev->gbd, 0, sizeof(dev->gbd));
     memset(&dev->pbd, 0, sizeof(dev->pbd));
     memset(&dev->sbd, 0, sizeof(dev->sbd));
+    memset(dev->regs3d, 0, sizeof(dev->regs3d));
+    dev->nvtx        = 0;
     dev->write_mask  = 0xffffffff;
     dev->read_mask   = 0xffffffff;
     dev->bci_ctrl    = 0;
@@ -2342,12 +2919,19 @@ static savage_t *savage_debug_dev;
 
 /* "dev" in the debug command file: the BCI parser's state and its last dwords. */
 static void
-s3_savage_debug_hook(UNUSED(const char *args))
+s3_savage_debug_hook(const char *args)
 {
     savage_t *dev = savage_debug_dev;
 
     if (!dev)
         return;
+
+    /* "dev bcilog 1|0": log every BCI dword and MMIO register write. */
+    if (!strncmp(args, "bcilog", 6)) {
+        savage_bci_log = atoi(args + 6) != 0;
+        pclog("Savage: BCI log %s\n", savage_bci_log ? "on" : "off");
+        return;
+    }
 
     pclog("Savage BCI: state %d cmd %08x slot %d/%d glyph %dx%d %u/%u host line %d/%d dword %d/%d\n",
           dev->bci.state, dev->bci.cmd, dev->bci.slot, dev->bci.nslots, dev->bci.glyph_w, dev->bci.glyph_h,
@@ -2355,6 +2939,9 @@ s3_savage_debug_hook(UNUSED(const char *args))
           dev->bci.dwords_per_line);
     pclog("Savage GBD %08x %08x PBD %08x %08x SBD %08x %08x\n", dev->gbd.offset, dev->gbd.hi,
           dev->pbd.offset, dev->pbd.hi, dev->sbd.offset, dev->sbd.hi);
+    pclog("Savage 3D: %d triangles, TexAddr %08x TexDescr %08x TexCtrl %08x DrawCtrl %08x ZBufCtrl %08x DstCtrl %08x\n",
+          dev->prim_count, dev->regs3d[0x1a], dev->regs3d[0x1b], dev->regs3d[0x1c], dev->regs3d[0x31],
+          dev->regs3d[0x32], dev->regs3d[0x34]);
     for (uint32_t i = 0; i < 256; i++) {
         uint32_t n = dev->bci_hist_pos - 256 + i;
 
