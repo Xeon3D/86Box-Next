@@ -78,6 +78,7 @@ typedef struct pm_t {
     int      chip;
     void    *ramdac;
     uint16_t xr_io_base; /* the XR I/O window (6422): SR1F:SR1E */
+    int      blt_pending; /* a start (or quick start) seen in this register access */
     void    *i2c;
     void    *ddc;
     uint32_t vram_size;
@@ -778,14 +779,20 @@ pm_xr_write(pm_t *pm, uint32_t addr, uint8_t val)
     switch (addr) {
         case 0x43:
             if (val & 0x80)
-                pm_blt_start(pm);
+                pm->blt_pending = 1;
             break;
-        case 0x58:
-        case 0x59:
-            /* Quick start on the X extent. */
-            if ((addr == 0x59) && (((pm_xr32(pm, XR_BLT_CTRL) >> 29) & 3) == 1))
-                pm_blt_start(pm);
+        case 0x50 ... 0x5b: {
+            /* Quick start (XR40 bits 30:29) on the X extent (1), source (2)
+               or destination (3): the operation starts when the access
+               ends, after a dword write has delivered both halves (the
+               STB driver writes each glyph's width and height at once). */
+            static const uint8_t qs_reg[4] = { 0, 0x58, 0x50, 0x54 };
+            const int            qs        = (pm_xr32(pm, XR_BLT_CTRL) >> 29) & 3;
+
+            if (qs && ((addr & ~3) == qs_reg[qs]))
+                pm->blt_pending = 1;
             break;
+        }
         case 0x80:
             svga_recalctimings(&pm->svga);
             break;
@@ -814,6 +821,16 @@ pm_xr_write(pm_t *pm, uint32_t addr, uint8_t val)
     }
 }
 
+/* The end of a register access: run the operation it started. */
+static void
+pm_xr_access_done(pm_t *pm)
+{
+    if (pm->blt_pending) {
+        pm->blt_pending = 0;
+        pm_blt_start(pm);
+    }
+}
+
 /* The 6422's XR I/O window: four ports at SR1F:SR1E, SR1D the dword index. */
 static uint8_t
 pm_xr_io_read(uint16_t port, void *priv)
@@ -829,6 +846,29 @@ pm_xr_io_write(uint16_t port, uint8_t val, void *priv)
     pm_t *pm = (pm_t *) priv;
 
     pm_xr_write(pm, (pm->sr[0x1d - 8] << 2) + (port & 3), val);
+    pm_xr_access_done(pm);
+}
+
+static void
+pm_xr_io_writew(uint16_t port, uint16_t val, void *priv)
+{
+    pm_t          *pm   = (pm_t *) priv;
+    const uint32_t addr = (pm->sr[0x1d - 8] << 2) + (port & 3);
+
+    pm_xr_write(pm, addr, val & 0xff);
+    pm_xr_write(pm, addr + 1, val >> 8);
+    pm_xr_access_done(pm);
+}
+
+static void
+pm_xr_io_writel(uint16_t port, uint32_t val, void *priv)
+{
+    pm_t          *pm   = (pm_t *) priv;
+    const uint32_t addr = (pm->sr[0x1d - 8] << 2) + (port & 3);
+
+    for (int i = 0; i < 4; i++)
+        pm_xr_write(pm, addr + i, val >> (i << 3));
+    pm_xr_access_done(pm);
 }
 
 static void
@@ -837,13 +877,13 @@ pm_update_xr_io(pm_t *pm)
     const uint16_t base = (pm->sr[0x1f - 8] << 8) | (pm->sr[0x1e - 8] & 0xfc);
 
     if (pm->xr_io_base)
-        io_removehandler(pm->xr_io_base, 4, pm_xr_io_read, NULL, NULL, pm_xr_io_write, NULL, NULL, pm);
+        io_removehandler(pm->xr_io_base, 4, pm_xr_io_read, NULL, NULL, pm_xr_io_write, pm_xr_io_writew, pm_xr_io_writel, pm);
     pm->xr_io_base = 0;
     /* Never over the VGA ports or the legacy ones below 100h. */
     if ((pm->chip >= PM_6422) && (base >= 0x100) && ((base & 0xffe0) != 0x03c0) && ((base & 0xfff0) != 0x03b0) &&
         (pm->pci_regs[PCI_REG_COMMAND] & PCI_COMMAND_IO)) {
         pm->xr_io_base = base;
-        io_sethandler(base, 4, pm_xr_io_read, NULL, NULL, pm_xr_io_write, NULL, NULL, pm);
+        io_sethandler(base, 4, pm_xr_io_read, NULL, NULL, pm_xr_io_write, pm_xr_io_writew, pm_xr_io_writel, pm);
     }
 }
 
@@ -871,6 +911,7 @@ static void
 pm_xr_writeb(uint32_t addr, uint8_t val, void *priv)
 {
     pm_xr_write((pm_t *) priv, addr, val);
+    pm_xr_access_done((pm_t *) priv);
 }
 
 static void
@@ -880,13 +921,17 @@ pm_xr_writew(uint32_t addr, uint16_t val, void *priv)
 
     pm_xr_write(pm, addr, val & 0xff);
     pm_xr_write(pm, addr + 1, val >> 8);
+    pm_xr_access_done(pm);
 }
 
 static void
 pm_xr_writel(uint32_t addr, uint32_t val, void *priv)
 {
-    pm_xr_writew(addr, val & 0xffff, priv);
-    pm_xr_writew(addr + 2, val >> 16, priv);
+    pm_t *pm = (pm_t *) priv;
+
+    for (int i = 0; i < 4; i++)
+        pm_xr_write(pm, addr + i, val >> (i << 3));
+    pm_xr_access_done(pm);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -939,7 +984,7 @@ pm_lfb_readl(uint32_t addr, void *priv)
 }
 
 static void
-pm_lfb_writeb(uint32_t addr, uint8_t val, void *priv)
+pm_lfb_write_raw(uint32_t addr, uint8_t val, void *priv)
 {
     pm_t   *pm   = (pm_t *) priv;
     svga_t *svga = &pm->svga;
@@ -961,17 +1006,26 @@ pm_lfb_writeb(uint32_t addr, uint8_t val, void *priv)
 }
 
 static void
+pm_lfb_writeb(uint32_t addr, uint8_t val, void *priv)
+{
+    pm_lfb_write_raw(addr, val, priv);
+    pm_xr_access_done((pm_t *) priv);
+}
+
+static void
 pm_lfb_writew(uint32_t addr, uint16_t val, void *priv)
 {
-    pm_lfb_writeb(addr, val & 0xff, priv);
-    pm_lfb_writeb(addr + 1, val >> 8, priv);
+    pm_lfb_write_raw(addr, val & 0xff, priv);
+    pm_lfb_write_raw(addr + 1, val >> 8, priv);
+    pm_xr_access_done((pm_t *) priv);
 }
 
 static void
 pm_lfb_writel(uint32_t addr, uint32_t val, void *priv)
 {
-    pm_lfb_writew(addr, val & 0xffff, priv);
-    pm_lfb_writew(addr + 2, val >> 16, priv);
+    for (int i = 0; i < 4; i++)
+        pm_lfb_write_raw(addr + i, val >> (i << 3), priv);
+    pm_xr_access_done((pm_t *) priv);
 }
 
 static void
