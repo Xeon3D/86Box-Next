@@ -100,7 +100,7 @@ debug_cmd_shot(const char *path)
 {
     const monitor_t *mon = &monitors[0];
     const bitmap_t  *bmp = mon->target_buffer;
-    int              w, h;
+    int              x, y, w, h;
     FILE            *f;
     uint8_t          hdr[54] = { 0 };
 
@@ -108,13 +108,18 @@ debug_cmd_shot(const char *path)
         always_log("debug_cmd: shot %s: no screen\n", path);
         return;
     }
-    /* the picture and the overscan the monitor shows, nothing past it */
-    w = mon->mon_xsize + mon->mon_overscan_x;
-    h = mon->mon_ysize + mon->mon_overscan_y;
-    if (w > bmp->w)
-        w = bmp->w;
-    if (h > bmp->h)
-        h = bmp->h;
+    /* What the last blit showed: the overscan only when it is displayed
+       (the buffer's border rows are not kept up to date otherwise). */
+    video_get_blit_rect_monitor(0, &x, &y, &w, &h);
+    if ((w <= 0) || (h <= 0)) {
+        x = y = 0;
+        w = mon->mon_xsize + mon->mon_overscan_x;
+        h = mon->mon_ysize + mon->mon_overscan_y;
+    }
+    if ((x + w) > bmp->w)
+        w = bmp->w - x;
+    if ((y + h) > bmp->h)
+        h = bmp->h - y;
     if ((w <= 0) || (h <= 0) || ((f = fopen(path, "wb")) == NULL)) {
         always_log("debug_cmd: shot %s: cannot write (%dx%d)\n", path, w, h);
         return;
@@ -132,8 +137,8 @@ debug_cmd_shot(const char *path)
     hdr[26] = 1;
     hdr[28] = 32;
     fwrite(hdr, 1, sizeof(hdr), f);
-    for (int y = 0; y < h; y++)
-        fwrite(bmp->line[y], 4, w, f);
+    for (int row = 0; row < h; row++)
+        fwrite(&bmp->line[y + row][x], 4, w, f);
     fclose(f);
     always_log("debug_cmd: shot %s (%dx%d, mode %dx%d)\n", path, w, h, mon->mon_xsize, mon->mon_ysize);
 }
@@ -157,6 +162,44 @@ debug_cmd_cpu(void)
     always_log("debug_cmd: cpu %04x:%08x (lin %08x) flags %04x eax %08x ebx %08x ecx %08x edx %08x esi %08x edi %08x ebp %08x esp %08x ss %04x ds %04x es %04x cr0 %08x\n",
                CS, cpu_state.pc, lin, cpu_state.flags, EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP, SS, DS, ES, cr0);
     always_log("debug_cmd: code%s\n", code);
+}
+
+static uint8_t
+debug_cmd_lin_readb(uint32_t lin)
+{
+    uint64_t phys = (cr0 >> 31) ? mmutranslate_noabrt(lin, 0) : (uint64_t) lin;
+
+    return (phys == 0xffffffffffffffffULL) ? 0xff : mem_readb_phys((uint32_t) phys);
+}
+
+/* segbase <selector>: the selector's descriptor base, from the GDT or the LDT
+   (to turn a protected mode sel:offset into a "bp" address). */
+static void
+debug_cmd_segbase(const char *arg)
+{
+    uint32_t sel  = strtoul(arg, NULL, 16);
+    uint32_t desc = ((sel & 4) ? ldt.base : gdt.base) + (sel & ~7);
+    uint8_t  d[8];
+
+    for (int i = 0; i < 8; i++)
+        d[i] = debug_cmd_lin_readb(desc + i);
+    always_log("debug_cmd: segbase %04x = %08x (limit %05x, access %02x)\n", sel,
+               d[2] | (d[3] << 8) | (d[4] << 16) | ((uint32_t) d[7] << 24),
+               d[0] | (d[1] << 8) | ((d[6] & 0x0f) << 16), d[5]);
+}
+
+/* For devices: log where the guest is (as "cpu" does) and its stack frame at
+   SS:BP -- a 16-bit far return address shows the caller's selector. */
+void
+debug_cmd_log_cpu(void)
+{
+    char     bytes[3 * 16 + 1];
+    uint32_t lin = ss + ((cpu_state.op32 & CPU_STATUS_STACK32) ? EBP : BP);
+
+    debug_cmd_cpu();
+    for (int i = 0; i < 16; i++)
+        snprintf(bytes + 3 * i, 4, " %02x", debug_cmd_lin_readb(lin + i));
+    always_log("debug_cmd: [ss:bp] %08x:%s\n", lin, bytes);
 }
 
 #define DEBUG_CMD_BPS 16
@@ -450,7 +493,9 @@ debug_cmd_run(char *line)
     else if (!strcmp(line, "speedlog")) {
         debug_cmd_speed_log = atoi(arg) != 0;
         always_log("debug_cmd: speedlog %s\n", debug_cmd_speed_log ? "on" : "off");
-    } else if (!strcmp(line, "find"))
+    } else if (!strcmp(line, "segbase"))
+        debug_cmd_segbase(arg);
+    else if (!strcmp(line, "find"))
         debug_cmd_find(arg);
     else if (!strcmp(line, "interp")) {
         /* interp 1|0: run every block through the interpreter (to tell dynarec bugs apart) */

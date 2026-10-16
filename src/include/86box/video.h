@@ -304,6 +304,8 @@ extern void video_blit_memtoscreen_8(int x, int y, int w, int h);
 extern void video_blend_monitor(int x, int y, int monitor_index);
 extern void video_process_8_monitor(int x, int y, int monitor_index);
 extern void video_blit_memtoscreen_monitor(int x, int y, int w, int h, int monitor_index);
+/* The part of the target buffer the last blit showed (the overscan only when it is on). */
+extern void video_get_blit_rect_monitor(int monitor_index, int *x, int *y, int *w, int *h);
 extern void video_blit_complete_monitor(int monitor_index);
 extern void video_wait_for_blit_monitor(int monitor_index);
 extern void video_wait_for_buffer_monitor(int monitor_index);

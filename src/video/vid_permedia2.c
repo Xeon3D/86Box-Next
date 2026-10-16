@@ -30,6 +30,7 @@
  */
 #include <math.h>
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,7 +51,7 @@
 #include <86box/plat_unused.h>
 #include <86box/debug_cmd.h>
 
-#define BIOS_STB_GLYDER_MAX2 "roms/video/3dlabs/permedia2/stbp2a.bin"
+#define P2_ROM_DIR "roms/video/3dlabs/permedia2/"
 
 #define P2_CTRL_SIZE 0x20000 /* 64 KB of registers, then a byte-swapped mirror. */
 #define P2_APERTURE_SIZE 0x800000
@@ -71,6 +72,8 @@
 #define P2_DMA_CONTROL    0x0060
 #define P2_FIFO_DISCON    0x0068
 #define P2_CHIP_CONFIG    0x0070
+#define P2_OUT_DMA_ADDR   0x0080
+#define P2_OUT_DMA_COUNT  0x0088
 
 #define P2_REBOOT         0x1000
 #define P2_MEM_CONTROL    0x1040
@@ -123,6 +126,15 @@ enum {
 #define TVP_MEMCLK_1       0x30
 #define TVP_MEMCLK_STATUS  0x33
 
+/* Host-readable output FIFO. The real one is 8 words and stalls the
+   rasterizer; here a primitive runs to the end at once, so a whole upload
+   (and the Sync after it) must fit. */
+#define P2_OUT_FIFO 16384
+/* An upload stalls once this many words wait to be read. */
+#define P2_OUT_STALL 4096
+/* Register writes held back while a primitive is stalled. */
+#define P2_HOLD_QUEUE 65536
+
 /* Graphics processor tags (register = 0x8000 + 8 * tag). */
 #define GP_TAGS 0x1000
 
@@ -153,6 +165,7 @@ typedef struct p2_raster_t {
     int64_t  dcolor_dx[3];
     int64_t  dcolor_dy[3];
     uint32_t alpha;
+    int      out_wait;   /* An upload waiting for output FIFO space. */
     int      rel_offset; /* Last: kept from one primitive to the next. */
 } p2_raster_t;
 
@@ -166,6 +179,7 @@ typedef struct p2_t {
     uint8_t pci_slot;
     int     is_agp;
     int     tdlabs_id;
+    uint8_t revision;
     uint8_t irq_state;
     uint8_t pci_regs[256];
 
@@ -182,9 +196,14 @@ typedef struct p2_t {
     uint32_t vclk_ctl;
     uint32_t test_register;
     uint32_t aperture[2];
+    int      flash_cycle;   /* JEDEC command bytes seen (ROM access). */
+    int      flash_id_mode; /* Software ID mode: the flash part's IDs at 0/1. */
     uint32_t dma_address;
     uint32_t dma_count;
     uint32_t dma_control;
+    uint32_t out_dma_address;
+    uint32_t out_dma_cursor;
+    uint32_t out_dma_count;
     uint32_t fifo_discon;
     uint32_t chip_config;
     uint32_t mem_control;
@@ -209,15 +228,22 @@ typedef struct p2_t {
 
     /* Graphics processor. */
     uint32_t    gp[GP_TAGS];
+    uint32_t    texel_lut[256];
     p2_raster_t raster;
     uint32_t fifo_hdr_count;     /* Data words still owed to the current header. */
     uint32_t fifo_hdr_tag;
     uint32_t fifo_hdr_mode;
     uint32_t fifo_hdr_mask;
-    uint32_t out_fifo[256];
+    uint32_t out_fifo[P2_OUT_FIFO];
     int      out_rd;
     int      out_wr;
     int      out_count;
+    uint32_t *hold_tag;
+    uint32_t *hold_val;
+    int       hold_rd;
+    int       hold_wr;
+    int       hold_count;
+    int       in_resume;
 } p2_t;
 
 static video_timings_t timing_p2_pci = { .type = VIDEO_PCI, .write_b = 2, .write_w = 2, .write_l = 1, .read_b = 10, .read_w = 10, .read_l = 10 };
@@ -246,6 +272,7 @@ static uint32_t p2_ctrl_read(p2_t *p2, uint32_t addr);
 static void     p2_gp_write(p2_t *p2, uint32_t tag, uint32_t val);
 static void     p2_gp_command(p2_t *p2, uint32_t tag, uint32_t val);
 static void     p2_gp_reset(p2_t *p2);
+static void     p2_out_space(p2_t *p2);
 
 /* ------------------------------------------------------------------------- */
 /* Interrupts                                                                */
@@ -291,16 +318,6 @@ p2_vsync_callback(svga_t *svga)
 /* Output FIFO (host reads, filled by Sync and readback tags)                */
 /* ------------------------------------------------------------------------- */
 
-static void
-p2_out_fifo_push(p2_t *p2, uint32_t val)
-{
-    if (p2->out_count >= 256)
-        return;
-    p2->out_fifo[p2->out_wr] = val;
-    p2->out_wr               = (p2->out_wr + 1) & 255;
-    p2->out_count++;
-}
-
 static uint32_t
 p2_out_fifo_pop(p2_t *p2)
 {
@@ -309,9 +326,40 @@ p2_out_fifo_pop(p2_t *p2)
     if (!p2->out_count)
         return 0;
     val        = p2->out_fifo[p2->out_rd];
-    p2->out_rd = (p2->out_rd + 1) & 255;
+    p2->out_rd = (p2->out_rd + 1) & (P2_OUT_FIFO - 1);
     p2->out_count--;
     return val;
+}
+
+static uint32_t
+p2_dma_swap(p2_t *p2, uint32_t v)
+{
+    if (p2->dma_control & 0x10)
+        v = (v << 24) | ((v & 0xff00) << 8) | ((v >> 8) & 0xff00) | (v >> 24);
+    return v;
+}
+
+/* Output DMA: while OutDMACount runs, the output FIFO drains into system
+   memory (completion is polled through OutDMACount). */
+static void
+p2_out_dma_run(p2_t *p2)
+{
+    while (p2->out_dma_count && p2->out_count) {
+        mem_writel_phys(p2->out_dma_cursor, p2_dma_swap(p2, p2_out_fifo_pop(p2)));
+        p2->out_dma_cursor += 4;
+        p2->out_dma_count--;
+    }
+}
+
+static void
+p2_out_fifo_push(p2_t *p2, uint32_t val)
+{
+    if (p2->out_count >= P2_OUT_FIFO)
+        return;
+    p2->out_fifo[p2->out_wr] = val;
+    p2->out_wr               = (p2->out_wr + 1) & (P2_OUT_FIFO - 1);
+    p2->out_count++;
+    p2_out_dma_run(p2);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -328,6 +376,21 @@ p2_pixclk(p2_t *p2, int n)
 
     if (!m || !d || !(p & 0x08))
         return (n == 1) ? 28322000.0 : 25175000.0;
+
+    return (14318180.0 * m / d) / (double) (1 << (p & 7));
+}
+
+/* Memory clock synthesiser (MCLK, 30h-32h), the same layout (BIOSes leave
+   its P bit 3 clear: ELSA's 7Bh/0Bh/01h is 80 MHz). */
+static double
+p2_memclk(p2_t *p2)
+{
+    const uint8_t m = p2->dac_regs[TVP_MEMCLK_1];
+    const uint8_t d = p2->dac_regs[TVP_MEMCLK_1 + 1];
+    const uint8_t p = p2->dac_regs[TVP_MEMCLK_1 + 2];
+
+    if (!m || !d)
+        return 70000000.0;
 
     return (14318180.0 * m / d) / (double) (1 << (p & 7));
 }
@@ -802,6 +865,14 @@ p2_recalctimings(svga_t *svga)
        mode switch and leave AR10 bit 3 set). */
     svga->disable_blink = p2_vtg_active(p2);
 
+    if (!p2_vtg_active(p2) && (svga->bpp != 8)) {
+        /* Back from the VTG: its depth is no VGA mode's (Windows 98's
+           shutdown screen came out at 15 bpp). Work the timings out again. */
+        svga->bpp = 8;
+        svga_recalctimings(svga);
+        return;
+    }
+
     if (!p2_vtg_active(p2)) {
         /* The VGA core drives the display, if SR05 lets it. */
         const int    sel  = (svga->miscout >> 2) & 3;
@@ -953,6 +1024,7 @@ p2_lfb_readl(uint32_t addr, void *priv)
     return *(uint32_t *) &p2->svga.vram[addr & p2->vram_mask & ~3];
 }
 
+
 static void
 p2_lfb_writeb(uint32_t addr, uint8_t val, void *priv)
 {
@@ -987,6 +1059,163 @@ p2_lfb_writel(uint32_t addr, uint32_t val, void *priv)
     v  = (uint32_t *) &p2->svga.vram[addr];
     *v = (*v & ~p2->bypass_mask) | (val & p2->bypass_mask);
     p2_vram_changed(p2, addr);
+}
+
+/* ApertureOne/Two bit 9 (ROM access): that aperture reaches the expansion ROM
+   instead of memory. ELSA's drivers read the board's ID block (the word at 0Ah
+   points to it) and identify the flash part through it, with the JEDEC
+   software ID commands; the part reported is an Atmel AT29C257 (32 KB) or
+   AT29C512 (64 KB), as the image's size calls for. Programming is ignored. */
+static inline int
+p2_ap_rom(const p2_t *p2, int n)
+{
+    return (p2->aperture[n] & 0x200) && (p2->bios_rom.rom != NULL);
+}
+
+static uint8_t
+p2_ap_rom_readb(const p2_t *p2, uint32_t addr)
+{
+    addr &= p2->bios_rom.sz - 1;
+    if (p2->flash_id_mode && (addr < 2))
+        return addr ? ((p2->bios_rom.sz > 0x8000) ? 0x5d : 0xdc) : 0x1f;
+
+    return p2->bios_rom.rom[addr];
+}
+
+static void
+p2_ap_rom_writeb(p2_t *p2, uint32_t addr, uint8_t val)
+{
+    static const uint16_t cmd_addr[2] = { 0x5555, 0x2aaa };
+    static const uint8_t  cmd_val[2]  = { 0xaa, 0x55 };
+
+    addr &= 0x7fff;
+    if (val == 0xf0) {
+        p2->flash_id_mode = 0;
+        p2->flash_cycle   = 0;
+    } else if (p2->flash_cycle < 2) {
+        p2->flash_cycle = ((addr == cmd_addr[p2->flash_cycle]) && (val == cmd_val[p2->flash_cycle])) ? (p2->flash_cycle + 1) : 0;
+    } else {
+        if (addr == 0x5555) {
+            if (val == 0x90)
+                p2->flash_id_mode = 1;
+        }
+        p2->flash_cycle = 0;
+    }
+}
+
+static uint32_t
+p2_ap_read(p2_t *p2, int n, uint32_t addr, int size)
+{
+    uint32_t ret = 0;
+
+    if (!p2_ap_rom(p2, n)) {
+        switch (size) {
+            case 1:
+                return p2_lfb_readb(addr, p2);
+            case 2:
+                return p2_lfb_readw(addr, p2);
+            default:
+                return p2_lfb_readl(addr, p2);
+        }
+    }
+
+    for (int i = 0; i < size; i++)
+        ret |= (uint32_t) p2_ap_rom_readb(p2, addr + i) << (i << 3);
+    return ret;
+}
+
+static void
+p2_ap_write(p2_t *p2, int n, uint32_t addr, uint32_t val, int size)
+{
+    if (!p2_ap_rom(p2, n)) {
+        switch (size) {
+            case 1:
+                p2_lfb_writeb(addr, val, p2);
+                break;
+            case 2:
+                p2_lfb_writew(addr, val, p2);
+                break;
+            default:
+                p2_lfb_writel(addr, val, p2);
+                break;
+        }
+        return;
+    }
+
+    for (int i = 0; i < size; i++)
+        p2_ap_rom_writeb(p2, addr + i, val >> (i << 3));
+}
+
+static uint8_t
+p2_ap0_readb(uint32_t addr, void *priv)
+{
+    return p2_ap_read((p2_t *) priv, 0, addr, 1);
+}
+
+static uint16_t
+p2_ap0_readw(uint32_t addr, void *priv)
+{
+    return p2_ap_read((p2_t *) priv, 0, addr, 2);
+}
+
+static uint32_t
+p2_ap0_readl(uint32_t addr, void *priv)
+{
+    return p2_ap_read((p2_t *) priv, 0, addr, 4);
+}
+
+static void
+p2_ap0_writeb(uint32_t addr, uint8_t val, void *priv)
+{
+    p2_ap_write((p2_t *) priv, 0, addr, val, 1);
+}
+
+static void
+p2_ap0_writew(uint32_t addr, uint16_t val, void *priv)
+{
+    p2_ap_write((p2_t *) priv, 0, addr, val, 2);
+}
+
+static void
+p2_ap0_writel(uint32_t addr, uint32_t val, void *priv)
+{
+    p2_ap_write((p2_t *) priv, 0, addr, val, 4);
+}
+
+static uint8_t
+p2_ap1_readb(uint32_t addr, void *priv)
+{
+    return p2_ap_read((p2_t *) priv, 1, addr, 1);
+}
+
+static uint16_t
+p2_ap1_readw(uint32_t addr, void *priv)
+{
+    return p2_ap_read((p2_t *) priv, 1, addr, 2);
+}
+
+static uint32_t
+p2_ap1_readl(uint32_t addr, void *priv)
+{
+    return p2_ap_read((p2_t *) priv, 1, addr, 4);
+}
+
+static void
+p2_ap1_writeb(uint32_t addr, uint8_t val, void *priv)
+{
+    p2_ap_write((p2_t *) priv, 1, addr, val, 1);
+}
+
+static void
+p2_ap1_writew(uint32_t addr, uint16_t val, void *priv)
+{
+    p2_ap_write((p2_t *) priv, 1, addr, val, 2);
+}
+
+static void
+p2_ap1_writel(uint32_t addr, uint32_t val, void *priv)
+{
+    p2_ap_write((p2_t *) priv, 1, addr, val, 4);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1123,7 +1352,7 @@ p2_ctrl_write_int(p2_t *p2, uint32_t addr, uint32_t val)
             if (p2->dma_count) {
                 /* Feed the input FIFO from system memory at once. */
                 while (p2->dma_count) {
-                    p2_fifo_write(p2, mem_readl_phys(p2->dma_address));
+                    p2_fifo_write(p2, p2_dma_swap(p2, mem_readl_phys(p2->dma_address)));
                     p2->dma_address += 4;
                     p2->dma_count--;
                 }
@@ -1132,6 +1361,15 @@ p2_ctrl_write_int(p2_t *p2, uint32_t addr, uint32_t val)
             break;
         case P2_ERROR_FLAGS:
             p2->error_flags &= ~val;
+            break;
+        case P2_OUT_DMA_ADDR:
+            p2->out_dma_address = val & ~3;
+            break;
+        case P2_OUT_DMA_COUNT:
+            p2->out_dma_count  = val & 0xffff;
+            p2->out_dma_cursor = p2->out_dma_address;
+            p2_out_dma_run(p2);
+            p2_out_space(p2);
             break;
         case P2_VCLK_CTL:
             p2->vclk_ctl = val;
@@ -1193,7 +1431,9 @@ p2_ctrl_read_int(p2_t *p2, uint32_t addr)
 
     switch (addr & 0xf000) {
         case 0x2000:
-            return p2_out_fifo_pop(p2);
+            ret = p2_out_fifo_pop(p2);
+            p2_out_space(p2);
+            return ret;
 
         case 0x3000:
             if (!(addr & 7) && ((addr & 0xfff) >> 3) < VTG_NUM) {
@@ -1231,7 +1471,9 @@ p2_ctrl_read_int(p2_t *p2, uint32_t addr)
             ret = p2->int_flags;
             break;
         case P2_IN_FIFO_SPACE:
-            ret = 256;
+            /* Empty: 256 entries and two more in the input stage. ELSA's NT
+               driver waits for 258 before it touches the core. */
+            ret = 258;
             break;
         case P2_OUT_FIFO_WORDS:
             ret = p2->out_count;
@@ -1260,6 +1502,12 @@ p2_ctrl_read_int(p2_t *p2, uint32_t addr)
         case P2_DMA_CONTROL:
             ret = p2->dma_control;
             break;
+        case P2_OUT_DMA_ADDR:
+            ret = p2->out_dma_address;
+            break;
+        case P2_OUT_DMA_COUNT:
+            ret = p2->out_dma_count;
+            break;
         case P2_FIFO_DISCON:
             ret = p2->fifo_discon;
             break;
@@ -1282,7 +1530,9 @@ p2_ctrl_read_int(p2_t *p2, uint32_t addr)
             ret = p2->fb_write_mask;
             break;
         case P2_MCLK_COUNT:
-            ret = 0;
+            /* Free-running MClk cycle count: drivers time loops and
+               measure the clock with it (ELSA's waits on it at boot). */
+            ret = (uint32_t) (uint64_t) ((double) tsc * 4294967296.0 / (double) TIMER_USEC * (p2_memclk(p2) / 1000000.0));
             break;
         default:
             p2_log("P2: unhandled control read %04X\n", addr);
@@ -1298,8 +1548,6 @@ p2_ctrl_write(p2_t *p2, uint32_t addr, uint32_t val)
 {
     if ((p2_do_log >= 2) && ((addr & 0xfffc) < 0x8000) && ((addr & 0xf000) != 0x2000))
         pclog("P2: W %04X = %08X\n", addr & 0xfffc, val);
-    if ((p2_do_log >= 3) && ((addr & 0xfffc) >= 0x8000))
-        pclog("P2: GP %03X = %08X\n", ((addr & 0xfffc) - 0x8000) >> 3, val);
     p2_ctrl_write_int(p2, addr, val);
 }
 
@@ -1390,12 +1638,29 @@ p2_gp_reset(p2_t *p2)
 {
     p2->fifo_hdr_count = 0;
     p2->out_rd = p2->out_wr = p2->out_count = 0;
+    p2->hold_rd = p2->hold_wr = p2->hold_count = 0;
+    p2->raster.active   = 0;
+    p2->raster.out_wait = 0;
 }
 
 static void
 p2_gp_write(p2_t *p2, uint32_t tag, uint32_t val)
 {
     tag &= GP_TAGS - 1;
+
+    /* Behind a stalled upload, later writes wait in the input FIFO. */
+    if ((p2->raster.active && p2->raster.out_wait) || (p2->hold_count && !p2->in_resume)) {
+        if (p2->hold_count < P2_HOLD_QUEUE) {
+            p2->hold_tag[p2->hold_wr] = tag;
+            p2->hold_val[p2->hold_wr] = val;
+            p2->hold_wr               = (p2->hold_wr + 1) & (P2_HOLD_QUEUE - 1);
+            p2->hold_count++;
+        }
+        return;
+    }
+
+    if (p2_do_log >= 3)
+        pclog("P2: GP %03X = %08X\n", tag, val);
 
     switch (tag) {
         case TAG_SYNC:
@@ -1457,7 +1722,14 @@ p2_gp_write(p2_t *p2, uint32_t tag, uint32_t val)
 #define TAG_TEXTURE_BASE        0x0b0
 #define TAG_TEXTURE_MAP_FORMAT  0x0b1
 #define TAG_TEXTURE_DATA_FORMAT 0x0b2
+#define TAG_DS_DY_DOM           0x073
+#define TAG_DT_DX               0x075
+#define TAG_DT_DY_DOM           0x076
+#define TAG_TEXEL_LUT_INDEX     0x098
+#define TAG_TEXEL_LUT_DATA      0x099
 #define TAG_TEXEL0              0x0c0
+#define TAG_TEXEL_LUT_MODE      0x0cf
+#define TAG_TEXEL_LUT0          0x1d0
 #define TAG_TEXTURE_READ_MODE   0x0ce
 #define TAG_R_START             0x0f0
 #define TAG_A_START             0x0f9
@@ -1468,6 +1740,8 @@ p2_gp_write(p2_t *p2, uint32_t tag, uint32_t val)
 #define TAG_FB_SOFT_WRITE_MASK  0x104
 #define TAG_LOGICAL_OP_MODE     0x105
 #define TAG_FB_WRITE_DATA       0x106
+#define TAG_TEXTURE_DATA        0x11d
+#define TAG_TEXTURE_DL_OFFSET   0x11e
 #define TAG_FB_READ_MODE        0x150
 #define TAG_FB_SOURCE_OFFSET    0x151
 #define TAG_FB_PIXEL_OFFSET     0x152
@@ -1863,20 +2137,105 @@ p2_load_texture_mask(p2_t *p2)
     r->payload_left = MIN(32, r->columns - r->col);
 }
 
-/* A texture copy's source texel: 8 bit, nearest, clamped, unit steps. */
-static uint32_t
-p2_texture_copy_color(p2_t *p2)
+static int64_t
+p2_tex_wrap(int64_t v, int bits, int mode)
 {
-    p2_raster_t   *r   = &p2->raster;
-    const uint32_t trm = p2->gp[TAG_TEXTURE_READ_MODE];
-    const int      wb  = (trm >> 9) & 15;
-    const int      hb  = (trm >> 13) & 15;
-    int64_t        s   = (int64_t) p2_sext(p2->gp[TAG_S_START], 32) / 0x100000 + r->col;
-    int64_t        t   = (int64_t) p2_sext(p2->gp[TAG_T_START], 32) / 0x100000 + r->row;
+    const int64_t size = (int64_t) 1 << bits;
 
-    s = MAX(0, MIN(((int64_t) 1 << wb) - 1, s));
-    t = MAX(0, MIN(((int64_t) 1 << hb) - 1, t));
-    return p2_fb_read(p2, (int64_t) p2->gp[TAG_TEXTURE_BASE] + t * p2_pitch(p2->gp[TAG_TEXTURE_MAP_FORMAT]) + s, 1);
+    switch (mode & 3) {
+        case 1: /* Repeat. */
+            return ((v % size) + size) % size;
+        case 2: /* Mirror. */
+            v = ((v % (2 * size)) + 2 * size) % (2 * size);
+            return (v < size) ? v : (2 * size - 1 - v);
+        default: /* Clamp. */
+            return MAX(0, MIN(size - 1, v));
+    }
+}
+
+/* A texel for texture copies: nearest sampling of S/T (integer at bit 20),
+   stepped per pixel (d?dx) and per scanline (d?dyDom). Returns an internal
+   AABBGGRR colour (*raw clear) or, for indexes without the LUT, the index
+   itself (*raw set). */
+static uint32_t
+p2_texture_color(p2_t *p2, int *raw)
+{
+    p2_raster_t   *r    = &p2->raster;
+    const uint32_t trm  = p2->gp[TAG_TEXTURE_READ_MODE];
+    const uint32_t tmf  = p2->gp[TAG_TEXTURE_MAP_FORMAT];
+    const uint32_t tdf  = p2->gp[TAG_TEXTURE_DATA_FORMAT];
+    const uint32_t lutm = p2->gp[TAG_TEXEL_LUT_MODE];
+    const int      fmt  = (tdf & 15) | ((tdf >> 2) & 16);
+    const int64_t  ss   = (int64_t) p2_sext(p2->gp[TAG_S_START], 32) + (int64_t) r->col * p2_sext(p2->gp[TAG_DS_DX], 32) +
+                       (int64_t) r->row * p2_sext(p2->gp[TAG_DS_DY_DOM], 32);
+    const int64_t  tt   = (int64_t) p2_sext(p2->gp[TAG_T_START], 32) + (int64_t) r->col * p2_sext(p2->gp[TAG_DT_DX], 32) +
+                       (int64_t) r->row * p2_sext(p2->gp[TAG_DT_DY_DOM], 32);
+    const int64_t  s    = p2_tex_wrap(p2_fixed_int(ss / 16), (trm >> 9) & 15, (trm >> 1) & 3);
+    const int64_t  t    = p2_tex_wrap(p2_fixed_int(tt / 16), (trm >> 13) & 15, (trm >> 3) & 3);
+    const int64_t  tex  = (int64_t) (p2->gp[TAG_TEXTURE_BASE] & 0xffffff) + t * p2_pitch(tmf) + s;
+    uint32_t       v;
+    uint32_t       rr;
+    uint32_t       gg;
+    uint32_t       bb;
+    uint32_t       aa = 0xff;
+
+    *raw = 0;
+    switch ((tmf >> 19) & 7) {
+        case 1:
+            v = p2_fb_read(p2, tex * 2, 2);
+            break;
+        case 2:
+            v = p2_fb_read(p2, tex * 4, 4);
+            break;
+        case 3: /* 4 bits a texel, the low nibble first. */
+            v = (p2_fb_read(p2, tex >> 1, 1) >> ((tex & 1) << 2)) & 15;
+            break;
+        case 4:
+            v = p2_fb_read(p2, tex * 3, 3);
+            break;
+        default:
+            v = p2_fb_read(p2, tex, 1);
+            break;
+    }
+
+    if ((fmt == 14) || (fmt == 15)) {
+        if (!(lutm & 1)) {
+            *raw = 1;
+            return v;
+        }
+        v = (v + ((lutm >> 2) & 0xff)) & 0xff;
+        return (v < 16) ? p2->gp[TAG_TEXEL_LUT0 + v] : p2->texel_lut[v];
+    }
+
+    switch (fmt) {
+        case 1: /* 5551 */
+            rr = (v & 0x1f) << 3;
+            gg = ((v >> 5) & 0x1f) << 3;
+            bb = ((v >> 10) & 0x1f) << 3;
+            aa = (v & 0x8000) ? 0xff : 0;
+            break;
+        case 2: /* 4444 */
+            rr = (v & 0xf) << 4;
+            gg = ((v >> 4) & 0xf) << 4;
+            bb = ((v >> 8) & 0xf) << 4;
+            aa = ((v >> 12) & 0xf) << 4;
+            break;
+        case 16: /* 565 */
+            rr = (v & 0x1f) << 3;
+            gg = ((v >> 5) & 0x3f) << 2;
+            bb = ((v >> 11) & 0x1f) << 3;
+            break;
+        default: /* 8888 */
+            return v;
+    }
+    if (tdf & 0x20) {
+        /* RGB order: red in the high bits. */
+        const uint32_t tmp = rr;
+
+        rr = bb;
+        bb = tmp;
+    }
+    return rr | (gg << 8) | (bb << 16) | (aa << 24);
 }
 
 /* One step of the primitive; 0 when it waits for host data. */
@@ -1917,7 +2276,12 @@ p2_draw_step(p2_t *p2)
     }
 
     if (p2_upload_cmd(p2, cmd)) {
-        /* Framebuffer reads to the output FIFO (FilterMode bits 8/9). */
+        /* Framebuffer reads to the output FIFO (FilterMode bits 8/9); the
+           rasterizer stalls while the host has not taken the words. */
+        if (p2->out_count >= P2_OUT_STALL) {
+            r->out_wait = 1;
+            return 0;
+        }
         const int     packed = !!(rm & FBRM_PACKED);
         const int64_t px     = (int64_t) x * (packed ? 4 / bpp : 1);
         const int     filter = (p2->gp[TAG_FILTER_MODE] >> 8) & 3;
@@ -1968,8 +2332,7 @@ p2_draw_step(p2_t *p2)
         r->payload >>= 1;
         r->payload_left--;
     } else if ((cmd & RENDER_TEXTURE) && !(cmd & RENDER_FAST_FILL)) {
-        color = p2_texture_copy_color(p2);
-        raw   = 1;
+        color = p2_texture_color(p2, &raw);
     } else if (mask) {
         const uint32_t rmode  = p2->gp[TAG_RASTERIZER_MODE];
         const int      mirror = rmode & 1;
@@ -2022,6 +2385,29 @@ p2_raster_run(p2_t *p2)
         ;
 }
 
+/* The host made room in the output FIFO: continue a stalled upload, then
+   the writes held behind it. */
+static void
+p2_out_space(p2_t *p2)
+{
+    if (p2->in_resume)
+        return;
+    p2->in_resume = 1;
+    if (p2->raster.active && p2->raster.out_wait && (p2->out_count < P2_OUT_STALL)) {
+        p2->raster.out_wait = 0;
+        p2_raster_run(p2);
+    }
+    while (p2->hold_count && !(p2->raster.active && p2->raster.out_wait)) {
+        const uint32_t tag = p2->hold_tag[p2->hold_rd];
+        const uint32_t val = p2->hold_val[p2->hold_rd];
+
+        p2->hold_rd = (p2->hold_rd + 1) & (P2_HOLD_QUEUE - 1);
+        p2->hold_count--;
+        p2_gp_write(p2, tag, val);
+    }
+    p2->in_resume = 0;
+}
+
 static void
 p2_raster_start(p2_t *p2, uint32_t command)
 {
@@ -2029,7 +2415,8 @@ p2_raster_start(p2_t *p2, uint32_t command)
     const uint32_t rm   = p2->gp[TAG_FB_READ_MODE];
     const int      bias = (p2->gp[TAG_RASTERIZER_MODE] >> 4) & 3;
 
-    memset(r, 0, sizeof(p2_raster_t) - sizeof(r->rel_offset));
+    /* Up to rel_offset (sizeof() would include the struct's tail padding). */
+    memset(r, 0, offsetof(p2_raster_t, rel_offset));
     r->command  = command;
     r->prim     = command & RENDER_PRIM_MASK;
     r->bpp      = p2_fb_bpp(p2);
@@ -2207,6 +2594,24 @@ p2_gp_command(p2_t *p2, uint32_t tag, uint32_t val)
             p2->gp[TAG_FB_BLOCK_COLOR_L] = p2->gp[TAG_FB_BLOCK_COLOR_U] = val;
             break;
 
+        case TAG_TEXEL_LUT_DATA:
+            p2->texel_lut[p2->gp[TAG_TEXEL_LUT_INDEX] & 0xff] = val;
+            if ((p2->gp[TAG_TEXEL_LUT_INDEX] & 0xff) < 16)
+                p2->gp[TAG_TEXEL_LUT0 + (p2->gp[TAG_TEXEL_LUT_INDEX] & 15)] = val;
+            p2->gp[TAG_TEXEL_LUT_INDEX] = (p2->gp[TAG_TEXEL_LUT_INDEX] + 1) & 0xff;
+            break;
+
+        case TAG_TEXTURE_DL_OFFSET:
+            p2->gp[TAG_TEXTURE_DL_OFFSET] = val & 0x3fffff;
+            break;
+        case TAG_TEXTURE_DATA:
+            /* Raw texture download (cached glyph masks, textures): a dword
+               at TextureDownloadOffset, past the rendering units, then the
+               offset steps. */
+            p2_fb_write(p2, (int64_t) (p2->gp[TAG_TEXTURE_DL_OFFSET] & 0x3fffff) * 4, 4, val, p2->gp[TAG_FB_HW_WRITE_MASK]);
+            p2->gp[TAG_TEXTURE_DL_OFFSET] = (p2->gp[TAG_TEXTURE_DL_OFFSET] + 1) & 0x3fffff;
+            break;
+
         default:
             break;
     }
@@ -2344,8 +2749,9 @@ p2_pci_write(UNUSED(int func), int addr, UNUSED(int len), uint8_t val, void *pri
             break;
 
         case 0x2c ... 0x2f:
-            /* The video BIOS writes the subsystem IDs at POST. */
-            p2->pci_regs[addr] = val;
+            /* Loaded from the ROM at reset (SubsystemFromRom strap): read-only
+               then. STB's BIOS writes the same values again at POST; ELSA's
+               write zeros, which the real board ignores. */
             break;
 
         case 0x30:
@@ -2453,6 +2859,9 @@ p2_debug_hook(const char *args)
     pclog("P2: dac %s\n", line);
     pclog("P2: pal0 %02X %02X %02X pal7 %02X %02X %02X\n", svga->vgapal[0].r, svga->vgapal[0].g, svga->vgapal[0].b,
           svga->vgapal[7].r, svga->vgapal[7].g, svga->vgapal[7].b);
+    pclog("P2: filter %08X out %i intf %08X inte %08X fifo hdr %u tag %X active %i cmd %08X left %u\n",
+          p2->gp[TAG_FILTER_MODE], p2->out_count, p2->int_flags, p2->int_enable, p2->fifo_hdr_count, p2->fifo_hdr_tag,
+          p2->raster.active, p2->raster.command, p2->raster.payload_left);
     pclog("P2: x_add %i left_overscan %i y_add %i mon_overscan %i,%i hblankstart %i hblank_sub %i dpc %i ovc %08X\n",
           svga->x_add, svga->left_overscan, svga->y_add, svga->monitor->mon_overscan_x, svga->monitor->mon_overscan_y,
           svga->hblankstart, svga->hblank_sub, svga->dots_per_clock, svga->overscan_color);
@@ -2473,7 +2882,10 @@ p2_reset_state(p2_t *p2)
     p2->vclk_ctl      = 0;
     p2->aperture[0]   = 0;
     p2->aperture[1]   = 0;
+    p2->flash_cycle   = 0;
+    p2->flash_id_mode = 0;
     p2->dma_count     = 0;
+    p2->out_dma_count = 0;
     p2->bypass_mask   = 0xffffffff;
     p2->fb_write_mask = 0xffffffff;
     p2->chip_config   = 0x00000006 | (p2->is_agp ? 0x00000200 : 0);
@@ -2528,16 +2940,24 @@ p2_init_pci_regs(p2_t *p2)
     p2->pci_regs[PCI_REG_COMMAND] = 0x00;
     p2->pci_regs[0x06] = p2->is_agp ? 0x10 : 0x00;
     p2->pci_regs[0x07] = 0x02;
-    p2->pci_regs[0x08] = 0x01; /* Revision */
+    p2->pci_regs[0x08] = p2->revision; /* 01h Permedia 2, 11h Permedia 2A */
     p2->pci_regs[0x0b] = 0x03; /* VGA compatible display controller */
     p2->pci_regs[0x16] = 0x00;
-    p2->pci_regs[0x14] = 0x08; /* Prefetchable */
-    p2->pci_regs[0x18] = 0x08;
-    /* STB Systems, GLyder MAX-2+ (as the BIOS sets them). */
-    p2->pci_regs[0x2c] = 0xb4;
-    p2->pci_regs[0x2d] = 0x10;
-    p2->pci_regs[0x2e] = 0x2d;
-    p2->pci_regs[0x2f] = 0x25;
+    /* Not prefetchable: ELSA's drivers take BAR1 as read for the aperture's
+       address (its ROM access reads 8 bytes off with bit 3 set). */
+    p2->pci_regs[0x14] = 0x00;
+    p2->pci_regs[0x18] = 0x00;
+    /* The board's subsystem IDs: the chip loads them from the ROM's last four
+       bytes at reset (7FFCh / FFFCh). Some BIOSes (STB's) write them again at
+       POST from offset 34h; ELSA's keep a different layout there. */
+    if (p2->bios_rom.rom && (p2->bios_rom.sz >= 4)) {
+        const uint8_t *ids = &p2->bios_rom.rom[p2->bios_rom.sz - 4];
+
+        p2->pci_regs[0x2c] = ids[0];
+        p2->pci_regs[0x2d] = ids[1];
+        p2->pci_regs[0x2e] = ids[2];
+        p2->pci_regs[0x2f] = ids[3];
+    }
     p2->pci_regs[0x30] = 0x00;
     p2->pci_regs[0x32] = 0x0c;
     p2->pci_regs[0x3d] = PCI_INTA;
@@ -2555,6 +2975,62 @@ p2_init_pci_regs(p2_t *p2)
     }
 }
 
+/* ELSA's boards keep their factory data in the flash ROM: 64 words at the
+   offset in word 0Ah -- 0: CRC of words 1-63, 1: 4433h, 2: board code,
+   6: feature flags, 7 and 8: clocks in 4 kHz units (8: the memory clock),
+   14h/15h: a memory timing override (0: the chip's default). BIOS update
+   images leave the block blank (the flash tool keeps the board's own), and
+   ELSA's drivers refuse a board whose block fails its CRC; give such an
+   image the values a board would carry (MCLK 80 MHz, as the BIOS programs). */
+static uint16_t
+p2_elsa_crc(const uint16_t *words, int n)
+{
+    uint16_t crc = 0;
+
+    for (int w = 0; w < n; w++) {
+        for (int i = 0; i < 16; i++) {
+            const int bit = ((words[w] >> i) ^ (crc >> 14) ^ (crc >> 15) ^ (crc >> 1) ^ 1) & 1;
+
+            crc = (crc << 1) | bit;
+        }
+    }
+
+    return crc;
+}
+
+static void
+p2_elsa_id_block(p2_t *p2)
+{
+    uint8_t *rom = p2->bios_rom.rom;
+    uint16_t words[64];
+    uint32_t ptr;
+    int      sum = 0;
+
+    if (!rom || (p2->bios_rom.sz < 0x8000) || (rom[0] != 0x55) || (rom[1] != 0xaa))
+        return;
+    ptr = rom[0x0a] | (rom[0x0b] << 8);
+    if (!ptr || ((ptr + sizeof(words)) > 0x7ff0))
+        return;
+    for (int i = 0; i < 64; i++)
+        words[i] = rom[ptr + i * 2] | (rom[ptr + i * 2 + 1] << 8);
+    if ((words[1] != 0x4433) || (words[0] == p2_elsa_crc(&words[1], 63)))
+        return;
+
+    for (uint32_t i = 0; i < sizeof(words); i++)
+        sum += rom[ptr + i];
+    for (int i = 3; i < 64; i++)
+        words[i] = 0x0000;
+    words[7] = 230000 / 4; /* 230 MHz */
+    words[8] = 80000 / 4;  /* 80 MHz */
+    words[0] = p2_elsa_crc(&words[1], 63);
+    for (int i = 0; i < 64; i++) {
+        rom[ptr + i * 2]     = words[i] & 0xff;
+        rom[ptr + i * 2 + 1] = words[i] >> 8;
+        sum -= rom[ptr + i * 2] + rom[ptr + i * 2 + 1];
+    }
+    rom[0x7ff0] += sum; /* Padding: the image's checksum stays right. */
+}
+
 /* The same chip was sold by 3Dlabs as 3D3D:0007. The BIOS takes either, but
    its PCI data structure must match the device for the system BIOS to run
    it: rewrite the IDs there and keep the 32 KB image's checksum (the file
@@ -2568,7 +3044,7 @@ p2_patch_bios_id(p2_t *p2)
     if (!rom || (rom[0] != 0x55) || (rom[1] != 0xaa))
         return;
 
-    for (uint32_t half = 0; half < 0x10000; half += 0x8000) {
+    for (uint32_t half = 0; (half + 0x8000) <= (uint32_t) p2->bios_rom.sz; half += 0x8000) {
         uint8_t *img  = rom + half;
         uint16_t pcir = img[0x18] | (img[0x19] << 8);
         int      diff;
@@ -2589,13 +3065,23 @@ static void *
 p2_init(const device_t *info)
 {
     p2_t   *p2   = calloc(1, sizeof(p2_t));
+
+    p2->hold_tag = calloc(P2_HOLD_QUEUE, sizeof(uint32_t));
+    p2->hold_val = calloc(P2_HOLD_QUEUE, sizeof(uint32_t));
     svga_t *svga = &p2->svga;
 
     p2->is_agp    = !!(info->flags & DEVICE_AGP);
     p2->vram_size = device_get_config_int("memory") << 20;
     p2->vram_mask = p2->vram_size - 1;
 
-    rom_init(&p2->bios_rom, BIOS_STB_GLYDER_MAX2, 0xc0000, 0x10000, 0xffff, 0, MEM_MAPPING_EXTERNAL);
+    {
+        const char    *bios = device_get_config_bios("bios");
+        const uint32_t size = device_get_bios_file_size(info, bios);
+
+        p2->revision = device_get_bios_local(info, bios);
+        rom_init(&p2->bios_rom, device_get_bios_file(info, bios, 0), 0xc0000, size, size - 1, 0, MEM_MAPPING_EXTERNAL);
+    }
+    p2_elsa_id_block(p2);
     p2->tdlabs_id = device_get_config_int("chip_id");
     if (p2->tdlabs_id)
         p2_patch_bios_id(p2);
@@ -2618,11 +3104,14 @@ p2_init(const device_t *info)
                     p2_mmio_readb, p2_mmio_readw, p2_mmio_readl,
                     p2_mmio_writeb, p2_mmio_writew, p2_mmio_writel,
                     NULL, MEM_MAPPING_EXTERNAL, p2);
-    for (int i = 0; i < 2; i++)
-        mem_mapping_add(&p2->ap_mapping[i], 0, 0,
-                        p2_lfb_readb, p2_lfb_readw, p2_lfb_readl,
-                        p2_lfb_writeb, p2_lfb_writew, p2_lfb_writel,
-                        NULL, MEM_MAPPING_EXTERNAL, p2);
+    mem_mapping_add(&p2->ap_mapping[0], 0, 0,
+                    p2_ap0_readb, p2_ap0_readw, p2_ap0_readl,
+                    p2_ap0_writeb, p2_ap0_writew, p2_ap0_writel,
+                    NULL, MEM_MAPPING_EXTERNAL, p2);
+    mem_mapping_add(&p2->ap_mapping[1], 0, 0,
+                    p2_ap1_readb, p2_ap1_readw, p2_ap1_readl,
+                    p2_ap1_writeb, p2_ap1_writew, p2_ap1_writel,
+                    NULL, MEM_MAPPING_EXTERNAL, p2);
     mem_mapping_disable(&p2->ctrl_mapping);
     mem_mapping_disable(&p2->ap_mapping[0]);
     mem_mapping_disable(&p2->ap_mapping[1]);
@@ -2655,12 +3144,6 @@ p2_reset(void *priv)
     svga_recalctimings(&p2->svga);
 }
 
-static int
-p2_available(void)
-{
-    return rom_present(BIOS_STB_GLYDER_MAX2);
-}
-
 static void
 p2_close(void *priv)
 {
@@ -2671,6 +3154,8 @@ p2_close(void *priv)
         p2_dbg = NULL;
     }
     svga_close(&p2->svga);
+    free(p2->hold_tag);
+    free(p2->hold_val);
     free(p2);
 }
 
@@ -2690,8 +3175,178 @@ p2_force_redraw(void *priv)
     p2->svga.fullchange = p2->svga.monitor->mon_changeframecount;
 }
 
-static const device_config_t p2_config[] = {
+static const device_config_t p2_pci_config[] = {
     // clang-format off
+    {
+        .name           = "bios",
+        .description    = "Board (BIOS)",
+        .type           = CONFIG_BIOS,
+        .default_string = "stb_glyder_max2",
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .bios           = {
+            {
+                .name          = "STB GLyder MAX-2+ 1.50 (Permedia 2A)",
+                .internal_name = "stb_glyder_max2",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x11,
+                .size          = 65536,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "stbp2a.bin", "" }
+            },
+            {
+                .name          = "ELSA WINNER 2000/Office 7.03.04",
+                .internal_name = "elsa_winner2000_70304",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x01,
+                .size          = 32768,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "w2o70304.pcn", "" }
+            },
+            {
+                .name          = "ELSA WINNER 2000/Office 8.04.01 (Permedia 2A)",
+                .internal_name = "elsa_winner2000_80401",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x11,
+                .size          = 32768,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "w2o80401.pan", "" }
+            },
+            {
+                .name          = "ELSA GLoria Synergy 7.03.04",
+                .internal_name = "elsa_synergy_70304",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x01,
+                .size          = 32768,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "syn70304.pcn", "" }
+            },
+            {
+                .name          = "ELSA GLoria Synergy 8.04.01 (Permedia 2A)",
+                .internal_name = "elsa_synergy_80401",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x11,
+                .size          = 32768,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "syn80401.pan", "" }
+            },
+            {
+                .name          = "ELSA GLoria Synergy 8.07.00 (Permedia 2A)",
+                .internal_name = "elsa_synergy_80700",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x11,
+                .size          = 32768,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "syn80700.pan", "" }
+            },
+            { .files_no = 0 }
+        },
+    },
+    {
+        .name           = "memory",
+        .description    = "Memory size",
+        .type           = CONFIG_SELECTION,
+        .default_string = NULL,
+        .default_int    = 8,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = {
+            { .description = "4 MB", .value = 4 },
+            { .description = "8 MB", .value = 8 },
+            { .description = ""                 }
+        },
+        .bios           = { { 0 } }
+    },
+    {
+        .name           = "chip_id",
+        .description    = "PCI ID",
+        .type           = CONFIG_SELECTION,
+        .default_string = NULL,
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = {
+            { .description = "Texas Instruments (104C:3D07)", .value = 0 },
+            { .description = "3Dlabs (3D3D:0007)",            .value = 1 },
+            { .description = ""                                          }
+        },
+        .bios           = { { 0 } }
+    },
+    { .name = "", .description = "", .type = CONFIG_END }
+    // clang-format on
+};
+
+static const device_config_t p2_agp_config[] = {
+    // clang-format off
+    {
+        .name           = "bios",
+        .description    = "Board (BIOS)",
+        .type           = CONFIG_BIOS,
+        .default_string = "stb_glyder_max2",
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .bios           = {
+            {
+                .name          = "STB GLyder MAX-2+ 1.50 (Permedia 2A)",
+                .internal_name = "stb_glyder_max2",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x11,
+                .size          = 65536,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "stbp2a.bin", "" }
+            },
+            {
+                .name          = "ELSA WINNER 2000/Office 8.06.02",
+                .internal_name = "elsa_winner2000_agp_80602",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x01,
+                .size          = 32768,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "w2o80602.acn", "" }
+            },
+            {
+                .name          = "ELSA WINNER 2000/Office 8.06.04 (Permedia 2A)",
+                .internal_name = "elsa_winner2000_agp_80604",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x11,
+                .size          = 32768,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "w2o80604.aan", "" }
+            },
+            {
+                .name          = "ELSA GLoria Synergy 8.07.00",
+                .internal_name = "elsa_synergy_agp_80700c",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x01,
+                .size          = 32768,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "syn80700.acn", "" }
+            },
+            {
+                .name          = "ELSA GLoria Synergy 8.07.00 (Permedia 2A)",
+                .internal_name = "elsa_synergy_agp_80700a",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x11,
+                .size          = 32768,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "syn80700.aan", "" }
+            },
+            { .files_no = 0 }
+        },
+    },
     {
         .name           = "memory",
         .description    = "Memory size",
@@ -2727,29 +3382,29 @@ static const device_config_t p2_config[] = {
 };
 
 const device_t permedia2_stb_glyder_max2_pci_device = {
-    .name          = "STB GLyder MAX-2+ (3Dlabs Permedia 2) PCI",
+    .name          = "3Dlabs Permedia 2 PCI",
     .internal_name = "glyder_max2_pci",
     .flags         = DEVICE_PCI,
     .local         = 0,
     .init          = p2_init,
     .close         = p2_close,
     .reset         = p2_reset,
-    .available     = p2_available,
+    .available     = NULL,
     .speed_changed = p2_speed_changed,
     .force_redraw  = p2_force_redraw,
-    .config        = p2_config
+    .config        = p2_pci_config
 };
 
 const device_t permedia2_stb_glyder_max2_agp_device = {
-    .name          = "STB GLyder MAX-2+ (3Dlabs Permedia 2) AGP",
+    .name          = "3Dlabs Permedia 2 AGP",
     .internal_name = "glyder_max2_agp",
     .flags         = DEVICE_AGP,
     .local         = 0,
     .init          = p2_init,
     .close         = p2_close,
     .reset         = p2_reset,
-    .available     = p2_available,
+    .available     = NULL,
     .speed_changed = p2_speed_changed,
     .force_redraw  = p2_force_redraw,
-    .config        = p2_config
+    .config        = p2_agp_config
 };
