@@ -1,227 +1,156 @@
-# Alliance ProMotion -- living handoff
+# Alliance ProMotion -- handoff
 
-Branch `alliance`, worktree `F:\Claude\86Box-Next\wt-alliance` (build-static there).
-Device: `src/video/vid_alliance_promotion.c`: `pm6410_pci` ("Alliance ProMotion 6410 PCI") and
-`pm6422_pci` ("Alliance ProMotion 6422 PCI"), one code path, `pm->chip` tells them apart.
-Keep this file updated as the work moves.
+Read this first; keep it current as the work moves.
+
+## Where things stand (2026-10-16, f584ee9a8)
+
+- Branch `alliance`, worktree `F:\Claude\86Box-Next\wt-alliance` (build with `build-static`
+  there). **Not merged, not pushed** -- the owner said "don't merge yet". Never PR upstream.
+- One file, `src/video/vid_alliance_promotion.c`, three devices on one code path
+  (`pm->chip` tells them apart), listed in `vid_table.c` after the Voodoo 3 3000:
+
+  | Device | Chip / PCI ID | BIOS | State |
+  |---|---|---|---|
+  | `pm6410_pci` | ProMotion 6410, 1142:3210, AT&T 20C498 RAMDAC | PC Partner PM6410 (PhoenixVIEW) | done |
+  | `pm6422_pci` | ProMotion 6422, 1142:6422, internal DAC/PLL | same ROM, PCIR patched at init | done |
+  | `pm_at3d_pci` | ProMotion AT3D/AT25, 1142:643D | Stingray 128/3D 4.35 (default) / 2.30, GA-RUSH6 | 2D done |
+
+- Works: POST and VESA modes on all three; drawing engine; hardware cursor; DDC lines; video
+  window (overlay, first design); Win95 OSR2, Win98 SE and NT 4 with Alliance's drivers
+  (accelerated, full mode lists, live mode switching); DirectDraw on the 6422.
+- Before merging (owner's call): the ROMs into the Xeon3D/roms fork (they are only in
+  ROMS-EXTRA now), a README / CLAUDE.md "Fork additions" entry. Logging is already off by
+  default (`pm_do_log = 0`).
+
+## Open items, in order of value
+
+1. AT3D DirectDraw: PROMDD32.DLL from the 2072 driver, untested (DxDiag on work-pmat3d).
+2. AT3D under NT 4: `G:\Old OS\Drivers\video\alliance\AT3D-AT25\WinNT4.zip` (also
+   `at3d\winnt.zip`, NT 3.5x and 4.0), untested. work-pmnt4 can be switched to `pm_at3d_pci`.
+3. STB's source build of the Win95 driver: its DirectDraw HAL does not come up (the
+   Alliance 1600 build's does). Cause unknown.
+4. Video window: interpolation (VC_INTERP, bit 10) is not modelled (nearest neighbour);
+   the second overlay design (tiles, XR200 on; 6424/GXM and later) is not on these chips.
+5. 24 bpp: AT3D engine depth 4 is in; no BIOS or Windows mode uses 24 bpp, so untested.
+6. Not planned: the AT3D's 3D engine, Voodoo Rush boards (AT25 + 3Dfx).
+7. Interlace (XRD2 bit 0, the drivers' 1024x768 "43 Hz" mode) is shown progressive at the
+   frame rate the CRTC holds -- same picture; left as is.
+
+## Test VMs and tools
+
+All in `F:\Claude\86Box-Next\`. Each has its own `86Box-Next.exe`, `86box.cfg` and `romsx\`
+(the Alliance ROMs, passed with `-R`). Shut Windows guests down from Start before stopping
+(a hard stop means Safe Mode / ScanDisk next boot); `cycle.sh` does that for you.
+
+| VM | Guest | Card now | Notes |
+|---|---|---|---|
+| work-pmdos | DOS 6.22, tc430hx, P200 | `pm_at3d_pci` (4.35) | VBETEST.EXE + UNIVBE in C:\ |
+| work-pmw98 | Win98 SE, p55tvp4, P55C 233 | `pm6422_pci` | STB source build of the driver installed (1600 files in C:\PMBAK); C:\GDITEST.EXE |
+| work-pmat3d | Win98 SE (copy of work-pmw98) | `pm_at3d_pci` (4.35) | Alliance AT3D/AT25 driver 2072 from at3ddrv.iso; 1024x768x32 now |
+| work-pmw95 | Win95 OSR2, p54tp4xe | `pm6422_pci` | 1600 driver from pmdrv.iso |
+| work-pmnt4 | NT 4 WS, p6bap, Celeron 233, SCSI | `pm6410_pci` | Administrator, blank password; US keyboard |
+
+Scripts (`tools/alliance/`, `PM_DIR=/f/Claude/86Box-Next/<vm>` selects the VM, default
+work-pmdos):
+- `pm.sh start|cmd "<debug cmds>"|shot NAME|stop|running` -- starts minimized, no focus
+  steal; shots land in `<vm>\shots\NAME.png`.
+- `vbe.sh "0 3 2 1" NAME` -- boots DOS, runs VBETest, types the menu choices, screenshots.
+  (0 = interactive, then colour list 1/3/4/5 = 8/16/24/32 bpp, then the mode, then
+  0 banked / 1 linear where the BIOS offers both.)
+- `cycle.sh [SHOT] [WAIT]` -- Win9x: clean shutdown, copy the fresh exe, boot, screenshot.
+- `ntcycle.sh` -- the same for NT 4, logs on.
+- `gditest/gditest.c` -- no-CRT Win32 GDI test picture (polygons, star, ellipses, hatches,
+  line fan); build in WSL with the command in its header comment (`-nostdlib`, entry
+  `_entry@0`: Win98's msvcrt lacks what mingw-w64's start-up needs).
+  The AT3D and the 6422 draw it identically.
+
+Debug command file: `dev` dumps SR/CR/XR, CRTC, pixel clock/refresh, cursor; `dev log N`:
+1 = extended register writes and every engine command as `PM: BLT ctrl rop src dst dim fg
+bg clip`, 2 = every register access. Off by default.
+
+Guest keyboard on the Win98 VMs is Portuguese: debug `type` mangles `/ : \ .` -- use
+scancodes: `:` = `2a,34,b4,aa`, `\` = `29,a9`, `.` = `34,b4`, space `39,b9`. Run dialog:
+Ctrl+Esc (`1d,01,81,9d`), R (`13,93`). Display Properties: `control desk.cpl`.
+Mouse: `mouse 0 5 0` steps of 5 move ~2 px; bigger steps accelerate.
 
 ## Material
 
-- `F:\Claude\86Box-Next\alliance-stb\` (README.md there lists it all):
-  - Alliance's ProMotion Win95 display driver source as STB built it (Horizon 64 Video,
-    `driver-source/DRIVER/DIB/GXX/physical.h|inc` = register map; `physsetm.c` mode set;
-    `physblt.asm`, `physline.asm`, `physcurs.asm` = blitter/line/cursor use; `VDD/promtn.asm`).
-  - Built drivers (`deleted-built-drivers/`), STB install sets (`install-packages/`).
-  - ROMs: `rom/PCPartner-6410.BIN` (PM6410, PCI 1142:3210, 32 KB image in 64 KB);
-    `from-laptop/` Stingray 128/3D 2.30 and 4.35 (AT3D/AT25, 1142:643D), GA-RUSH6 (AT25).
-  - 6422 datasheet + brief (no register tables).
-  - Win95 6422 driver (win95642.exe), NT 4 driver 1.410 (nt40-1410.exe), LHA SFX.
-- X.org apm driver (MIT): `F:\Claude\86Box-Next\dl\xf86-video-apm\src` -- 6422/AT24/AT3D register
-  use: `apm_regs.h` (drawing engine DEC bits, status), `apm_driver.c` (mode init, clocks
-  comp_lmn, memory sizing), `apm_cursor.c`, `apm_funcs.c` (accel), `apm_video.c` (overlay).
-- ROM in `F:\Claude\86Box-Next\ROMS-EXTRA\video\alliance\pcpartner_pm6410.bin`
-  (not in the Xeon3D/roms fork yet).
+- `F:\Claude\86Box-Next\alliance-stb\` (its README lists everything): Alliance's Win95 driver
+  source as STB built it (`driver-source/DRIVER/DIB/GXX/physical.h|inc` = register map,
+  `physsetm.c` mode set, `physblt/physline/physcurs/physcach/physsl.asm` = engine use,
+  `VDD/promtn.asm`); built drivers; STB install sets; 6422 datasheet + brief (no register
+  tables); Win95 6422 driver (win95642.exe) and NT 4 driver 1.410 (nt40-1410.exe), LHA SFX.
+- X.org apm driver (MIT): `F:\Claude\86Box-Next\dl\xf86-video-apm\src` -- `apm_regs.h`
+  (engine bits), `apm_driver.c` (mode init, clocks, AT3D aperture), `apm_funcs.c`,
+  `apm_cursor.c`, `apm_video.c`. Older accel (AT24 pattern/stretch): git history, d9a3071^.
+- AT3D drivers and manual: `G:\Old OS\Drivers\video\alliance\` (at24, at3d, AT3D-AT25 zips).
+- ROMs in `F:\Claude\86Box-Next\ROMS-EXTRA\video\alliance\`: `pcpartner_pm6410.bin`;
+  `at3d\hercules_stingray128_3d_v4.35.00-b11.bin`, `..._v2.30.00-b27.bin`,
+  `gigabyte_ga-rush6_v4.350010.bin` (the first 32 KB of each dump).
 
-## Test VM
+## Hardware model -- what the BIOSes and drivers taught
 
-`F:\Claude\86Box-Next\work-pmdos` (copy of work-p2dos: tc430hx, Pentium 200, DOS 6.22,
-VBETEST.EXE + UNIVBE in C:\). `tools/alliance/pm.sh start|cmd|shot|stop` (PM_DIR selects the VM),
-`tools/alliance/vbe.sh "0 1 3" NAME` boots, runs VBETest and picks menu entries.
-Debug: `dev` dumps SR/CR/XR state, the pixel clock and refresh, the cursor; `dev log N` sets
-the log level (1 = extended register writes and every engine command as "PM: BLT", 2 =
-everything). Off by default since 2026-10-16 -- send `dev log 1` before a test that greps
-the log.
+### Registers
+- Extended SRs: SR10 = 12h unlocks (not modelled). The 6410 has SR10-SR1C only; SR20-2F read
+  the XRF0 scratch there (so the BIOS's "SR23 writable -> 6410 rev 3" test fails as it
+  should). 6412+: SR1D-SR2F real. The AT3D decodes only six sequencer index bits (its BIOS
+  writes SR1C as index DCh).
+- SR1A = VL aperture base. SR1B bits 2:0 = 1 maps the XR block at A0000h (2 KB mirrored);
+  SR1B bit 2 maps it in the last 2 KB of the aperture, bits 5:3 the blit port below it.
+  SR1C bit 2 = flat model (the extended, packed display), bit 3 = VGA memory off, bit 4 =
+  packed window. SR1D/1E/1F = XR I/O window (dword index, base port) on the 6422+.
+- SR20 = memory size (64 KB units), SR21 = DAC type (81h 20C498, 85h internal).
+- CR1A: vertical bit 10s (total, display end, blank, retrace; bit 4 line compare). CR1B:
+  horizontal bit 8s. CR1C: start address bits 19:16 (3:0), offset bits 11:8 (7:4).
+  Extended modes: start in dwords, offset in 8-byte units, CRTC counts pixels.
+- XR80 bits 3:0 pixel format (2 = 8, C = 15, D = 16, E = 24, F = 32 bpp). XRC0 (word) bank in
+  4 KB units, applied to A0000h and B8000h. XRC4/C5 memory config. XRD0 DDC (SCL/SDA bits 5/6,
+  read in XR1FC 17/16). XRD8 6410 clock index; XREC 6422+ PLL: f = 14.318 MHz * (N+1) /
+  ((M+1) * 2^L), N 23:16, M 15:8, L 3:2. XR140-14F cursor. XR180-183 read the PCI IDs (the NT
+  miniport and Win9x driver insist). XR190-193 read BAR 0 (aperture), XR194/195 BAR 1 (I/O).
+- AT3D aperture (16 MB): VRAM at 0 (blit port over 3F8000h-3FFFFFh), full VRAM again at
+  +8 MB, XR at +FFEC00h, VGA ports at +FFF000h + port.
 
-## What the BIOS (PM6410, PhoenixVIEW) taught
+### Memory sizing (each BIOS differs)
+- 6410: XRC4 bit 0 (2 MB organisation) + bank 10h, 55AAh at B800:4, FFFFh at B800:14. Needs
+  GR8 = FFh at power-on and the bank applied to B8000h.
+- 6422: XRC5 bit 0 + SR1C bit 4; a 1 MB board reads the upper half of each 64-bit word as
+  empty (modelled as address bit 2).
+- AT3D (BIOS 2B96h): bank 0 then bank 2 MB (XRC0/C1 = 0200h), dword tests at B800:10/14;
+  the bank is not wrapped to the fitted memory (a 2 MB board's upper bank is empty).
 
-- It is a unified ProMotion BIOS: chip ID by writable SRs. SR1D writable -> 6412+ (then XR
-  scratch via the I/O window SR1D/SR1E/SR1F decides 6422); SR23 writable -> 6410 rev 3. The
-  first 6410s implement SR10-SR1C only. INT 10h AX=3006h returns AX=chip, BX='SA', DX=rev.
-- Extended registers ("XR", the COP block of physical.h): SR1B bits 2:0 = 1 maps them at
-  A0000h (offset = address & 7FFh here, 2 KB mirrored); SR1B bit 2 maps them in the last 2 KB
-  of the linear aperture (blit port in the 30 KB below). SR1C bit 3 = VGA memory off.
-  SR1A = aperture base bits 27:20 (VL). SR10 = 12h unlocks (lock not modelled).
-- Scratch: XRF0 = memory size (64 KB units), XRF1 = DAC type (81h = AT&T 16-bit, the 20C498;
-  85h = internal, 6422). The BIOS READS them as SR20/SR21 on every chip; on a rev-0 6410 those
-  SR reads return XRF0+ (writes to SR20+ do nothing, so the SR23 test fails as it should).
-- Memory sizing: XRC4 bit 0 (2 MB organisation) + bank XRC0 = 10h, write 55AAh at B800:4 and
-  FFFFh at B800:14, read back. Needs GR8 = FFh at power-on and the bank applied to B8000h.
-- Banking: XRC0 (word) in 4 KB units, applied to A0000h and B8000h windows.
-- XR80 bits 3:0 pixel format (2 = 8 bpp, Ch 15, Dh 16, Eh 24, Fh 32); bit 6 set by VBE modes
-  only. XR80 = 02h in mode 13h too: the extended (packed, one pixel a dot clock) display is
-  SR1C bit 2 ("flat model": 05h BIOS modes, 25h Windows driver, 00h VGA modes).
-  XRC6 DAC control (03h in 16 bpp, 0Ah/09h variants for double index), XRD8 clock select
-  (00h at 640x480x8, 04h at 640x480x16, 03h at 800x600x16), XRD4-D6 FIFO thresholds.
-- XR190: the BIOS writes a VL-bus aperture address it picks (07C00000h); the Windows driver
-  reads XR190 as the aperture base on PCI -> XR190-193 read back PCI BAR 0.
-- Extended modes: CRTC timings count pixels (16 bpp modes have the same CRTC as 8 bpp);
-  start address in dwords (+ CR1C 3:0), offset in 8-byte units (+ CR1C 7:4).
-- VBE 1.2, no LFB reported. Modes seen: 640x400/480, 800x600, 1024x768 x8; 640x480,
-  800x600 x16 (2 MB). VBETest bank switching passes for 640x480x8/16, 800x600x16, 1024x768x8.
+### Drawing engine (comment block above `pm_blt_start()`)
+- XR40 command: op 3:0 (1 blit, 2 rect, 4 strip, 8/9 host blits, C/D lines), 6/7 X/Y
+  negative, 8 Y major, 9/11 source linear/contiguous, 12 mono source, 13 transparency,
+  18/19 destination linear/contiguous, 23:22 pattern, 26:24 screen-width model, 28:27
+  destination update, 30:29 quick start, 31 start. ROP3 in XR46.
+- Starts run at the end of the whole register access (a dword write to XR58 is width +
+  height). Quick start fires on the low (X) word of its register only. Arming a quick start
+  whose register was written since the last start starts it (Alliance's polygon re-arm).
+- Destination update 28:27 leaves X+W / Y+H for the next span (STB's physsl.asm).
+- AT24+ (AT3D): depth field 16:14 (1/2/3/4 = 8/16/32/24 bpp), 8x8 mono/colour pattern unit,
+  XR42 bit 0 kept. Below the AT3D, XR42 bit 0 and the tile registers XR200-2BF ignore writes
+  (the drivers detect the generation that way).
+- XR40 bit 17 (AT3D Windows driver, not in X.org): linear addresses are plain byte addresses
+  and rectangle strides are XR5C (destination) / XR5E (source) in bytes. Without it, linear
+  addresses are X.org's split pixel format (bits 23:12 in 31:16) and XR5C is extra bytes.
+- Not on these chips: stretch blit (op 3). Cursor: 64x64, AND<<1|XOR, XR141/142 colours,
+  shown only in flat-model modes.
 
-## Drawing engine and cursor (done, from STB's physblt/physline/physcurs + apm_regs.h)
+### Display
+- 6410 clocks: XRD8 index into the BIOS's table (from the 6422 PLL table at 6775h), halved
+  above 8 bpp through the 20C498's 16-bit port.
+- Extended modes use `hoverride` (the AT3D's 1600x1200 blanking is longer than a 6-bit end
+  compare holds); line compare bit 10 is `split += 400h` (the core already added 1).
+- Video window V1: XR82-XR9F, UYVY/YUV->RGB, stretch, flips through XR90; no colour key.
+  Verified with Media Player MPEG-1 on the 6422 (work-pmw98\video2.iso).
 
-See the comment block above pm_blt_start(). Ops used by the Windows driver: 81000002 (solid
-fill), 81000402 (mono 8x8 pattern fill, pattern = source), 81001A01/81003A01 (mono expansion
-from off-screen video memory, linear+contiguous, opaque/transparent: text), 81000041/01
-(screen copy), 81000008 (colour host blit through the blit port). Lines (C/D) and screen-to-
-host (9) are implemented from the driver source but not yet seen in a guest. Not done:
-stretch (op 3), 8x8 colour pattern (22:23 = 3) data source, destination update bits 28:27,
-quick start other than "on X extent". Cursor: 64x64, AND<<1|XOR, XR142 = colour 0,
-XR141 = colour 1 (RGB332 above 8 bpp), shown only in flat-model modes.
-DDC: XRD0 bits 5/6 drive SCL/SDA (levels bits 3/4), lines read in XR1FC bits 17/16 (X.org);
-wired to 86Box's DDC monitor but neither the 6410 BIOS nor Alliance's driver use it.
+## History of the hard bugs (so they are not re-chased)
 
-## Windows 98 SE (VM work-pmw98)
-
-Copy of work-p2w98 (p55tvp4, P55C 233, Win98 SE). Driver: Alliance 4.10.01.1600 (Dec 1997,
-from-laptop/win95642.exe, an LHA SFX -> 64221600.EXE -> files); its INF lists only
-1142:6422, so the test copy adds DEV_3210 (pmdrv*.iso in the VM folder; scratchpad pmiso/).
-Desktop, Start menu, Explorer draw correctly, accelerated; the Director's Chair 95 property
-pages load. tools/alliance/cycle.sh shuts Win98 down cleanly, deploys the exe and reboots
-(a hard stop sends Win98 to Safe Mode). The guest keyboard is Portuguese: debug `type`
-mangles / : \ -- use scancodes (':' = 2a,34,b4,aa). Mouse: `mouse 0 5 0` steps of 5 move
-~2 px predictably; larger steps accelerate.
-
-OPEN: Display Properties offers only 640x480x8. Not the driver: its ValidateMode accepts the
-modes (PROMTN.INI "Resolution Preferences" default 1, memory 2 MB from INT 10h 3002h), and
-no INT 10h happens while desk.cpl lists modes. Not the monitor either (set to Super VGA
-1280x1024). The display class installer had pruned MODES to 4\640,480 + 8\640,480; the INF's
-list was re-added with regedit (pmiso/PM1600/MODES.REG, key DISPLAY\0008) -- still one mode
-after a reboot. Next ideas: CHIPID value in DEFAULT, the STB source build of the driver
-(scratchpad pmiso2: deleted-built-drivers promtn.drv/vxd/promdd32), or reinstalling the
-driver now that the monitor allows more.
-
-## The 6422 (pm6422_pci, done 2026-10-16)
-
-Same BIOS, its PCIR rewritten to 1142:6422 at init (pm_patch_bios_id, checksum byte 7FFFh).
-The BIOS then takes its 6422 path:
-- SR1D-SR2F are real registers; SR20 = memory size (64 KB units), SR21 = DAC type 85h.
-- XR I/O window: SR1D = dword index, base port SR1F:SR1E, which the BIOS copies from
-  XR194/195 at POST. XR194/195 read PCI BAR 1 (4 I/O ports; the PCI BIOS put it at FFF4h).
-  The BIOS tells a 6422 from a 6412 by writing XRE0 through that window.
-- Internal RAMDAC (no 20C498). Pixel PLL XREC: N bits 23:16, M 15:8, post divider 2^L bits
-  3:2 (EC bit 7 = resync), f = 14.318 MHz * (N+1) / ((M+1) * 2^L), selected by MISC clock
-  select 3. BIOS values check out (N=27 M=1 L=3 = 25.06 MHz; N=47 M=2 L=3 = 28.6 MHz).
-- Memory sizing: XRC5 bit 0 + SR1C bit 4 (packed window), 55AAh at B800:4; a 1 MB board reads
-  the upper half of each 64-bit word as empty (modelled: address bit 2).
-- More VBE modes than the 6410 gets: 1280x1024x8, 1024x768x16, 640x480/800x600x32. VBETest
-  bank switching passes for all of those. 1280x1024 needed CR1A (vertical bit 10s) and CR1B
-  (horizontal bit 8s), now applied for both chips.
-- Win98 (work-pmw98 switched to pm6422_pci): Windows found 1142:6422 and installed Alliance's
-  1600 driver by itself (DISPLAY\0009, full MODES list from the INF). Accelerated desktop;
-  DxDiag: DirectDraw acceleration enabled, 2.0 MB, "Test DirectDraw" all passed (windowed
-  primary, off-screen, full-screen flipping).
-- Still only 640x480x8 in Display Properties, on the 6422 as on the 6410, with the monitor at
-  Super VGA 1280x1024, with refresh lists on the MODES keys (MODES2.REG) and with STB's own
-  source build of the driver. So the limit is in Windows' mode enumeration, not the chip
-  model or a driver build. DESK never calls ValidateMode (no INT 10h 3002h while it lists).
-- STB's source build (pmiso2; C:\PMBAK on the guest holds the 1600 files) is what work-pmw98
-  runs now. Its text was missing glyph pixels: the glyph cache (physcach.asm) sets XR40 once
-  with "start on X extent" (bit 29) and starts each glyph with a dword write of width+height to
-  XR58; the engine started on byte 59h, before the height. Fixed (35790a2f3): starts run when
-  the whole access completes. Its DirectDraw HAL does not come up (DxDiag: not available),
-  the 1600 driver's does.
-
-## Windows NT 4 (VM work-pmnt4, done 2026-10-16)
-
-Copy of work-p2nt4: p6bap, Celeron 233, NT 4 Workstation on an AHA-2944UW SCSI VHD, CD on
-SCSI 0:1 = work-pmnt4\pmnt.iso (Alliance NT 4 driver 1.410: PROMTN.SYS/DLL, OEMSETUP.INF
-without PCI IDs). Log on: Administrator, blank password. Keyboard is US here.
-tools/alliance/ntcycle.sh shuts NT down, redeploys, boots and logs on.
-- The miniport is legacy style: maps A0000h, SR1B = 1, reads XRCA bit 0 (PCI) and XR190 (the
-  aperture base) and insists on XR180 = 1142h (fixed: XR180-183 read the PCI IDs).
-- Installed through Display > Display Type > Change > Have Disk (d:\). Works on the 6422:
-  full mode list (640x480 to 1280x1024 at 8 bpp, 16 bpp to 1152x864, True Color 640/800),
-  the 800x600 True Color test pattern is right, desktop and Explorer at 800x600x32 draw
-  correctly with the hardware cursor. Engine ops seen: fills, mono text (81003A01, 82003A01),
-  pattern fills, host blits, lines (0Dh in all directions, Y major). Nothing unhandled.
-- Also runs on the 6410 (pm6410_pci): 800x600x32 through the 20C498 (XR80 = 0Fh).
-
-## Windows 98 mode list -- SOLVED (2026-10-16)
-
-The XR180 fix (PCI IDs at XR180-183, da0bfe80b) also fixed Win98: after it, Win98 boots at
-1024x768x16 with a full Display Properties mode list and switches modes live (tested
-1024x768x16 -> 1024x768x8 with the 1600 driver and with STB's build). The Win9x driver /
-DirectDraw side evidently checks XR180 too and fell back to a single mode. The MODES.REG /
-MODES2.REG / NODDC.REG imports and the Super VGA 1280x1024 monitor on work-pmw98 are left
-over from the hunt and not needed.
-
-## Windows 95 (VM work-pmw95, 2026-10-16)
-
-Copy of Latest\Windows 95 (p54tp4xe, P54C 200, Win95 OSR2, IDE VHD; the cfg had two
-[PS/2 Mouse] sections, the stale 2-button one removed). Its wizard picks up PROMTN.INF from
-the CD (work-pmw95\pmdrv.iso; type d:\ in "Copy files from" -- clear the box first, Win95's
-dialog keeps the old text) and installs the 1600 driver on the 6422 (DC95.DLL/PMGAMMA
-skipped). Comes up at 1024x768 High Color, accelerated, slider works.
-Shut down: Ctrl+Esc, U, Enter.
-
-
-## Video window (done 2026-10-16, 13b7f1fac)
-
-First design only (XR82-XR9F, one window, STB's VIDWINDOW_V1; see the comment above
-pm_update_overlay). The drivers pick V1/V2 by whether XR202 holds a value and 2D V1/V2 by
-whether XR40 bit 16 sticks -- both now ignore writes on the 6410/6422. No colour key on V1
-(DDCAPS_OVERLAYCANTCLIP). Nearest-neighbour stretch; VC_INTERP (bit 10) not modelled.
-Verified: Win98 SE + 1600 driver, Media Player 6.4 (`mplayer2 d:test.mpg`; the clip is
-work-pmw98\video2.iso, TEST.MPG from dl\iso-extra\VIDEO) at 800x600x16: control 0F4Bh
-(UYVY, YUV->RGB, stretch), triple-buffered flips through XR90, 1:1 and stretched (maximised
-player). At 8 bpp the decoder does not use the overlay (software, dithered).
-HC800.REG on that ISO sets HKCC Display\Settings to 800x600x16 (desk.cpl's Colors list
-ignores our keys and clicks on this VM; regedit is the reliable route).
-
-## AT3D / AT25 (pm_at3d_pci, 2D only, 2026-10-16)
-
-PCI 1142:643D, 16 MB aperture (VRAM at 0, a second copy at +8 MB, XR at +FFEC00h, VGA ports
-at +FFF000h + port; X.org apm_driver.c), 2 or 4 MB. BIOS option: Hercules Stingray 128/3D
-4.35.00-b11 (default, "AT25", VBE 2.0, LFB), Stingray 2.30.00-b27 ("PMAT3D", VBE 1.2,
-banked only), Gigabyte GA-RUSH6 4.350010 (AT25, VBE 2.0) -- the first 32 KB of each dump,
-in ROMS-EXTRA/video/alliance/at3d/.
-- Memory sizing (BIOS 2B96h): XRC5 bit 0, SR1C &= ~8 | 10h, 55AAh at B800:4 with bank 0,
-  then a dword at B800:14 with the bank at 2 MB (XRC0/C1 = 0200h); SR20 = size in 64 KB.
-  The BIOS writes SR1C as index DCh (its own encoding: bits 7:6 = 11 means SR) straight to
-  3C4h, so the AT3D decodes six sequencer index bits. And the bank is not wrapped to the
-  fitted memory: a 2 MB board's bank at 2 MB is empty. 2 and 4 MB both size right.
-- 1600x1200x16: CR1A bit 4 = line compare bit 10 (the core has already added 1 to the
-  split, so it is += 400h); horizontal blanking spans more than the 64 characters a 6-bit
-  end compare holds, so extended modes run with hoverride (plain borders), all chips.
-- VBETest (work-pmdos): all three BIOSes, 1024x768x16/32 LFB, 1280x1024x8, 1600x1200x16,
-  banked 1024x768x16 on 2.30. No 24 bpp VBE modes in these BIOSes.
-- Windows 98 SE (VM work-pmat3d, a copy of work-pmw98): Alliance's AT3D/AT25 driver
-  4.10.01.2072 (Feb 1998, G:\Old OS\Drivers\video\alliance\AT3D-AT25\Win95.zip; on
-  work-pmat3d\at3ddrv.iso) installs through the New Hardware wizard from the CD. Full mode
-  list; 800x600x16 / 1024x768x16 / 1024x768x32 run, live switching works, GDITEST matches
-  the 6422 pixel for pixel. Two engine changes for it:
-  - XR40 bit 17 (not in X.org): linear source/destination are plain byte addresses, and a
-    rectangle's row stride is XR5C (destination) / XR5E (source) in bytes -- the driver
-    keeps menus and save-unders in off-screen bitmaps that way.
-  - Quick start fires on the low word only (destination X, source X, X extent): the
-    driver's polygon fill arms "start on destination", writes the span's Y, then width,
-    height and X. The 6422 drivers are unaffected (GDITEST identical).
-
-## Not done / next
-
-1. Interlaced modes: XRD2 bit 0 (STB's InterlaceControl) is set by the drivers' 1024x768
-   "43 Hz interlaced" mode (44.7 MHz). The CRTC holds frame timings there (816 lines at
-   35.5 kHz = 43.4 Hz, which is the 43 Hz the mode is named for), so showing it progressive at
-   that rate gives the same picture; only a real monitor's flicker differs. Left as is.
-2. Done: 6410 pixel clocks (3916e0723): XRD8 = clock index (INT 10h 3005h), frequencies
-   from the BIOS's 6422 PLL table at 6775h, /2 for 15/16/32 bpp through the 20C498.
-   The 6422's 16 bpp 1024x768 runs at 96.6 MHz / 93.7 Hz from the drivers' own timing
-   tables -- plausible (85 Hz class), not checked against hardware.
-3. Not on these chips: op 3 (stretch blit) and the 8x8 mono/colour pattern unit (XR40
-   bits 23:22 = 2/3) -- X.org enables them only for the AT24 and later (old apm_accel.c
-   from the xf86-video-apm history, d9a3071^). Still open: overlay interpolation, the
-   second overlay design (tiles, XR200 on; GXM/6424 and later), the STB build's DirectDraw.
-   Done 2026-10-16 (972026848): destination update bits 28:27 (x + width / y + height,
-   STB's physsl.asm polygon fill depends on it) and re-armed quick starts (Alliance's
-   polygon code clears XR40 mid-polygon and re-arms it after writing the next span).
-   Test program: tools/alliance/gditest (no-CRT Win32 exe built in WSL with
-   i686-w64-mingw32-gcc; C:\GDITEST.EXE on work-pmw98) draws convex and non-convex
-   polygons, ellipses, the six hatches and a line fan -- all match GDI now.
-4. Done: NT 4 on the 6410. work-pmnt4 is left configured as pm6410_pci, work-pmw98 and
-   work-pmw95 as pm6422_pci; work-pmdos as pm_at3d_pci (Stingray 4.35), work-pmat3d too.
-5. AT3D: done for 2D (see its section). Open: its DirectDraw (PROMDD32 2072) and the NT 4
-   driver (G:\Old OS\Drivers\video\alliance\AT3D-AT25\WinNT4.zip), 24 bpp (no BIOS
-   or driver mode uses it), the 3D engine (out of scope), Voodoo Rush boards.
-6. Before merging: pm_do_log default 0, ROM into Xeon3D/roms, README.
+- Win98 offered only 640x480x8: XR180-183 must read the PCI IDs (also the NT miniport).
+- STB build's text missing pixels: quick start fired on byte 59h before the height.
+- Polygon gaps: destination update bits + quick-start re-arm.
+- AT3D reported 1 MB: the BIOS's SR index DCh was dropped, leaving VGA memory off.
+- AT3D Start menu garbage: XR40 bit 17 byte addressing with XR5C/XR5E strides.
+- AT3D stray polygon lines: quick start fired on the Y write (XR56).
+- Win98 VMs in Safe Mode: always shut down from Start first.
