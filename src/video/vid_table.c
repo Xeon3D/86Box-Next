@@ -196,6 +196,7 @@ video_cards[] = {
     { .device = &s3_86c928_pci_device,                          .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &s3_trio32_pci_device,                          .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &s3_trio3d2x_pci_device,                        .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &s3_savage3d_stb_nitro3200_pci_device,          .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &s3_trio64_pci_device,                          .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &s3_trio64vplus_pci_device,                     .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &s3_trio64v2dx_pci_device,                      .flags = VIDEO_FLAG_TYPE_NONE      },
@@ -240,6 +241,7 @@ video_cards[] = {
     { .device = &s3_virge_mx_agp_device,                        .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &s3_virge_mx_plus_agp_device,                   .flags = VIDEO_FLAG_TYPE_NONE      },
     { .device = &permedia2_stb_glyder_max2_agp_device,          .flags = VIDEO_FLAG_TYPE_NONE      },
+    { .device = &s3_savage3d_stb_nitro3200_agp_device,          .flags = VIDEO_FLAG_TYPE_NONE      },
     /* LPT */
     { .device = &hd44780_device,                                .flags = VIDEO_FLAG_TYPE_SPECIAL   },
     { .device = NULL,                                           .flags = VIDEO_FLAG_TYPE_NONE      }

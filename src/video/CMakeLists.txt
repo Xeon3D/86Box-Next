@@ -166,6 +166,7 @@ add_library(vid OBJECT
     vid_s3.c 
     vid_s3_virge.c
     vid_permedia2.c
+    vid_s3_savage.c
 
     # SiS
     vid_sis6306.c

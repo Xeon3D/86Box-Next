@@ -612,6 +612,10 @@ extern const device_t s3_virge_mx_plus_agp_device;
 extern const device_t s3_trio3d2x_pci_device;
 extern const device_t s3_trio3d2x_agp_device;
 
+/* S3 Savage3D */
+extern const device_t s3_savage3d_stb_nitro3200_pci_device;
+extern const device_t s3_savage3d_stb_nitro3200_agp_device;
+
 /* Sigma Color 400 */
 extern const device_t sigma_device;
 
