@@ -818,6 +818,7 @@ pm_xr_write(pm_t *pm, uint32_t addr, uint8_t val)
             pm_blt_done(pm);
             pm->blt.rd_len = pm->blt.rd_pos = 0;
             break;
+        case 0xd8:
         case 0xec ... 0xef:
             svga_recalctimings(&pm->svga);
             break;
@@ -1333,6 +1334,25 @@ pm_recalctimings(svga_t *svga)
             svga->clock = (cpuclock * (double) (1ULL << 32)) / f;
     }
 
+    /* The 6410's clock comes from an external synthesizer: INT 10h AX=3005h
+       writes the clock index to XRD8 and relatches MISC (clock select 3).
+       The frequencies are those the same BIOS programs into the 6422's PLL
+       for each index (its table at 6775h). Through the 20C498's 16-bit
+       port, 15/16 and 32 bpp pixels take two clocks each. */
+    if ((pm->chip == PM_6410) && ((svga->miscout & 0x0c) == 0x0c)) {
+        static const double pm6410_clocks[0x15] = {
+            25.057, 28.636, 40.568, 71.591, 50.114, 78.750, 35.795, 44.744,
+            128.864, 121.705, 81.136, 31.321, 110.966, 64.432, 75.170, 96.648,
+            100.227, 133.636, 147.955, 157.500, 174.682
+        };
+        const uint8_t idx = pm->xr[0xd8];
+        double        f   = (idx < 0x15) ? pm6410_clocks[idx] * 1000000.0 : 25175000.0;
+
+        if (pm->ramdac && (svga->bpp > 8))
+            f /= 2.0;
+        svga->clock = (cpuclock * (double) (1ULL << 32)) / f;
+    }
+
     if (!bpp)
         return;
 
@@ -1346,15 +1366,6 @@ pm_recalctimings(svga_t *svga)
     /* An external RAMDAC (the 6410's) assembles wider pixels itself. */
     if (pm->ramdac && (bpp == 8) && (svga->bpp > 8))
         bpp = svga->bpp;
-
-    if ((pm->chip == PM_6410) && ((svga->miscout & 0x0c) == 0x0c)) {
-        /* TODO: the programmable/external clock; until it is known, run
-           the mode at 60 Hz. */
-        const double hz = (double) (svga->htotal * 8) * (double) svga->vtotal * 60.0;
-
-        if (hz > 0.0)
-            svga->clock = (cpuclock * (double) (1ULL << 32)) / hz;
-    }
 
     switch (bpp) {
         case 15:
@@ -1519,6 +1530,12 @@ pm_debug_hook(const char *args)
     pclog("PM: hdisp %i htotal %i dispend %i vtotal %i rowoff %i ma %06X bpp %i lfb %08X\n",
           svga->hdisp, svga->htotal, svga->dispend, svga->vtotal, svga->rowoffset, svga->memaddr_latch,
           svga->bpp, pm->lfb_base);
+    if (svga->clock > 0.0) {
+        const double f = (cpuclock * (double) (1ULL << 32)) / svga->clock;
+
+        pclog("PM: pixel clock %.3f MHz, %.1f Hz refresh (XRD8 %02X XREC %08X)\n", f / 1000000.0,
+              f / ((double) svga->htotal * svga->dots_per_clock * svga->vtotal), pm->xr[0xd8], pm_xr32(pm, 0xec));
+    }
     pclog("PM: cursor ena %i x %i y %i xoff %i yoff %i addr %06X latch ena %i y %i draw %p\n",
           svga->hwcursor.ena, svga->hwcursor.x, svga->hwcursor.y, svga->hwcursor.xoff, svga->hwcursor.yoff,
           svga->hwcursor.addr, svga->hwcursor_latch.ena, svga->hwcursor_latch.y, (void *) svga->hwcursor_draw);
