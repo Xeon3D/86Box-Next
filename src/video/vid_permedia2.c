@@ -50,7 +50,7 @@
 #include <86box/plat_unused.h>
 #include <86box/debug_cmd.h>
 
-#define BIOS_STB_GLYDER_MAX2 "roms/video/3dlabs/permedia2/stbp2a.bin"
+#define P2_ROM_DIR "roms/video/3dlabs/permedia2/"
 
 #define P2_CTRL_SIZE 0x20000 /* 64 KB of registers, then a byte-swapped mirror. */
 #define P2_APERTURE_SIZE 0x800000
@@ -178,6 +178,7 @@ typedef struct p2_t {
     uint8_t pci_slot;
     int     is_agp;
     int     tdlabs_id;
+    uint8_t revision;
     uint8_t irq_state;
     uint8_t pci_regs[256];
 
@@ -2747,16 +2748,18 @@ p2_init_pci_regs(p2_t *p2)
     p2->pci_regs[PCI_REG_COMMAND] = 0x00;
     p2->pci_regs[0x06] = p2->is_agp ? 0x10 : 0x00;
     p2->pci_regs[0x07] = 0x02;
-    p2->pci_regs[0x08] = 0x01; /* Revision */
+    p2->pci_regs[0x08] = p2->revision; /* 01h Permedia 2, 11h Permedia 2A */
     p2->pci_regs[0x0b] = 0x03; /* VGA compatible display controller */
     p2->pci_regs[0x16] = 0x00;
     p2->pci_regs[0x14] = 0x08; /* Prefetchable */
     p2->pci_regs[0x18] = 0x08;
-    /* STB Systems, GLyder MAX-2+ (as the BIOS sets them). */
-    p2->pci_regs[0x2c] = 0xb4;
-    p2->pci_regs[0x2d] = 0x10;
-    p2->pci_regs[0x2e] = 0x2d;
-    p2->pci_regs[0x2f] = 0x25;
+    /* The board's subsystem IDs, as its BIOS sets them at POST (offset 34h). */
+    if (p2->bios_rom.rom && (p2->bios_rom.sz >= 0x38)) {
+        p2->pci_regs[0x2c] = p2->bios_rom.rom[0x34];
+        p2->pci_regs[0x2d] = p2->bios_rom.rom[0x35];
+        p2->pci_regs[0x2e] = p2->bios_rom.rom[0x36];
+        p2->pci_regs[0x2f] = p2->bios_rom.rom[0x37];
+    }
     p2->pci_regs[0x30] = 0x00;
     p2->pci_regs[0x32] = 0x0c;
     p2->pci_regs[0x3d] = PCI_INTA;
@@ -2787,7 +2790,7 @@ p2_patch_bios_id(p2_t *p2)
     if (!rom || (rom[0] != 0x55) || (rom[1] != 0xaa))
         return;
 
-    for (uint32_t half = 0; half < 0x10000; half += 0x8000) {
+    for (uint32_t half = 0; (half + 0x8000) <= (uint32_t) p2->bios_rom.sz; half += 0x8000) {
         uint8_t *img  = rom + half;
         uint16_t pcir = img[0x18] | (img[0x19] << 8);
         int      diff;
@@ -2817,7 +2820,13 @@ p2_init(const device_t *info)
     p2->vram_size = device_get_config_int("memory") << 20;
     p2->vram_mask = p2->vram_size - 1;
 
-    rom_init(&p2->bios_rom, BIOS_STB_GLYDER_MAX2, 0xc0000, 0x10000, 0xffff, 0, MEM_MAPPING_EXTERNAL);
+    {
+        const char    *bios = device_get_config_bios("bios");
+        const uint32_t size = device_get_bios_file_size(info, bios);
+
+        p2->revision = device_get_bios_local(info, bios);
+        rom_init(&p2->bios_rom, device_get_bios_file(info, bios, 0), 0xc0000, size, size - 1, 0, MEM_MAPPING_EXTERNAL);
+    }
     p2->tdlabs_id = device_get_config_int("chip_id");
     if (p2->tdlabs_id)
         p2_patch_bios_id(p2);
@@ -2877,12 +2886,6 @@ p2_reset(void *priv)
     svga_recalctimings(&p2->svga);
 }
 
-static int
-p2_available(void)
-{
-    return rom_present(BIOS_STB_GLYDER_MAX2);
-}
-
 static void
 p2_close(void *priv)
 {
@@ -2914,8 +2917,178 @@ p2_force_redraw(void *priv)
     p2->svga.fullchange = p2->svga.monitor->mon_changeframecount;
 }
 
-static const device_config_t p2_config[] = {
+static const device_config_t p2_pci_config[] = {
     // clang-format off
+    {
+        .name           = "bios",
+        .description    = "Board (BIOS)",
+        .type           = CONFIG_BIOS,
+        .default_string = "stb_glyder_max2",
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .bios           = {
+            {
+                .name          = "STB GLyder MAX-2+ 1.50 (Permedia 2A)",
+                .internal_name = "stb_glyder_max2",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x11,
+                .size          = 65536,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "stbp2a.bin", "" }
+            },
+            {
+                .name          = "ELSA WINNER 2000/Office 7.03.04",
+                .internal_name = "elsa_winner2000_70304",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x01,
+                .size          = 32768,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "w2o70304.pcn", "" }
+            },
+            {
+                .name          = "ELSA WINNER 2000/Office 8.04.01 (Permedia 2A)",
+                .internal_name = "elsa_winner2000_80401",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x11,
+                .size          = 32768,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "w2o80401.pan", "" }
+            },
+            {
+                .name          = "ELSA GLoria Synergy 7.03.04",
+                .internal_name = "elsa_synergy_70304",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x01,
+                .size          = 32768,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "syn70304.pcn", "" }
+            },
+            {
+                .name          = "ELSA GLoria Synergy 8.04.01 (Permedia 2A)",
+                .internal_name = "elsa_synergy_80401",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x11,
+                .size          = 32768,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "syn80401.pan", "" }
+            },
+            {
+                .name          = "ELSA GLoria Synergy 8.07.00 (Permedia 2A)",
+                .internal_name = "elsa_synergy_80700",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x11,
+                .size          = 32768,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "syn80700.pan", "" }
+            },
+            { .files_no = 0 }
+        },
+    },
+    {
+        .name           = "memory",
+        .description    = "Memory size",
+        .type           = CONFIG_SELECTION,
+        .default_string = NULL,
+        .default_int    = 8,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = {
+            { .description = "4 MB", .value = 4 },
+            { .description = "8 MB", .value = 8 },
+            { .description = ""                 }
+        },
+        .bios           = { { 0 } }
+    },
+    {
+        .name           = "chip_id",
+        .description    = "PCI ID",
+        .type           = CONFIG_SELECTION,
+        .default_string = NULL,
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = {
+            { .description = "Texas Instruments (104C:3D07)", .value = 0 },
+            { .description = "3Dlabs (3D3D:0007)",            .value = 1 },
+            { .description = ""                                          }
+        },
+        .bios           = { { 0 } }
+    },
+    { .name = "", .description = "", .type = CONFIG_END }
+    // clang-format on
+};
+
+static const device_config_t p2_agp_config[] = {
+    // clang-format off
+    {
+        .name           = "bios",
+        .description    = "Board (BIOS)",
+        .type           = CONFIG_BIOS,
+        .default_string = "stb_glyder_max2",
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .bios           = {
+            {
+                .name          = "STB GLyder MAX-2+ 1.50 (Permedia 2A)",
+                .internal_name = "stb_glyder_max2",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x11,
+                .size          = 65536,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "stbp2a.bin", "" }
+            },
+            {
+                .name          = "ELSA WINNER 2000/Office 8.06.02",
+                .internal_name = "elsa_winner2000_agp_80602",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x01,
+                .size          = 32768,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "w2o80602.acn", "" }
+            },
+            {
+                .name          = "ELSA WINNER 2000/Office 8.06.04 (Permedia 2A)",
+                .internal_name = "elsa_winner2000_agp_80604",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x11,
+                .size          = 32768,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "w2o80604.aan", "" }
+            },
+            {
+                .name          = "ELSA GLoria Synergy 8.07.00",
+                .internal_name = "elsa_synergy_agp_80700c",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x01,
+                .size          = 32768,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "syn80700.acn", "" }
+            },
+            {
+                .name          = "ELSA GLoria Synergy 8.07.00 (Permedia 2A)",
+                .internal_name = "elsa_synergy_agp_80700a",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0x11,
+                .size          = 32768,
+                .flags         = 0,
+                .files         = { P2_ROM_DIR "syn80700.aan", "" }
+            },
+            { .files_no = 0 }
+        },
+    },
     {
         .name           = "memory",
         .description    = "Memory size",
@@ -2951,29 +3124,29 @@ static const device_config_t p2_config[] = {
 };
 
 const device_t permedia2_stb_glyder_max2_pci_device = {
-    .name          = "STB GLyder MAX-2+ (3Dlabs Permedia 2) PCI",
+    .name          = "3Dlabs Permedia 2 PCI",
     .internal_name = "glyder_max2_pci",
     .flags         = DEVICE_PCI,
     .local         = 0,
     .init          = p2_init,
     .close         = p2_close,
     .reset         = p2_reset,
-    .available     = p2_available,
+    .available     = NULL,
     .speed_changed = p2_speed_changed,
     .force_redraw  = p2_force_redraw,
-    .config        = p2_config
+    .config        = p2_pci_config
 };
 
 const device_t permedia2_stb_glyder_max2_agp_device = {
-    .name          = "STB GLyder MAX-2+ (3Dlabs Permedia 2) AGP",
+    .name          = "3Dlabs Permedia 2 AGP",
     .internal_name = "glyder_max2_agp",
     .flags         = DEVICE_AGP,
     .local         = 0,
     .init          = p2_init,
     .close         = p2_close,
     .reset         = p2_reset,
-    .available     = p2_available,
+    .available     = NULL,
     .speed_changed = p2_speed_changed,
     .force_redraw  = p2_force_redraw,
-    .config        = p2_config
+    .config        = p2_agp_config
 };
