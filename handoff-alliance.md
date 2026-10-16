@@ -135,15 +135,36 @@ tools/alliance/ntcycle.sh shuts NT down, redeploys, boots and logs on.
   the 800x600 True Color test pattern is right, desktop and Explorer at 800x600x32 draw
   correctly with the hardware cursor. Engine ops seen: fills, mono text (81003A01, 82003A01),
   pattern fills, host blits, lines (0Dh in all directions, Y major). Nothing unhandled.
-- Not tried on the 6410 yet.
+- Also runs on the 6410 (pm6410_pci): 800x600x32 through the 20C498 (XR80 = 0Fh).
+
+## Windows 98 mode list -- SOLVED (2026-10-16)
+
+The XR180 fix (PCI IDs at XR180-183, da0bfe80b) also fixed Win98: after it, Win98 boots at
+1024x768x16 with a full Display Properties mode list and switches modes live (tested
+1024x768x16 -> 1024x768x8 with the 1600 driver and with STB's build). The Win9x driver /
+DirectDraw side evidently checks XR180 too and fell back to a single mode. The MODES.REG /
+MODES2.REG / NODDC.REG imports and the Super VGA 1280x1024 monitor on work-pmw98 are left
+over from the hunt and not needed.
+
+## Windows 95 (VM work-pmw95, 2026-10-16)
+
+Copy of Latest\Windows 95 (p54tp4xe, P54C 200, Win95 OSR2, IDE VHD; the cfg had two
+[PS/2 Mouse] sections, the stale 2-button one removed). Its wizard picks up PROMTN.INF from
+the CD (work-pmw95\pmdrv.iso; type d:\ in "Copy files from" -- clear the box first, Win95's
+dialog keeps the old text) and installs the 1600 driver on the 6422 (DC95.DLL/PMGAMMA
+skipped). Comes up at 1024x768 High Color, accelerated, slider works.
+Shut down: Ctrl+Esc, U, Enter.
 
 
 ## Not done / next
 
-1. The Windows 98 mode list (above). Ideas: DirectDraw's mode list from promdd32/the DD HAL
-   (DESK may take Win98's list from there), the CHIPID value in DEFAULT, Win95 instead of
-   Win98, a fresh VM that never had another display driver.
-2. 6410 pixel clock: XRD8 + MISC bits 3:2 -> frequency table unknown; 60 Hz meanwhile.
+1. Interlaced modes: XRD2 bit 0 (STB's InterlaceControl) is set by the drivers' 43 Hz
+   1024x768 mode (44.7 MHz). The CRTC then holds frame values (768 lines), so feeding
+   svga->interlace (per-field) would double them; shown progressive for now.
+2. Done: 6410 pixel clocks (3916e0723): XRD8 = clock index (INT 10h 3005h), frequencies
+   from the BIOS's 6422 PLL table at 6775h, /2 for 15/16/32 bpp through the 20C498.
+   The 6422's 16 bpp 1024x768 runs at 96.6 MHz / 93.7 Hz from the drivers' own timing
+   tables -- plausible (85 Hz class), not checked against hardware.
 3. Op 3 (stretch), 8x8 colour patterns, destination update bits, the video overlay window
    (XR82-XRC0, physical.h VIDWINDOW); the STB build's DirectDraw.
 4. NT 4 on the 6410 (pm6410_pci).
