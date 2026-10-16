@@ -607,6 +607,8 @@ extern const device_t s3_virge_gx_pci_device;
 extern const device_t s3_virge_gx2_pci_device;
 extern const device_t s3_virge_gx2_agp_device;
 extern const device_t s3_virge_mx_pci_device;
+extern const device_t s3_virge_mx_agp_device;
+extern const device_t s3_virge_mx_plus_agp_device;
 extern const device_t s3_trio3d2x_pci_device;
 extern const device_t s3_trio3d2x_agp_device;
 

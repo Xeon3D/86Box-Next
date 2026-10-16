@@ -286,7 +286,11 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
     core, 4 MB SGRAM, ROM `video/s3virge/stb_symmetry3d_m5_17_14.rom`). SR26 routes CRTC writes
     (40h IGA1, 44h both, 4Eh/4Fh IGA2 = the panel/TV CRTC); IGA2 is a read-back shadow
     (`crtc_iga2`), only IGA1 is displayed -- without it Windows' panel timings overwrote the CRT's.
-    The ROM (1.0B0) holds its sign-on 20-25 s by itself. Win98 SE: its CD's
+    The ROM (1.0B0) holds its sign-on 20-25 s by itself. Also from TheRetroWeb, AGP: an unbranded
+    ViRGE/MX (`virge_mx_agp`, S3's BIOS 3.05.01-26, `video/s3virge/s3_virge_mx_3.05.01-26.rom`)
+    and the ViRGE/MX+ Spectrah LD-S500 (8C03h, `virge_mx_plus_spectrah_ld_s500`, BIOS A1.3A,
+    `video/s3virge/spectrah_ld-s500_a1.3a.bin`); S3's BIOS waits for SR46 bit 6 (panel powered
+    down), and SR01 bit 3 (half dot clock: 320x200-512x384) doubles pixels. Win98 SE: its CD's
     `drivers\display\s3\86c260m5` driver.
   - C&T 65554, STB Monocle (`vid_chips_69000.c`, `CHIPS_65554`: the 69000 code with 1/2/4 MB
     external DRAM that wraps (the BIOS sizes it so), ROM `video/chips/stb_monocle_65554_110.bin`).
