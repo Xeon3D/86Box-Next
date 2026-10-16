@@ -1,7 +1,8 @@
 # Alliance ProMotion -- living handoff
 
 Branch `alliance`, worktree `F:\Claude\86Box-Next\wt-alliance` (build-static there).
-Device: `src/video/vid_alliance_promotion.c`, `pm6410_pci` ("Alliance ProMotion 6410 PCI").
+Device: `src/video/vid_alliance_promotion.c`: `pm6410_pci` ("Alliance ProMotion 6410 PCI") and
+`pm6422_pci` ("Alliance ProMotion 6422 PCI"), one code path, `pm->chip` tells them apart.
 Keep this file updated as the work moves.
 
 ## Material
@@ -90,14 +91,43 @@ after a reboot. Next ideas: CHIPID value in DEFAULT, the STB source build of the
 (scratchpad pmiso2: deleted-built-drivers promtn.drv/vxd/promdd32), or reinstalling the
 driver now that the monitor allows more.
 
+## The 6422 (pm6422_pci, done 2026-10-16)
+
+Same BIOS, its PCIR rewritten to 1142:6422 at init (pm_patch_bios_id, checksum byte 7FFFh).
+The BIOS then takes its 6422 path:
+- SR1D-SR2F are real registers; SR20 = memory size (64 KB units), SR21 = DAC type 85h.
+- XR I/O window: SR1D = dword index, base port SR1F:SR1E, which the BIOS copies from
+  XR194/195 at POST. XR194/195 read PCI BAR 1 (4 I/O ports; the PCI BIOS put it at FFF4h).
+  The BIOS tells a 6422 from a 6412 by writing XRE0 through that window.
+- Internal RAMDAC (no 20C498). Pixel PLL XREC: N bits 23:16, M 15:8, post divider 2^L bits
+  3:2 (EC bit 7 = resync), f = 14.318 MHz * (N+1) / ((M+1) * 2^L), selected by MISC clock
+  select 3. BIOS values check out (N=27 M=1 L=3 = 25.06 MHz; N=47 M=2 L=3 = 28.6 MHz).
+- Memory sizing: XRC5 bit 0 + SR1C bit 4 (packed window), 55AAh at B800:4; a 1 MB board reads
+  the upper half of each 64-bit word as empty (modelled: address bit 2).
+- More VBE modes than the 6410 gets: 1280x1024x8, 1024x768x16, 640x480/800x600x32. VBETest
+  bank switching passes for all of those. 1280x1024 needed CR1A (vertical bit 10s) and CR1B
+  (horizontal bit 8s), now applied for both chips.
+- Win98 (work-pmw98 switched to pm6422_pci): Windows found 1142:6422 and installed Alliance's
+  1600 driver by itself (DISPLAY\0009, full MODES list from the INF). Accelerated desktop;
+  DxDiag: DirectDraw acceleration enabled, 2.0 MB, "Test DirectDraw" all passed (windowed
+  primary, off-screen, full-screen flipping).
+- Still only 640x480x8 in Display Properties, on the 6422 as on the 6410, with the monitor at
+  Super VGA 1280x1024, with refresh lists on the MODES keys (MODES2.REG) and with STB's own
+  source build of the driver. So the limit is in Windows' mode enumeration, not the chip
+  model or a driver build. DESK never calls ValidateMode (no INT 10h 3002h while it lists).
+- STB's source build (pmiso2; C:\PMBAK on the guest holds the 1600 files it replaced, now
+  restored) draws text with missing glyph pixels and no DirectDraw: its glyph-cache text path
+  (physcach.asm) uses something the engine does not do right yet. The 1600 driver is fine.
+
 ## Not done / next
 
-1. Pixel clock: XRD8 + MISC bits 3:2 -> frequency table unknown; recalctimings runs extended
-   modes at 60 Hz meanwhile. Collect XRD8 per mode and match the 6422 datasheet's mode table.
-2. The Windows mode list (above).
-3. 6422 (internal DAC + PLL XREC/XRE8, I/O XR window SR1D-1F/XR194-195, 4 MB, PCIR patched to
-   6422 like p2_patch_bios_id) -- every Alliance/STB driver INF targets 1142:6422, so this is
-   the chip most software expects; the same BIOS detects it. Then AT3D/AT25 with the
-   Stingray/GA-RUSH6 BIOSes (16 MB aperture: VGA regs at +FFF000h, XR at +FFEC00h).
+1. The Windows 98 mode list (above). Ideas: DirectDraw's mode list from promdd32/the DD HAL
+   (DESK may take Win98's list from there), the CHIPID value in DEFAULT, Win95 instead of
+   Win98, a fresh VM that never had another display driver.
+2. 6410 pixel clock: XRD8 + MISC bits 3:2 -> frequency table unknown; 60 Hz meanwhile.
+3. The STB build's text path (physcach.asm), op 3 (stretch), 8x8 colour patterns,
+   destination update bits, the video overlay window (XR82-XRC0, physical.h VIDWINDOW).
 4. NT 4 driver 1.410 (from-laptop/nt40-1410.exe: PROMTN.SYS/DLL, OEMSETUP.INF).
-5. Before merging: pm_do_log default 0, ROM into Xeon3D/roms, README.
+5. AT3D/AT25 with the Stingray/GA-RUSH6 BIOSes (16 MB aperture: VGA regs at +FFF000h, XR at
+   +FFEC00h; X.org apm_driver.c), no Voodoo Rush 3D.
+6. Before merging: pm_do_log default 0, ROM into Xeon3D/roms, README.
