@@ -460,6 +460,17 @@ video_blit_memtoscreen_monitor(int x, int y, int w, int h, int monitor_index)
     MTR_END("video", "video_blit_memtoscreen");
 }
 
+void
+video_get_blit_rect_monitor(int monitor_index, int *x, int *y, int *w, int *h)
+{
+    const blit_data_t *blit = monitors[monitor_index].mon_blit_data_ptr;
+
+    *x = blit ? blit->x : 0;
+    *y = blit ? blit->y : 0;
+    *w = blit ? blit->w : 0;
+    *h = blit ? blit->h : 0;
+}
+
 /* Character clocks from the selected HSYNC edge to the next line.
    Pass zero for sync start, or the effective pulse width for sync end. */
 int

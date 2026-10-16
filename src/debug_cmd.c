@@ -98,7 +98,7 @@ debug_cmd_shot(const char *path)
 {
     const monitor_t *mon = &monitors[0];
     const bitmap_t  *bmp = mon->target_buffer;
-    int              w, h;
+    int              x, y, w, h;
     FILE            *f;
     uint8_t          hdr[54] = { 0 };
 
@@ -106,13 +106,18 @@ debug_cmd_shot(const char *path)
         always_log("debug_cmd: shot %s: no screen\n", path);
         return;
     }
-    /* the picture and the overscan the monitor shows, nothing past it */
-    w = mon->mon_xsize + mon->mon_overscan_x;
-    h = mon->mon_ysize + mon->mon_overscan_y;
-    if (w > bmp->w)
-        w = bmp->w;
-    if (h > bmp->h)
-        h = bmp->h;
+    /* What the last blit showed: the overscan only when it is displayed
+       (the buffer's border rows are not kept up to date otherwise). */
+    video_get_blit_rect_monitor(0, &x, &y, &w, &h);
+    if ((w <= 0) || (h <= 0)) {
+        x = y = 0;
+        w = mon->mon_xsize + mon->mon_overscan_x;
+        h = mon->mon_ysize + mon->mon_overscan_y;
+    }
+    if ((x + w) > bmp->w)
+        w = bmp->w - x;
+    if ((y + h) > bmp->h)
+        h = bmp->h - y;
     if ((w <= 0) || (h <= 0) || ((f = fopen(path, "wb")) == NULL)) {
         always_log("debug_cmd: shot %s: cannot write (%dx%d)\n", path, w, h);
         return;
@@ -130,8 +135,8 @@ debug_cmd_shot(const char *path)
     hdr[26] = 1;
     hdr[28] = 32;
     fwrite(hdr, 1, sizeof(hdr), f);
-    for (int y = 0; y < h; y++)
-        fwrite(bmp->line[y], 4, w, f);
+    for (int row = 0; row < h; row++)
+        fwrite(&bmp->line[y + row][x], 4, w, f);
     fclose(f);
     always_log("debug_cmd: shot %s (%dx%d, mode %dx%d)\n", path, w, h, mon->mon_xsize, mon->mon_ysize);
 }
