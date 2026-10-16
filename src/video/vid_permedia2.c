@@ -278,6 +278,7 @@ typedef struct p2_t {
     uint32_t    modes[256][9];
     uint32_t    dl_start; /* Debug: the current texture download. */
     uint32_t    dl_words;
+    int         range_logged;
     uint32_t    texel_lut[256];
     p2_raster_t raster;
     double      vtx[3][16];      /* Delta vertex parameters (see p2_delta_vertex). */
@@ -375,6 +376,19 @@ p2_vsync_callback(svga_t *svga)
            and the graphics processor goes on with what was held back. */
         p2->suspended = 0;
         p2_vtg_write(p2, VTG_SCREEN_BASE, p2->suspend_base);
+        if (p2_vtg_active(p2)) {
+            /* The SVGA core latched this frame's start before calling us: the
+               new page must show from this frame on, or the drivers (released
+               now) draw into the page still on screen. */
+            if (svga->interlace && svga->oddeven)
+                svga->memaddr = svga->memaddr_backup = svga->memaddr_latch + (svga->rowoffset << 1) + svga->hblank_sub;
+            else
+                svga->memaddr = svga->memaddr_backup = svga->memaddr_latch + svga->hblank_sub;
+            if (!(svga->adv_flags & FLAG_NO_SHIFT3)) {
+                svga->memaddr <<= 2;
+                svga->memaddr_backup <<= 2;
+            }
+        }
         p2_out_space(p2);
     }
 
@@ -4174,6 +4188,17 @@ p2_delta_triangle(p2_t *p2, uint32_t value)
     double         area;
 
     memcpy(p, p2->vtx, sizeof(p));
+    if (p2->mode_log && (p2->range_logged < 16)) {
+        /* Debug: vertices beyond the rasterizer's 12.15 range. */
+        for (int v = 0; v < 3; v++) {
+            if ((fabs(p[v][VP_X]) > 2047.0) || (fabs(p[v][VP_Y]) > 2047.0)) {
+                p2->range_logged++;
+                pclog("P2: delta vertex out of range: (%.1f,%.1f) (%.1f,%.1f) (%.1f,%.1f)\n", p[0][VP_X], p[0][VP_Y],
+                      p[1][VP_X], p[1][VP_Y], p[2][VP_X], p[2][VP_Y]);
+                break;
+            }
+        }
+    }
     area = (p[1][VP_X] - p[0][VP_X]) * (p[2][VP_Y] - p[0][VP_Y]) - (p[2][VP_X] - p[0][VP_X]) * (p[1][VP_Y] - p[0][VP_Y]);
     if ((area == 0.0) || !isfinite(area))
         return;
