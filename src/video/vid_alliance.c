@@ -43,6 +43,8 @@
 #include <86box/video.h>
 #include <86box/vid_svga.h>
 #include <86box/vid_svga_render.h>
+#include <86box/i2c.h>
+#include <86box/vid_ddc.h>
 #include <86box/plat_unused.h>
 #include <86box/debug_cmd.h>
 
@@ -75,6 +77,8 @@ typedef struct pm_t {
 
     int      chip;
     void    *ramdac;
+    void    *i2c;
+    void    *ddc;
     uint32_t vram_size;
     uint32_t vram_mask;
     uint32_t lfb_base;
@@ -657,7 +661,9 @@ pm_update_cursor(pm_t *pm)
 {
     svga_t *svga = &pm->svga;
 
-    svga->hwcursor.ena       = !!(pm->xr[0x140] & 0x01);
+    /* The cursor belongs to the extended modes: Windows leaves it on when it
+       goes back to a VGA mode. */
+    svga->hwcursor.ena       = (pm->xr[0x140] & 0x01) && (pm->sr[0x1c - 8] & 0x04);
     svga->hwcursor.cur_xsize = 64;
     svga->hwcursor.cur_ysize = 64;
     svga->hwcursor.x         = pm_xr16(pm, 0x148) & 0x7ff;
@@ -730,6 +736,9 @@ pm_xr_read(pm_t *pm, uint32_t addr)
                 ret |= 0x02; /* screen-to-host data ready */
             break;
         case XR_STATUS + 2:
+            /* The DDC lines: bit 16 SDA, bit 17 SCL. */
+            ret = (i2c_gpio_get_sda(pm->i2c) ? 0x01 : 0x00) | (i2c_gpio_get_scl(pm->i2c) ? 0x02 : 0x00);
+            break;
         case XR_STATUS + 3:
             ret = 0x00;
             break;
@@ -772,6 +781,11 @@ pm_xr_write(pm_t *pm, uint32_t addr, uint8_t val)
         case 0xc0:
         case 0xc1:
             pm_update_banks(pm);
+            break;
+        case 0xd0:
+            /* DDC: bits 5/6 drive SCL/SDA with the levels in bits 3/4;
+               released, a line floats high. */
+            i2c_gpio_set(pm->i2c, !(val & 0x20) || (val & 0x08), !(val & 0x40) || (val & 0x10));
             break;
         case 0x140 ... 0x14f:
             pm_update_cursor(pm);
@@ -1174,6 +1188,7 @@ pm_recalctimings(svga_t *svga)
     pm_t *pm  = (pm_t *) svga->priv;
     int   bpp = pm_ext_bpp(pm);
 
+    pm_update_cursor(pm);
     svga->force_old_addr = 0;
     if (!bpp)
         return;
@@ -1421,6 +1436,9 @@ pm_init(const device_t *info)
     mem_mapping_disable(&pm->lfb_mapping);
     mem_mapping_disable(&pm->xr_mapping);
 
+    pm->i2c = i2c_gpio_init("ddc_alliance_promotion");
+    pm->ddc = ddc_init(i2c_gpio_get_bus(pm->i2c));
+
     pm_init_pci_regs(pm);
     pm_reset_state(pm);
 
@@ -1464,6 +1482,8 @@ pm_close(void *priv)
         debug_cmd_set_device_hook(NULL);
         pm_dbg = NULL;
     }
+    ddc_close(pm->ddc);
+    i2c_gpio_close(pm->i2c);
     svga_close(&pm->svga);
     free(pm->blt.rd_buf);
     free(pm);
