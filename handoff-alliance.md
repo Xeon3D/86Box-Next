@@ -172,16 +172,24 @@ ignores our keys and clicks on this VM; regedit is the reliable route).
 
 ## Not done / next
 
-1. Interlaced modes: XRD2 bit 0 (STB's InterlaceControl) is set by the drivers' 43 Hz
-   1024x768 mode (44.7 MHz). The CRTC then holds frame values (768 lines), so feeding
-   svga->interlace (per-field) would double them; shown progressive for now.
+1. Interlaced modes: XRD2 bit 0 (STB's InterlaceControl) is set by the drivers' 1024x768
+   "43 Hz interlaced" mode (44.7 MHz). The CRTC holds frame timings there (816 lines at
+   35.5 kHz = 43.4 Hz, which is the 43 Hz the mode is named for), so showing it progressive at
+   that rate gives the same picture; only a real monitor's flicker differs. Left as is.
 2. Done: 6410 pixel clocks (3916e0723): XRD8 = clock index (INT 10h 3005h), frequencies
    from the BIOS's 6422 PLL table at 6775h, /2 for 15/16/32 bpp through the 20C498.
    The 6422's 16 bpp 1024x768 runs at 96.6 MHz / 93.7 Hz from the drivers' own timing
    tables -- plausible (85 Hz class), not checked against hardware.
-3. Op 3 (stretch blit), 8x8 colour patterns, destination update bits, overlay interpolation,
-   the second overlay design (tiles, XR200 on; GXM/6424 and later); the STB build's
-   DirectDraw HAL (does not come up).
+3. Not on these chips: op 3 (stretch blit) and the 8x8 mono/colour pattern unit (XR40
+   bits 23:22 = 2/3) -- X.org enables them only for the AT24 and later (old apm_accel.c
+   from the xf86-video-apm history, d9a3071^). Still open: overlay interpolation, the
+   second overlay design (tiles, XR200 on; GXM/6424 and later), the STB build's DirectDraw.
+   Done 2026-10-16 (972026848): destination update bits 28:27 (x + width / y + height,
+   STB's physsl.asm polygon fill depends on it) and re-armed quick starts (Alliance's
+   polygon code clears XR40 mid-polygon and re-arms it after writing the next span).
+   Test program: tools/alliance/gditest (no-CRT Win32 exe built in WSL with
+   i686-w64-mingw32-gcc; C:\GDITEST.EXE on work-pmw98) draws convex and non-convex
+   polygons, ellipses, the six hatches and a line fan -- all match GDI now.
 4. Done: NT 4 on the 6410. work-pmnt4 is left configured as pm6410_pci, work-pmw98 and
    work-pmw95 as pm6422_pci; work-pmdos as pm6410_pci.
 5. AT3D/AT25 with the Stingray/GA-RUSH6 BIOSes (16 MB aperture: VGA regs at +FFF000h, XR at
