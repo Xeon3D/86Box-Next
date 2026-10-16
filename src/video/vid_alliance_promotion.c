@@ -749,6 +749,11 @@ pm_xr_read(pm_t *pm, uint32_t addr)
         case XR_STATUS + 3:
             ret = 0x00;
             break;
+        case 0x180 ... 0x183:
+            /* The PCI vendor and device IDs (the NT 4 miniport checks for
+               1142h here before it accepts the card). */
+            ret = pm->pci_regs[addr & 3];
+            break;
         case 0x190 ... 0x193:
             /* The aperture base: on the PCI chips, BAR 0 (the drivers read
                it here). The BIOS writes a VL-bus address of its choosing. */

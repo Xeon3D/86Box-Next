@@ -115,9 +115,28 @@ The BIOS then takes its 6422 path:
   Super VGA 1280x1024, with refresh lists on the MODES keys (MODES2.REG) and with STB's own
   source build of the driver. So the limit is in Windows' mode enumeration, not the chip
   model or a driver build. DESK never calls ValidateMode (no INT 10h 3002h while it lists).
-- STB's source build (pmiso2; C:\PMBAK on the guest holds the 1600 files it replaced, now
-  restored) draws text with missing glyph pixels and no DirectDraw: its glyph-cache text path
-  (physcach.asm) uses something the engine does not do right yet. The 1600 driver is fine.
+- STB's source build (pmiso2; C:\PMBAK on the guest holds the 1600 files) is what work-pmw98
+  runs now. Its text was missing glyph pixels: the glyph cache (physcach.asm) sets XR40 once
+  with "start on X extent" (bit 29) and starts each glyph with a dword write of width+height to
+  XR58; the engine started on byte 59h, before the height. Fixed (35790a2f3): starts run when
+  the whole access completes. Its DirectDraw HAL does not come up (DxDiag: not available),
+  the 1600 driver's does.
+
+## Windows NT 4 (VM work-pmnt4, done 2026-10-16)
+
+Copy of work-p2nt4: p6bap, Celeron 233, NT 4 Workstation on an AHA-2944UW SCSI VHD, CD on
+SCSI 0:1 = work-pmnt4\pmnt.iso (Alliance NT 4 driver 1.410: PROMTN.SYS/DLL, OEMSETUP.INF
+without PCI IDs). Log on: Administrator, blank password. Keyboard is US here.
+tools/alliance/ntcycle.sh shuts NT down, redeploys, boots and logs on.
+- The miniport is legacy style: maps A0000h, SR1B = 1, reads XRCA bit 0 (PCI) and XR190 (the
+  aperture base) and insists on XR180 = 1142h (fixed: XR180-183 read the PCI IDs).
+- Installed through Display > Display Type > Change > Have Disk (d:\). Works on the 6422:
+  full mode list (640x480 to 1280x1024 at 8 bpp, 16 bpp to 1152x864, True Color 640/800),
+  the 800x600 True Color test pattern is right, desktop and Explorer at 800x600x32 draw
+  correctly with the hardware cursor. Engine ops seen: fills, mono text (81003A01, 82003A01),
+  pattern fills, host blits, lines (0Dh in all directions, Y major). Nothing unhandled.
+- Not tried on the 6410 yet.
+
 
 ## Not done / next
 
@@ -125,9 +144,9 @@ The BIOS then takes its 6422 path:
    (DESK may take Win98's list from there), the CHIPID value in DEFAULT, Win95 instead of
    Win98, a fresh VM that never had another display driver.
 2. 6410 pixel clock: XRD8 + MISC bits 3:2 -> frequency table unknown; 60 Hz meanwhile.
-3. The STB build's text path (physcach.asm), op 3 (stretch), 8x8 colour patterns,
-   destination update bits, the video overlay window (XR82-XRC0, physical.h VIDWINDOW).
-4. NT 4 driver 1.410 (from-laptop/nt40-1410.exe: PROMTN.SYS/DLL, OEMSETUP.INF).
+3. Op 3 (stretch), 8x8 colour patterns, destination update bits, the video overlay window
+   (XR82-XRC0, physical.h VIDWINDOW); the STB build's DirectDraw.
+4. NT 4 on the 6410 (pm6410_pci).
 5. AT3D/AT25 with the Stingray/GA-RUSH6 BIOSes (16 MB aperture: VGA regs at +FFF000h, XR at
    +FFEC00h; X.org apm_driver.c), no Voodoo Rush 3D.
 6. Before merging: pm_do_log default 0, ROM into Xeon3D/roms, README.
