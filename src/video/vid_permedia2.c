@@ -30,6 +30,7 @@
  */
 #include <math.h>
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -195,6 +196,8 @@ typedef struct p2_t {
     uint32_t vclk_ctl;
     uint32_t test_register;
     uint32_t aperture[2];
+    int      flash_cycle;   /* JEDEC command bytes seen (ROM access). */
+    int      flash_id_mode; /* Software ID mode: the flash part's IDs at 0/1. */
     uint32_t dma_address;
     uint32_t dma_count;
     uint32_t dma_control;
@@ -373,6 +376,21 @@ p2_pixclk(p2_t *p2, int n)
 
     if (!m || !d || !(p & 0x08))
         return (n == 1) ? 28322000.0 : 25175000.0;
+
+    return (14318180.0 * m / d) / (double) (1 << (p & 7));
+}
+
+/* Memory clock synthesiser (MCLK, 30h-32h), the same layout (BIOSes leave
+   its P bit 3 clear: ELSA's 7Bh/0Bh/01h is 80 MHz). */
+static double
+p2_memclk(p2_t *p2)
+{
+    const uint8_t m = p2->dac_regs[TVP_MEMCLK_1];
+    const uint8_t d = p2->dac_regs[TVP_MEMCLK_1 + 1];
+    const uint8_t p = p2->dac_regs[TVP_MEMCLK_1 + 2];
+
+    if (!m || !d)
+        return 70000000.0;
 
     return (14318180.0 * m / d) / (double) (1 << (p & 7));
 }
@@ -998,6 +1016,7 @@ p2_lfb_readl(uint32_t addr, void *priv)
     return *(uint32_t *) &p2->svga.vram[addr & p2->vram_mask & ~3];
 }
 
+
 static void
 p2_lfb_writeb(uint32_t addr, uint8_t val, void *priv)
 {
@@ -1032,6 +1051,163 @@ p2_lfb_writel(uint32_t addr, uint32_t val, void *priv)
     v  = (uint32_t *) &p2->svga.vram[addr];
     *v = (*v & ~p2->bypass_mask) | (val & p2->bypass_mask);
     p2_vram_changed(p2, addr);
+}
+
+/* ApertureOne/Two bit 9 (ROM access): that aperture reaches the expansion ROM
+   instead of memory. ELSA's drivers read the board's ID block (the word at 0Ah
+   points to it) and identify the flash part through it, with the JEDEC
+   software ID commands; the part reported is an Atmel AT29C257 (32 KB) or
+   AT29C512 (64 KB), as the image's size calls for. Programming is ignored. */
+static inline int
+p2_ap_rom(const p2_t *p2, int n)
+{
+    return (p2->aperture[n] & 0x200) && (p2->bios_rom.rom != NULL);
+}
+
+static uint8_t
+p2_ap_rom_readb(const p2_t *p2, uint32_t addr)
+{
+    addr &= p2->bios_rom.sz - 1;
+    if (p2->flash_id_mode && (addr < 2))
+        return addr ? ((p2->bios_rom.sz > 0x8000) ? 0x5d : 0xdc) : 0x1f;
+
+    return p2->bios_rom.rom[addr];
+}
+
+static void
+p2_ap_rom_writeb(p2_t *p2, uint32_t addr, uint8_t val)
+{
+    static const uint16_t cmd_addr[2] = { 0x5555, 0x2aaa };
+    static const uint8_t  cmd_val[2]  = { 0xaa, 0x55 };
+
+    addr &= 0x7fff;
+    if (val == 0xf0) {
+        p2->flash_id_mode = 0;
+        p2->flash_cycle   = 0;
+    } else if (p2->flash_cycle < 2) {
+        p2->flash_cycle = ((addr == cmd_addr[p2->flash_cycle]) && (val == cmd_val[p2->flash_cycle])) ? (p2->flash_cycle + 1) : 0;
+    } else {
+        if (addr == 0x5555) {
+            if (val == 0x90)
+                p2->flash_id_mode = 1;
+        }
+        p2->flash_cycle = 0;
+    }
+}
+
+static uint32_t
+p2_ap_read(p2_t *p2, int n, uint32_t addr, int size)
+{
+    uint32_t ret = 0;
+
+    if (!p2_ap_rom(p2, n)) {
+        switch (size) {
+            case 1:
+                return p2_lfb_readb(addr, p2);
+            case 2:
+                return p2_lfb_readw(addr, p2);
+            default:
+                return p2_lfb_readl(addr, p2);
+        }
+    }
+
+    for (int i = 0; i < size; i++)
+        ret |= (uint32_t) p2_ap_rom_readb(p2, addr + i) << (i << 3);
+    return ret;
+}
+
+static void
+p2_ap_write(p2_t *p2, int n, uint32_t addr, uint32_t val, int size)
+{
+    if (!p2_ap_rom(p2, n)) {
+        switch (size) {
+            case 1:
+                p2_lfb_writeb(addr, val, p2);
+                break;
+            case 2:
+                p2_lfb_writew(addr, val, p2);
+                break;
+            default:
+                p2_lfb_writel(addr, val, p2);
+                break;
+        }
+        return;
+    }
+
+    for (int i = 0; i < size; i++)
+        p2_ap_rom_writeb(p2, addr + i, val >> (i << 3));
+}
+
+static uint8_t
+p2_ap0_readb(uint32_t addr, void *priv)
+{
+    return p2_ap_read((p2_t *) priv, 0, addr, 1);
+}
+
+static uint16_t
+p2_ap0_readw(uint32_t addr, void *priv)
+{
+    return p2_ap_read((p2_t *) priv, 0, addr, 2);
+}
+
+static uint32_t
+p2_ap0_readl(uint32_t addr, void *priv)
+{
+    return p2_ap_read((p2_t *) priv, 0, addr, 4);
+}
+
+static void
+p2_ap0_writeb(uint32_t addr, uint8_t val, void *priv)
+{
+    p2_ap_write((p2_t *) priv, 0, addr, val, 1);
+}
+
+static void
+p2_ap0_writew(uint32_t addr, uint16_t val, void *priv)
+{
+    p2_ap_write((p2_t *) priv, 0, addr, val, 2);
+}
+
+static void
+p2_ap0_writel(uint32_t addr, uint32_t val, void *priv)
+{
+    p2_ap_write((p2_t *) priv, 0, addr, val, 4);
+}
+
+static uint8_t
+p2_ap1_readb(uint32_t addr, void *priv)
+{
+    return p2_ap_read((p2_t *) priv, 1, addr, 1);
+}
+
+static uint16_t
+p2_ap1_readw(uint32_t addr, void *priv)
+{
+    return p2_ap_read((p2_t *) priv, 1, addr, 2);
+}
+
+static uint32_t
+p2_ap1_readl(uint32_t addr, void *priv)
+{
+    return p2_ap_read((p2_t *) priv, 1, addr, 4);
+}
+
+static void
+p2_ap1_writeb(uint32_t addr, uint8_t val, void *priv)
+{
+    p2_ap_write((p2_t *) priv, 1, addr, val, 1);
+}
+
+static void
+p2_ap1_writew(uint32_t addr, uint16_t val, void *priv)
+{
+    p2_ap_write((p2_t *) priv, 1, addr, val, 2);
+}
+
+static void
+p2_ap1_writel(uint32_t addr, uint32_t val, void *priv)
+{
+    p2_ap_write((p2_t *) priv, 1, addr, val, 4);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1344,7 +1520,9 @@ p2_ctrl_read_int(p2_t *p2, uint32_t addr)
             ret = p2->fb_write_mask;
             break;
         case P2_MCLK_COUNT:
-            ret = 0;
+            /* Free-running MClk cycle count: drivers time loops and
+               measure the clock with it (ELSA's waits on it at boot). */
+            ret = (uint32_t) (uint64_t) ((double) tsc * 4294967296.0 / (double) TIMER_USEC * (p2_memclk(p2) / 1000000.0));
             break;
         default:
             p2_log("P2: unhandled control read %04X\n", addr);
@@ -2227,7 +2405,8 @@ p2_raster_start(p2_t *p2, uint32_t command)
     const uint32_t rm   = p2->gp[TAG_FB_READ_MODE];
     const int      bias = (p2->gp[TAG_RASTERIZER_MODE] >> 4) & 3;
 
-    memset(r, 0, sizeof(p2_raster_t) - sizeof(r->rel_offset));
+    /* Up to rel_offset (sizeof() would include the struct's tail padding). */
+    memset(r, 0, offsetof(p2_raster_t, rel_offset));
     r->command  = command;
     r->prim     = command & RENDER_PRIM_MASK;
     r->bpp      = p2_fb_bpp(p2);
@@ -2560,8 +2739,9 @@ p2_pci_write(UNUSED(int func), int addr, UNUSED(int len), uint8_t val, void *pri
             break;
 
         case 0x2c ... 0x2f:
-            /* The video BIOS writes the subsystem IDs at POST. */
-            p2->pci_regs[addr] = val;
+            /* Loaded from the ROM at reset (SubsystemFromRom strap): read-only
+               then. STB's BIOS writes the same values again at POST; ELSA's
+               write zeros, which the real board ignores. */
             break;
 
         case 0x30:
@@ -2692,6 +2872,8 @@ p2_reset_state(p2_t *p2)
     p2->vclk_ctl      = 0;
     p2->aperture[0]   = 0;
     p2->aperture[1]   = 0;
+    p2->flash_cycle   = 0;
+    p2->flash_id_mode = 0;
     p2->dma_count     = 0;
     p2->out_dma_count = 0;
     p2->bypass_mask   = 0xffffffff;
@@ -2751,14 +2933,20 @@ p2_init_pci_regs(p2_t *p2)
     p2->pci_regs[0x08] = p2->revision; /* 01h Permedia 2, 11h Permedia 2A */
     p2->pci_regs[0x0b] = 0x03; /* VGA compatible display controller */
     p2->pci_regs[0x16] = 0x00;
-    p2->pci_regs[0x14] = 0x08; /* Prefetchable */
-    p2->pci_regs[0x18] = 0x08;
-    /* The board's subsystem IDs, as its BIOS sets them at POST (offset 34h). */
-    if (p2->bios_rom.rom && (p2->bios_rom.sz >= 0x38)) {
-        p2->pci_regs[0x2c] = p2->bios_rom.rom[0x34];
-        p2->pci_regs[0x2d] = p2->bios_rom.rom[0x35];
-        p2->pci_regs[0x2e] = p2->bios_rom.rom[0x36];
-        p2->pci_regs[0x2f] = p2->bios_rom.rom[0x37];
+    /* Not prefetchable: ELSA's drivers take BAR1 as read for the aperture's
+       address (its ROM access reads 8 bytes off with bit 3 set). */
+    p2->pci_regs[0x14] = 0x00;
+    p2->pci_regs[0x18] = 0x00;
+    /* The board's subsystem IDs: the chip loads them from the ROM's last four
+       bytes at reset (7FFCh / FFFCh). Some BIOSes (STB's) write them again at
+       POST from offset 34h; ELSA's keep a different layout there. */
+    if (p2->bios_rom.rom && (p2->bios_rom.sz >= 4)) {
+        const uint8_t *ids = &p2->bios_rom.rom[p2->bios_rom.sz - 4];
+
+        p2->pci_regs[0x2c] = ids[0];
+        p2->pci_regs[0x2d] = ids[1];
+        p2->pci_regs[0x2e] = ids[2];
+        p2->pci_regs[0x2f] = ids[3];
     }
     p2->pci_regs[0x30] = 0x00;
     p2->pci_regs[0x32] = 0x0c;
@@ -2775,6 +2963,62 @@ p2_init_pci_regs(p2_t *p2)
         p2->pci_regs[0x50] = 0x03;
         p2->pci_regs[0x53] = 0x07;
     }
+}
+
+/* ELSA's boards keep their factory data in the flash ROM: 64 words at the
+   offset in word 0Ah -- 0: CRC of words 1-63, 1: 4433h, 2: board code,
+   6: feature flags, 7 and 8: clocks in 4 kHz units (8: the memory clock),
+   14h/15h: a memory timing override (0: the chip's default). BIOS update
+   images leave the block blank (the flash tool keeps the board's own), and
+   ELSA's drivers refuse a board whose block fails its CRC; give such an
+   image the values a board would carry (MCLK 80 MHz, as the BIOS programs). */
+static uint16_t
+p2_elsa_crc(const uint16_t *words, int n)
+{
+    uint16_t crc = 0;
+
+    for (int w = 0; w < n; w++) {
+        for (int i = 0; i < 16; i++) {
+            const int bit = ((words[w] >> i) ^ (crc >> 14) ^ (crc >> 15) ^ (crc >> 1) ^ 1) & 1;
+
+            crc = (crc << 1) | bit;
+        }
+    }
+
+    return crc;
+}
+
+static void
+p2_elsa_id_block(p2_t *p2)
+{
+    uint8_t *rom = p2->bios_rom.rom;
+    uint16_t words[64];
+    uint32_t ptr;
+    int      sum = 0;
+
+    if (!rom || (p2->bios_rom.sz < 0x8000) || (rom[0] != 0x55) || (rom[1] != 0xaa))
+        return;
+    ptr = rom[0x0a] | (rom[0x0b] << 8);
+    if (!ptr || ((ptr + sizeof(words)) > 0x7ff0))
+        return;
+    for (int i = 0; i < 64; i++)
+        words[i] = rom[ptr + i * 2] | (rom[ptr + i * 2 + 1] << 8);
+    if ((words[1] != 0x4433) || (words[0] == p2_elsa_crc(&words[1], 63)))
+        return;
+
+    for (uint32_t i = 0; i < sizeof(words); i++)
+        sum += rom[ptr + i];
+    for (int i = 3; i < 64; i++)
+        words[i] = 0x0000;
+    words[7] = 230000 / 4; /* 230 MHz */
+    words[8] = 80000 / 4;  /* 80 MHz */
+    words[0] = p2_elsa_crc(&words[1], 63);
+    for (int i = 0; i < 64; i++) {
+        rom[ptr + i * 2]     = words[i] & 0xff;
+        rom[ptr + i * 2 + 1] = words[i] >> 8;
+        sum -= rom[ptr + i * 2] + rom[ptr + i * 2 + 1];
+    }
+    rom[0x7ff0] += sum; /* Padding: the image's checksum stays right. */
 }
 
 /* The same chip was sold by 3Dlabs as 3D3D:0007. The BIOS takes either, but
@@ -2827,6 +3071,7 @@ p2_init(const device_t *info)
         p2->revision = device_get_bios_local(info, bios);
         rom_init(&p2->bios_rom, device_get_bios_file(info, bios, 0), 0xc0000, size, size - 1, 0, MEM_MAPPING_EXTERNAL);
     }
+    p2_elsa_id_block(p2);
     p2->tdlabs_id = device_get_config_int("chip_id");
     if (p2->tdlabs_id)
         p2_patch_bios_id(p2);
@@ -2849,11 +3094,14 @@ p2_init(const device_t *info)
                     p2_mmio_readb, p2_mmio_readw, p2_mmio_readl,
                     p2_mmio_writeb, p2_mmio_writew, p2_mmio_writel,
                     NULL, MEM_MAPPING_EXTERNAL, p2);
-    for (int i = 0; i < 2; i++)
-        mem_mapping_add(&p2->ap_mapping[i], 0, 0,
-                        p2_lfb_readb, p2_lfb_readw, p2_lfb_readl,
-                        p2_lfb_writeb, p2_lfb_writew, p2_lfb_writel,
-                        NULL, MEM_MAPPING_EXTERNAL, p2);
+    mem_mapping_add(&p2->ap_mapping[0], 0, 0,
+                    p2_ap0_readb, p2_ap0_readw, p2_ap0_readl,
+                    p2_ap0_writeb, p2_ap0_writew, p2_ap0_writel,
+                    NULL, MEM_MAPPING_EXTERNAL, p2);
+    mem_mapping_add(&p2->ap_mapping[1], 0, 0,
+                    p2_ap1_readb, p2_ap1_readw, p2_ap1_readl,
+                    p2_ap1_writeb, p2_ap1_writew, p2_ap1_writel,
+                    NULL, MEM_MAPPING_EXTERNAL, p2);
     mem_mapping_disable(&p2->ctrl_mapping);
     mem_mapping_disable(&p2->ap_mapping[0]);
     mem_mapping_disable(&p2->ap_mapping[1]);

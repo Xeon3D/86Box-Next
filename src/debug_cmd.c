@@ -157,6 +157,44 @@ debug_cmd_cpu(void)
     always_log("debug_cmd: code%s\n", code);
 }
 
+static uint8_t
+debug_cmd_lin_readb(uint32_t lin)
+{
+    uint64_t phys = (cr0 >> 31) ? mmutranslate_noabrt(lin, 0) : (uint64_t) lin;
+
+    return (phys == 0xffffffffffffffffULL) ? 0xff : mem_readb_phys((uint32_t) phys);
+}
+
+/* segbase <selector>: the selector's descriptor base, from the GDT or the LDT
+   (to turn a protected mode sel:offset into a "bp" address). */
+static void
+debug_cmd_segbase(const char *arg)
+{
+    uint32_t sel  = strtoul(arg, NULL, 16);
+    uint32_t desc = ((sel & 4) ? ldt.base : gdt.base) + (sel & ~7);
+    uint8_t  d[8];
+
+    for (int i = 0; i < 8; i++)
+        d[i] = debug_cmd_lin_readb(desc + i);
+    always_log("debug_cmd: segbase %04x = %08x (limit %05x, access %02x)\n", sel,
+               d[2] | (d[3] << 8) | (d[4] << 16) | ((uint32_t) d[7] << 24),
+               d[0] | (d[1] << 8) | ((d[6] & 0x0f) << 16), d[5]);
+}
+
+/* For devices: log where the guest is (as "cpu" does) and its stack frame at
+   SS:BP -- a 16-bit far return address shows the caller's selector. */
+void
+debug_cmd_log_cpu(void)
+{
+    char     bytes[3 * 16 + 1];
+    uint32_t lin = ss + ((cpu_state.op32 & CPU_STATUS_STACK32) ? EBP : BP);
+
+    debug_cmd_cpu();
+    for (int i = 0; i < 16; i++)
+        snprintf(bytes + 3 * i, 4, " %02x", debug_cmd_lin_readb(lin + i));
+    always_log("debug_cmd: [ss:bp] %08x:%s\n", lin, bytes);
+}
+
 #define DEBUG_CMD_BPS 16
 int             debug_cmd_bp_count;
 static uint32_t debug_cmd_bp_addr[DEBUG_CMD_BPS];
@@ -434,7 +472,9 @@ debug_cmd_run(char *line)
     else if (!strcmp(line, "speedlog")) {
         debug_cmd_speed_log = atoi(arg) != 0;
         always_log("debug_cmd: speedlog %s\n", debug_cmd_speed_log ? "on" : "off");
-    } else if (!strcmp(line, "find"))
+    } else if (!strcmp(line, "segbase"))
+        debug_cmd_segbase(arg);
+    else if (!strcmp(line, "find"))
         debug_cmd_find(arg);
     else if (!strcmp(line, "interp")) {
         /* interp 1|0: run every block through the interpreter (to tell dynarec bugs apart) */
