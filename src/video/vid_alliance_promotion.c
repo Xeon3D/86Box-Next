@@ -660,6 +660,148 @@ pm_blt_port_read(pm_t *pm)
 }
 
 /* ------------------------------------------------------------------------- */
+/* Video window (XR82-XR9F, the first ProMotion design: one window)          */
+/*                                                                           */
+/* XR82 control: bit 0 on, bits 3:1 source depth (2 = 8, 4 = 15, 5 = 16,     */
+/* 7 = 32 bpp), bits 6:4 format (0 indexed, 2 RGB, 4 UYVY, 5 YYVU, 7 Y),     */
+/* 8 YUV to RGB, 9 stretch, 10 interpolate, 13:12 replication. XR84 source   */
+/* width, XR86 source pitch in dwords, XR88/8A/8C/8E left/top/right/bottom   */
+/* on the screen, XR90 source address, XR98/9C source width/height - 1,      */
+/* XR9A/9E source - destination width/height (STB's promdd32.c). No colour   */
+/* key on this design: the window covers its rectangle.                      */
+/* ------------------------------------------------------------------------- */
+
+static void
+pm_update_overlay(pm_t *pm)
+{
+    svga_t        *svga = &pm->svga;
+    const uint16_t ctl  = pm_xr16(pm, 0x82);
+    const int      l    = pm_xr16(pm, 0x88) & 0xfff;
+    const int      t    = pm_xr16(pm, 0x8a) & 0xfff;
+    const int      r    = pm_xr16(pm, 0x8c) & 0xfff;
+    const int      b    = pm_xr16(pm, 0x8e) & 0xfff;
+
+    svga->overlay.ena       = (ctl & 0x0001) && (r >= l) && (b >= t) && (pm->sr[0x1c - 8] & 0x04);
+    svga->overlay.x         = l;
+    svga->overlay.y         = t;
+    svga->overlay.cur_xsize = r - l + 1;
+    svga->overlay.cur_ysize = b - t + 1;
+    svga->overlay.xoff      = 0;
+    svga->overlay.yoff      = 0;
+}
+
+static inline uint8_t
+pm_clamp8(int v)
+{
+    return (v < 0) ? 0 : ((v > 255) ? 255 : v);
+}
+
+static uint32_t
+pm_yuv_rgb(int y, int u, int v)
+{
+    const int c = (y - 16) * 298;
+    const int d = u - 128;
+    const int e = v - 128;
+
+    return (pm_clamp8((c + 409 * e + 128) >> 8) << 16) | (pm_clamp8((c - 100 * d - 208 * e + 128) >> 8) << 8) |
+           pm_clamp8((c + 516 * d + 128) >> 8);
+}
+
+static uint32_t
+pm_overlay_pixel(pm_t *pm, uint16_t ctl, uint32_t line, int sx)
+{
+    const uint8_t *vram = pm->svga.vram;
+    const uint32_t mask = pm->vram_mask;
+
+    switch ((ctl >> 4) & 7) {
+        case 4: /* UYVY */
+        case 5: /* YYVU */
+        case 7: { /* Y */
+            const uint32_t a  = line + (sx & ~1) * 2;
+            const uint8_t  b0 = vram[a & mask];
+            const uint8_t  b1 = vram[(a + 1) & mask];
+            const uint8_t  b2 = vram[(a + 2) & mask];
+            const uint8_t  b3 = vram[(a + 3) & mask];
+            int            y;
+            int            u;
+            int            v;
+
+            if (((ctl >> 4) & 7) == 7) {
+                y = vram[(line + sx) & mask];
+                return (y << 16) | (y << 8) | y;
+            }
+            if (((ctl >> 4) & 7) == 5) {
+                y = (sx & 1) ? b1 : b0;
+                v = b2;
+                u = b3;
+            } else {
+                y = (sx & 1) ? b3 : b1;
+                u = b0;
+                v = b2;
+            }
+            if (!(ctl & 0x0100))
+                return (y << 16) | (u << 8) | v;
+            return pm_yuv_rgb(y, u, v);
+        }
+
+        case 2: /* RGB */
+            switch ((ctl >> 1) & 7) {
+                case 4: {
+                    const uint16_t c = vram[(line + sx * 2) & mask] | (vram[(line + sx * 2 + 1) & mask] << 8);
+
+                    return video_15to32[c & 0x7fff];
+                }
+                case 5: {
+                    const uint16_t c = vram[(line + sx * 2) & mask] | (vram[(line + sx * 2 + 1) & mask] << 8);
+
+                    return video_16to32[c];
+                }
+                case 7:
+                    return (vram[(line + sx * 4 + 2) & mask] << 16) | (vram[(line + sx * 4 + 1) & mask] << 8) |
+                           vram[(line + sx * 4) & mask];
+                default:
+                    break;
+            }
+            return pm->svga.pallook[vram[(line + sx) & mask]];
+
+        default: /* indexed */
+            return pm->svga.pallook[vram[(line + sx) & mask]];
+    }
+}
+
+static void
+pm_overlay_draw(svga_t *svga, int displine)
+{
+    pm_t          *pm   = (pm_t *) svga->priv;
+    const uint16_t ctl  = pm_xr16(pm, 0x82);
+    const int      dw   = svga->overlay_latch.cur_xsize;
+    const int      dh   = svga->overlay_latch.cur_ysize;
+    const int      row  = dh - svga->overlay_on;
+    int            sw   = pm_xr16(pm, 0x84);
+    int            sh   = dh;
+    uint32_t      *p    = &svga->monitor->target_buffer->line[displine][svga->x_add];
+    uint32_t       line;
+    int            sy;
+
+    if (ctl & 0x0200) {
+        sw = (pm_xr16(pm, 0x98) & 0xfff) + 1;
+        sh = (pm_xr16(pm, 0x9c) & 0xfff) + 1;
+    }
+    if ((sw <= 0) || (dw <= 0) || (dh <= 0) || (row < 0))
+        return;
+
+    sy   = (row * sh) / dh;
+    line = pm_xr32(pm, 0x90) + sy * pm_xr16(pm, 0x86) * 4;
+    for (int i = 0; i < dw; i++) {
+        const int x = svga->overlay_latch.x + i;
+
+        if (x >= svga->hdisp)
+            break;
+        p[x] = pm_overlay_pixel(pm, ctl, line, (i * sw) / dw);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
 /* Hardware cursor (XR140-XR14D)                                             */
 /* ------------------------------------------------------------------------- */
 
@@ -779,6 +921,14 @@ pm_xr_write(pm_t *pm, uint32_t addr, uint8_t val)
     addr &= (XR_SIZE - 1);
     if (pm_do_log >= 2 || (pm_do_log && (addr >= 0x80) && (addr != 0xc0) && (addr != 0xc1) && ((addr < 0x140) || (addr > 0x14f))))
         pm_log("PM: XR W %03X = %02X\n", addr, val);
+    /* Not on the 6410/6422: the tile registers of the second video window
+       design (XR200 on) and XR40 bit 16 (24 bpp). The drivers write them
+       to tell the generations apart (STB's Detect_Overlay_Hardware_Version
+       and Detect_2D_Hardware_Version). */
+    if ((addr >= 0x200) && (addr < 0x2c0))
+        return;
+    if (addr == 0x42)
+        val &= ~0x01;
     pm->xr[addr] = val;
 
     switch (addr) {
@@ -812,6 +962,9 @@ pm_xr_write(pm_t *pm, uint32_t addr, uint8_t val)
             break;
         case 0x140 ... 0x14f:
             pm_update_cursor(pm);
+            break;
+        case 0x82 ... 0x9f:
+            pm_update_overlay(pm);
             break;
         case 0x1ff:
             /* Abort. */
@@ -1301,6 +1454,7 @@ pm_recalctimings(svga_t *svga)
     int   bpp = pm_ext_bpp(pm);
 
     pm_update_cursor(pm);
+    pm_update_overlay(pm);
     svga->force_old_addr = 0;
 
     /* CR1A: vertical bit 10s (total, display end, blank start, retrace
@@ -1618,6 +1772,7 @@ pm_init(const device_t *info)
     svga->vram_display_mask = pm->vram_mask;
     svga->translate_address = pm_translate_address;
     svga->hwcursor_draw     = pm_hwcursor_draw;
+    svga->overlay_draw      = pm_overlay_draw;
 
     mem_mapping_add(&pm->lfb_mapping, 0, 0,
                     pm_lfb_readb, pm_lfb_readw, pm_lfb_readl,
