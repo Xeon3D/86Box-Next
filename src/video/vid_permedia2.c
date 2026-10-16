@@ -865,6 +865,14 @@ p2_recalctimings(svga_t *svga)
        mode switch and leave AR10 bit 3 set). */
     svga->disable_blink = p2_vtg_active(p2);
 
+    if (!p2_vtg_active(p2) && (svga->bpp != 8)) {
+        /* Back from the VTG: its depth is no VGA mode's (Windows 98's
+           shutdown screen came out at 15 bpp). Work the timings out again. */
+        svga->bpp = 8;
+        svga_recalctimings(svga);
+        return;
+    }
+
     if (!p2_vtg_active(p2)) {
         /* The VGA core drives the display, if SR05 lets it. */
         const int    sel  = (svga->miscout >> 2) & 3;
@@ -1463,7 +1471,9 @@ p2_ctrl_read_int(p2_t *p2, uint32_t addr)
             ret = p2->int_flags;
             break;
         case P2_IN_FIFO_SPACE:
-            ret = 256;
+            /* Empty: 256 entries and two more in the input stage. ELSA's NT
+               driver waits for 258 before it touches the core. */
+            ret = 258;
             break;
         case P2_OUT_FIFO_WORDS:
             ret = p2->out_count;
