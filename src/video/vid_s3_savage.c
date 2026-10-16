@@ -168,6 +168,21 @@ typedef struct savage_t {
     uint32_t streams[0x80];
     uint32_t disp_base; /* primary stream start, latched each frame */
 
+    /* Secondary stream (overlay), latched each frame. */
+    void (*primary_render)(struct svga_t *svga);
+    struct {
+        int      x, y, w, h;   /* window on the screen */
+        int      src_w, lines; /* source pixels a line, source lines */
+        uint32_t base, stride;
+        uint32_t hstep, vstep; /* source step per screen pixel/line, 1.15 */
+        uint32_t vinit;
+        int      fmt, hfilter, vfilter;
+    } ov;
+
+    /* MM8504: interrupt status 7:0 (bit 0 vertical sync), enables 15:8. */
+    uint8_t subsys_stat;
+    uint8_t subsys_cntl;
+
     /* BCI / memory port interface. */
     uint32_t write_mask;
     uint32_t read_mask;
@@ -432,8 +447,9 @@ savage_render_tiled(svga_t *svga, int bytespp)
     for (int x = 0; x <= (svga->hdisp + svga->scrollcache); x++) {
         uint32_t va = savage_tiled_addr(base, tiles, x * bytespp, y, bytespp) & SAVAGE_VRAM_MASK;
 
-        /* Past the tile row's end the next tile row would show. */
-        if (x >= (tiles * savage_tile_w(bytespp)))
+        /* Past the tile row's end the next tile row would show; past the
+           display width, the padding beyond it. */
+        if ((x >= (tiles * savage_tile_w(bytespp))) || (x >= svga->hdisp))
             p[x] = 0;
         else if (bytespp == 2)
             p[x] = svga->conv_16to32(svga, *(uint16_t *) &svga->vram[va], (svga->bpp == 15) ? 15 : 16);
@@ -452,6 +468,353 @@ static void
 savage_render_tiled_32bpp(svga_t *svga)
 {
     savage_render_tiled(svga, 4);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Streams processor: the secondary stream (overlay)                        */
+/* ------------------------------------------------------------------------ */
+
+/* Secondary stream registers, as S3's GX3 DirectDraw driver (DDOVER.C,
+   S3DATA.H) programs them. The scale factors are source steps per screen
+   pixel or line in 1.15 fixed point, not the ViRGE's K1/K2 DDA terms. */
+#define SS_CKEY_LOW  0x8184 /* key 23:0 (R/Y, G/U, B/V), compared bits 26:24 */
+#define SS_CONTROL   0x8190 /* source width 11:0, format 26:24, filter 30:28 */
+#define SS_CKEY_HI   0x8194 /* upper bounds of a range key */
+#define SS_HSCALE    0x8198
+#define SS_COLOR_ADJ 0x819c /* brightness 7:0, contrast 12:8 (1.4), on 15; hue/saturation 20:16, 28:24 (s1.3), on 31 */
+#define SS_BLEND     0x81a0 /* Ks 5:2, Kp 13:10, compose 26:24 */
+#define SS_DBL_BUF   0x81cc
+#define SS_FIFO      0x81ec /* bit 0: horizontal interpolation (the GX3 driver's choice) */ /* primary buffer 0, secondary buffer 2:1 */
+#define SS_ADDR0     0x81d0
+#define SS_ADDR1     0x81d4
+#define SS_STRIDE    0x81d8
+#define SS_VSCALE    0x81e0
+#define SS_VINIT     0x81e4
+#define SS_LINES     0x81e8 /* source lines 11:0, vertical filter 15 */
+#define SS_XY        0x81f8 /* x + 1 26:16, y + 1 10:0 */
+#define SS_WH        0x81fc /* width - 1 26:16, height 10:0 */
+
+#define SREG(dev, a) ((dev)->streams[((a) - 0x8180) >> 2])
+
+/* Take the overlay registers for the frame about to be shown. */
+static void
+savage_overlay_latch(savage_t *dev)
+{
+    uint32_t xy   = SREG(dev, SS_XY);
+    uint32_t wh   = SREG(dev, SS_WH);
+    uint32_t ctrl = SREG(dev, SS_CONTROL);
+
+    dev->ov.x       = (int) ((xy >> 16) & 0x7ff) - 1;
+    dev->ov.y       = (int) (xy & 0x7ff) - 1;
+    dev->ov.w       = (int) ((wh >> 16) & 0x7ff) + 1;
+    dev->ov.h       = (int) (wh & 0x7ff);
+    dev->ov.src_w   = ctrl & 0xfff;
+    dev->ov.fmt     = (ctrl >> 24) & 7;
+    dev->ov.hfilter = !!((ctrl >> 28) & 7) || (SREG(dev, SS_FIFO) & 1);
+    dev->ov.lines   = SREG(dev, SS_LINES) & 0xfff;
+    dev->ov.vfilter = !!(SREG(dev, SS_LINES) & 0x8000);
+    dev->ov.hstep   = SREG(dev, SS_HSCALE) & 0x1ffff;
+    dev->ov.vstep   = SREG(dev, SS_VSCALE) & 0x1ffff;
+    dev->ov.vinit   = SREG(dev, SS_VINIT) & 0x7fff;
+    dev->ov.stride  = SREG(dev, SS_STRIDE) & 0x1fff;
+    dev->ov.base    = SREG(dev, (((SREG(dev, SS_DBL_BUF) >> 1) & 3) == 1) ? SS_ADDR1 : SS_ADDR0) & SAVAGE_VRAM_MASK & ~7;
+
+    if (!dev->ov.src_w)
+        dev->ov.src_w = dev->ov.w;
+    if (!dev->ov.lines)
+        dev->ov.lines = 2048;
+    if (!dev->ov.hstep)
+        dev->ov.hstep = 0x8000;
+    if (!dev->ov.vstep)
+        dev->ov.vstep = 0x8000;
+}
+
+static inline int
+savage_clamp8(int v)
+{
+    return (v < 0) ? 0 : ((v > 255) ? 255 : v);
+}
+
+static inline uint8_t
+savage_ov_byte(savage_t *dev, uint32_t addr)
+{
+    return dev->svga.vram[addr & SAVAGE_VRAM_MASK];
+}
+
+/* Pixel x of the source line at addr as RGB888. *key gets what a source key
+   compares: Y/U/V for the YUV formats (after the colour adjustment), else
+   R/G/B. Formats: 0 YVYU, 1 YUY2 (CCIR 601 levels), 2 YUY2 (full range),
+   3 RGB 1555, 4 Y211, 5 RGB 565, 6 RGB 888, 7 XRGB 8888. */
+static uint32_t
+savage_overlay_pixel(savage_t *dev, uint32_t addr, int x, uint32_t *key)
+{
+    uint32_t adj = SREG(dev, SS_COLOR_ADJ);
+    uint32_t c;
+    int      y, u, v, r, g, b;
+
+    switch (dev->ov.fmt) {
+        case 3:
+            c = savage_ov_byte(dev, addr + x * 2) | (savage_ov_byte(dev, addr + x * 2 + 1) << 8);
+            r = (c >> 10) & 0x1f;
+            g = (c >> 5) & 0x1f;
+            b = c & 0x1f;
+            c = (((r << 3) | (r >> 2)) << 16) | (((g << 3) | (g >> 2)) << 8) | ((b << 3) | (b >> 2));
+            *key = c;
+            return c;
+        case 5:
+            c = savage_ov_byte(dev, addr + x * 2) | (savage_ov_byte(dev, addr + x * 2 + 1) << 8);
+            r = (c >> 11) & 0x1f;
+            g = (c >> 5) & 0x3f;
+            b = c & 0x1f;
+            c = (((r << 3) | (r >> 2)) << 16) | (((g << 2) | (g >> 4)) << 8) | ((b << 3) | (b >> 2));
+            *key = c;
+            return c;
+        case 6:
+            c = savage_ov_byte(dev, addr + x * 3) | (savage_ov_byte(dev, addr + x * 3 + 1) << 8) |
+                (savage_ov_byte(dev, addr + x * 3 + 2) << 16);
+            *key = c;
+            return c;
+        case 7:
+            c = (savage_ov_byte(dev, addr + x * 4) | (savage_ov_byte(dev, addr + x * 4 + 1) << 8) |
+                 (savage_ov_byte(dev, addr + x * 4 + 2) << 16));
+            *key = c;
+            return c;
+        case 4: /* Y211: Y0 U Y2 V for four pixels */
+            addr += (x >> 2) << 2;
+            y = savage_ov_byte(dev, addr + ((x & 2) ? 2 : 0));
+            u = savage_ov_byte(dev, addr + 1);
+            v = savage_ov_byte(dev, addr + 3);
+            break;
+        case 0: /* Y0 V Y1 U */
+            addr += (x >> 1) << 2;
+            y = savage_ov_byte(dev, addr + ((x & 1) << 1));
+            v = savage_ov_byte(dev, addr + 1);
+            u = savage_ov_byte(dev, addr + 3);
+            break;
+        default: /* Y0 U Y1 V */
+            addr += (x >> 1) << 2;
+            y = savage_ov_byte(dev, addr + ((x & 1) << 1));
+            u = savage_ov_byte(dev, addr + 1);
+            v = savage_ov_byte(dev, addr + 3);
+            break;
+    }
+
+    /* Colour adjustment (MM819C): Y' = Y * contrast + brightness; U/V
+       rotated and scaled by the hue/saturation factors (8 = unity). */
+    if (adj & 0x8000)
+        y = savage_clamp8(((y * (int) ((adj >> 8) & 0x1f)) >> 4) + (int8_t) (adj & 0xff));
+    if (adj & 0x80000000) {
+        int f1 = (int) ((adj >> 16) & 0x1f);
+        int f2 = (int) ((adj >> 24) & 0x1f);
+        int du = u - 128;
+        int dv = v - 128;
+
+        if (f1 >= 16)
+            f1 -= 32;
+        if (f2 >= 16)
+            f2 -= 32;
+        u = savage_clamp8(128 + ((f1 * du - f2 * dv) >> 3));
+        v = savage_clamp8(128 + ((f2 * du + f1 * dv) >> 3));
+    }
+    *key = (y << 16) | (u << 8) | v;
+
+    u -= 128;
+    v -= 128;
+    if (dev->ov.fmt == 2) {
+        r = y + ((359 * v) >> 8);
+        g = y - ((88 * u + 183 * v) >> 8);
+        b = y + ((454 * u) >> 8);
+    } else {
+        y = 298 * (y - 16);
+        r = (y + 409 * v + 128) >> 8;
+        g = (y - 100 * u - 208 * v + 128) >> 8;
+        b = (y + 516 * u + 128) >> 8;
+    }
+
+    return (savage_clamp8(r) << 16) | (savage_clamp8(g) << 8) | savage_clamp8(b);
+}
+
+static inline uint32_t
+savage_lerp_rgb(uint32_t a, uint32_t b, int f)
+{
+    uint32_t out = 0;
+
+    for (int sh = 0; sh < 24; sh += 8)
+        out |= ((((a >> sh) & 0xff) * (256 - f) + ((b >> sh) & 0xff) * f) >> 8) << sh;
+
+    return out;
+}
+
+/* A key compare on the top bits (CKEY_LOW 26:24: 0 compares bit 7 only, 7
+   all eight) of each component, against the range CKEY_LOW..CKEY_HI (just
+   CKEY_LOW when the upper bound is below it). A YUV source's chroma key
+   compares whole bytes: the driver leaves the bit count at 0 for those. */
+static int
+savage_key_match(uint32_t c, uint32_t lo, uint32_t hi, int whole)
+{
+    uint8_t mask = whole ? 0xff : (uint8_t) (0xff << (7 - ((lo >> 24) & 7)));
+
+    for (int sh = 0; sh < 24; sh += 8) {
+        uint8_t cv = ((c >> sh) & 0xff) & mask;
+        uint8_t l  = ((lo >> sh) & 0xff) & mask;
+        uint8_t h  = ((hi >> sh) & 0xff) & mask;
+
+        if (h < l)
+            h = l;
+        if ((cv < l) || (cv > h))
+            return 0;
+    }
+
+    return 1;
+}
+
+/* Compose the secondary stream into the screen line just drawn. Blend
+   control 26:24: 0 secondary on primary, 1 primary on secondary, 2 dissolve
+   (Kp/8 primary, the rest secondary), 3 fade (Kp/8 primary + Ks/8
+   secondary), 5 secondary where the primary matches the key, 6 secondary
+   except where it matches the key. */
+static void
+savage_overlay_line(savage_t *dev)
+{
+    svga_t  *svga  = &dev->svga;
+    int      row   = svga->displine - dev->ov.y;
+    uint32_t blend = SREG(dev, SS_BLEND);
+    int      mode  = (blend >> 24) & 7;
+    int      kp    = MIN((blend >> 10) & 0xf, 8);
+    int      ks    = MIN((blend >> 2) & 0xf, 8);
+    uint32_t lo    = SREG(dev, SS_CKEY_LOW);
+    uint32_t hi    = SREG(dev, SS_CKEY_HI);
+    uint32_t pmask = 0xffffff;
+    uint64_t fy;
+    uint32_t a0, a1;
+    int      sl, vf, x0, x1;
+    uint32_t *p;
+
+    if ((row < 0) || (row >= dev->ov.h) || (mode == 1) || (dev->ov.x >= svga->hdisp))
+        return;
+    if (((svga->displine + svga->y_add) < 0) || (svga->monitor->target_buffer == NULL) ||
+        (svga->monitor->target_buffer->line[svga->displine + svga->y_add] == NULL))
+        return;
+
+    fy = dev->ov.vinit + (uint64_t) row * dev->ov.vstep;
+    sl = (int) (fy >> 15);
+    vf = dev->ov.vfilter ? (int) ((fy >> 7) & 0xff) : 0;
+    if (sl >= (dev->ov.lines - 1)) {
+        sl = dev->ov.lines - 1;
+        vf = 0;
+    }
+    a0 = dev->ov.base + sl * dev->ov.stride;
+    a1 = a0 + dev->ov.stride;
+
+    /* The key compares the primary pixel's own bits, not the screen's
+       expansion of them: the driver gives 565 magenta as F800F8. */
+    if (svga->bpp == 15)
+        pmask = 0xf8f8f8;
+    else if (svga->bpp == 16)
+        pmask = 0xf8fcf8;
+    else if ((svga->bpp == 8) && !(svga->seqregs[0x1b] & 0x10))
+        pmask = 0xfcfcfc;
+
+    x0 = MAX(dev->ov.x, 0);
+    x1 = MIN(dev->ov.x + dev->ov.w, svga->hdisp);
+    p  = &svga->monitor->target_buffer->line[svga->displine + svga->y_add][svga->x_add];
+
+    for (int x = x0; x < x1; x++) {
+        uint32_t fx = (uint32_t) (x - dev->ov.x) * dev->ov.hstep;
+        int      sx = (int) (fx >> 15);
+        int      hf = dev->ov.hfilter ? (int) ((fx >> 7) & 0xff) : 0;
+        uint32_t key, dummy, s, pc = p[x] & 0xffffff;
+
+        if (sx >= (dev->ov.src_w - 1)) {
+            sx = dev->ov.src_w - 1;
+            hf = 0;
+        }
+
+        s = savage_overlay_pixel(dev, a0, sx, &key);
+        if (hf)
+            s = savage_lerp_rgb(s, savage_overlay_pixel(dev, a0, sx + 1, &dummy), hf);
+        if (vf) {
+            uint32_t s1 = savage_overlay_pixel(dev, a1, sx, &dummy);
+
+            if (hf)
+                s1 = savage_lerp_rgb(s1, savage_overlay_pixel(dev, a1, sx + 1, &dummy), hf);
+            s = savage_lerp_rgb(s, s1, vf);
+        }
+
+        switch (mode) {
+            case 2:
+            case 3:
+                {
+                    int      ws  = (mode == 2) ? (8 - kp) : ks;
+                    uint32_t out = 0;
+
+                    for (int sh = 0; sh < 24; sh += 8)
+                        out |= (uint32_t) MIN((((pc >> sh) & 0xff) * kp + ((s >> sh) & 0xff) * ws) >> 3, 255) << sh;
+                    s = out;
+                }
+                break;
+            case 5:
+                if (!savage_key_match(pc & pmask, lo, hi, 0))
+                    continue;
+                break;
+            case 6:
+                if (savage_key_match(key, lo, hi, (dev->ov.fmt != 3) && (dev->ov.fmt < 5)))
+                    continue;
+                break;
+            default:
+                break;
+        }
+
+        p[x] = s;
+    }
+}
+
+/* The primary stream's renderer, then the secondary stream over it. While
+   an overlay is up every line is redrawn, so that keying always looks at
+   the primary stream rather than last frame's mix. */
+static void
+savage_render_streams(svga_t *svga)
+{
+    savage_t *dev = (savage_t *) svga->priv;
+
+    if (svga->displine == 0) {
+        savage_overlay_latch(dev);
+        if ((dev->ov.h > 0) && (dev->ov.x < svga->hdisp) && (dev->ov.y < svga->dispend))
+            svga->fullchange = changeframecount;
+    }
+
+    dev->primary_render(svga);
+    if (dev->ov.h > 0)
+        savage_overlay_line(dev);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Interrupts                                                               */
+/* ------------------------------------------------------------------------ */
+
+/* MM8504 status bits, as on the ViRGE: S3's mini-VDD (KMVT.ASM) enables
+   bit 8 for DirectDraw's vertical sync interrupt, with CR32 bit 4 as the
+   master enable, and acknowledges by writing the status bits back. */
+#define SUBSYS_VSY      0x01
+#define SUBSYS_GE_DONE  0x02
+#define SUBSYS_FIFO_EMP 0x08
+
+static void
+s3_savage_update_irq(savage_t *dev)
+{
+    if ((dev->svga.crtc[0x32] & 0x10) && (dev->subsys_stat & dev->subsys_cntl))
+        pci_set_irq(dev->pci_slot, PCI_INTA, &dev->irq_state);
+    else
+        pci_clear_irq(dev->pci_slot, PCI_INTA, &dev->irq_state);
+}
+
+static void
+s3_savage_vblank_start(svga_t *svga)
+{
+    savage_t *dev = (savage_t *) svga->priv;
+
+    dev->subsys_stat |= SUBSYS_VSY;
+    s3_savage_update_irq(dev);
 }
 
 static void
@@ -592,6 +955,11 @@ s3_savage_recalctimings(svga_t *svga)
 
             default:
                 break;
+        }
+
+        if (svga->render != savage_render_streams) {
+            dev->primary_render = svga->render;
+            svga->render        = savage_render_streams;
         }
     }
 
@@ -769,6 +1137,7 @@ s3_savage_out(uint16_t addr, uint8_t val, void *priv)
                     break;
                 case 0x32:
                     s3_savage_updatemapping(dev);
+                    s3_savage_update_irq(dev);
                     break;
                 case 0x35:
                     dev->bank = (dev->bank & 0x70) | (val & 0x0f);
@@ -1098,6 +1467,8 @@ s3_savage_mmio_readl_reg(savage_t *dev, uint32_t addr)
             return dev->read_mask;
         case 0x8168:
             return dev->gbd.offset;
+        case 0x8504:
+            return dev->subsys_stat | (dev->subsys_cntl << 8);
         case 0x816c:
             return dev->gbd.hi;
 
@@ -1154,6 +1525,11 @@ s3_savage_mmio_writel_reg(savage_t *dev, uint32_t addr, uint32_t val)
             break;
         case 0x8168:
             dev->gbd.offset = val;
+            break;
+        case 0x8504: /* status bits written as 1 are acknowledged; 15:8 are the enables */
+            dev->subsys_stat &= ~(val & 0xff);
+            dev->subsys_cntl = (val >> 8) & 0xff;
+            s3_savage_update_irq(dev);
             break;
         case 0x816c:
             /* The low bits are BCI control (enable, endianness, 64-bit BD). */
@@ -1245,6 +1621,17 @@ s3_savage_mmio_write_off(savage_t *dev, uint32_t addr, uint8_t val)
         return; /* The BCI only takes dwords. */
     }
 
+    if (addr == 0x8504) {
+        dev->subsys_stat &= ~val;
+        s3_savage_update_irq(dev);
+        return;
+    }
+    if (addr == 0x8505) {
+        dev->subsys_cntl = val;
+        s3_savage_update_irq(dev);
+        return;
+    }
+
     {
         uint32_t reg   = addr & ~3;
         int      shift = (addr & 3) << 3;
@@ -1259,6 +1646,12 @@ s3_savage_mmio_writel_off(savage_t *dev, uint32_t addr, uint32_t val)
 {
     if ((addr >= 0x10000) && (addr < 0x30000)) {
         s3_savage_bci_write(dev, val);
+
+        /* The BCI runs each dword as it arrives: its FIFO is always empty,
+           and the engine is done whenever no command is half received. */
+        dev->subsys_stat |= SUBSYS_FIFO_EMP | ((dev->bci.state == BCI_IDLE) ? SUBSYS_GE_DONE : 0);
+        if (dev->subsys_cntl & (SUBSYS_FIFO_EMP | SUBSYS_GE_DONE))
+            s3_savage_update_irq(dev);
         return;
     }
 
@@ -3323,6 +3716,8 @@ s3_savage_reset_regs(savage_t *dev)
     dev->event_tag   = 0;
     dev->bank        = 0;
     dev->ma_ext      = 0;
+    dev->subsys_stat = 0;
+    dev->subsys_cntl = 0;
 
     /* CR36: 8 MB, bits 7:6 are set by the BIOS memory test. */
     svga->crtc[0x36] = 0x00;
@@ -3407,6 +3802,11 @@ s3_savage_debug_hook(const char *args)
     pclog("Savage 3D: %d triangles, TexAddr %08x TexDescr %08x TexCtrl %08x DrawCtrl %08x ZBufCtrl %08x ZBufOffset %08x DstCtrl %08x FogCtrl %08x\n",
           dev->prim_count, dev->regs3d[0x1a], dev->regs3d[0x1b], dev->regs3d[0x1c], dev->regs3d[0x31],
           dev->regs3d[0x32], dev->regs3d[0x33], dev->regs3d[0x34], dev->regs3d[0x30]);
+    pclog("Savage overlay: %dx%d at %d,%d from %dx%d fmt %d base %06x stride %d hstep %05x vstep %05x filter %d/%d blend %08x key %08x-%08x adj %08x; IRQ stat %02x enable %02x CR32 %02x line %d\n",
+          dev->ov.w, dev->ov.h, dev->ov.x, dev->ov.y, dev->ov.src_w, dev->ov.lines, dev->ov.fmt, dev->ov.base,
+          dev->ov.stride, dev->ov.hstep, dev->ov.vstep, dev->ov.hfilter, dev->ov.vfilter, SREG(dev, SS_BLEND),
+          SREG(dev, SS_CKEY_LOW), SREG(dev, SS_CKEY_HI), SREG(dev, SS_COLOR_ADJ), dev->subsys_stat, dev->subsys_cntl,
+          dev->svga.crtc[0x32], dev->pci_regs[0x3c]);
     for (uint32_t i = 0; i < 256; i++) {
         uint32_t n = dev->bci_hist_pos - 256 + i;
 
@@ -3435,6 +3835,7 @@ s3_savage_init(const device_t *info)
     dev->svga.hwcursor.cur_ysize = 64;
     dev->svga.decode_mask        = BAR0_MMIO - 1;
     dev->svga.force_old_addr     = 1;
+    dev->svga.vblank_start       = s3_savage_vblank_start;
 
     video_inform(VIDEO_FLAG_TYPE_SPECIAL, dev->is_agp ? &timing_savage_agp : &timing_savage_pci);
 
