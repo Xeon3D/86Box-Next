@@ -680,6 +680,9 @@ enum {
     HD44780_COLOR_MAX
 };
 
+/* Alliance Semiconductor ProMotion */
+extern const device_t pm6410_pci_device;
+
 /* 3Dlabs / TI Permedia 2 */
 extern const device_t permedia2_stb_glyder_max2_pci_device;
 extern const device_t permedia2_stb_glyder_max2_agp_device;
