@@ -319,8 +319,16 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   4.11.01) and NT4 (S3 6.10.04) run accelerated; NT4's s3mini does not load on the AGP card --
   VideoPortVerifyAccessRanges rejects its legacy VGA/ROM ranges on bus 1 because NT4's HAL only
   accepts the AGP bridge's windows and the BIOS leaves its I/O window empty (as on real
-  hardware); use the PCI card. "dev" in the debug command file dumps the BCI parser and 3D
-  state; "dev bcilog 1|0" logs every BCI dword and MMIO register write; "dev texdump <TexAddr>
+  hardware); use the PCI card. Secondary stream (overlay, `savage_overlay_*`, composed by a
+  wrapper around the primary line renderer): GX3 register meanings from DDOVER.C -- scale
+  factors are 1.15 source steps (MM8198/81E0), MM81E8 is the source line count (bit 15 vertical
+  filter), MM81EC bit 0 horizontal interpolation, MM8190 source width + format (YVYU, YUY2
+  CCIR/full range, Y211, RGB 555/565/888/8888), MM819C colour adjust, MM81A0 compose modes and
+  keys (dest key compares the primary's raw bits, YUV source keys whole bytes). Interrupts:
+  MM8504 status 7:0 (bit 0 vsync) / enables 15:8, CR32 bit 4 master, INTA
+  (KMVT.ASM's scheme). DDC2 on CRAA, as the BIOS's VBE 4F15 and both drivers use it. Tests:
+  OVTEST.EXE modes 1-7 and IRQTEST.COM (savage3d-tools in the notes folder). "dev" in the debug
+  command file dumps the BCI parser, 3D, overlay and interrupt state; "dev bcilog 1|0" logs every BCI dword and MMIO register write; "dev texdump <TexAddr>
   <TexDescr> <file.bmp>" decodes a texture as the 3D engine reads it.
 - Upstream's CI workflows and Dependabot are disabled/removed in this repo; only
   `sync-upstream.yml` runs.

@@ -93,15 +93,27 @@ int  libusb_handle_events_timeout_completed(libusb_context *c, struct timeval *t
 void libusb_interrupt_event_handler(libusb_context *c) { (void) c; }
 const char *libusb_error_name(int e) { (void) e; return "fake"; }
 
+/* list_fails: listings fail as UsbDk's does when another process holds it,
+   leaving *list unset; nothing may be freed then (bad_frees). */
+static int list_fails, bad_frees;
+
 ssize_t
 libusb_get_device_list(libusb_context *c, libusb_device ***list)
 {
     static libusb_device *l[2] = { FAKE_DEV, NULL };
     (void) c;
+    if (list_fails)
+        return LIBUSB_ERROR_OTHER;
     *list = l;
     return 1;
 }
-void           libusb_free_device_list(libusb_device **l, int u) { (void) l; (void) u; }
+void libusb_free_device_list(libusb_device **l, int u)
+{
+    (void) l;
+    (void) u;
+    if (list_fails)
+        bad_frees++;
+}
 libusb_device *libusb_ref_device(libusb_device *d) { return d; }
 void           libusb_unref_device(libusb_device *d) { (void) d; }
 
@@ -499,6 +511,23 @@ test_iso_stops_on_set_interface(void)
     fake_iso_abandon_round();
 }
 
+/* A listing that fails (UsbDk held by another process) gives no devices and
+   frees nothing; the next poll lists again. */
+static void
+test_list_fails(void)
+{
+    usbn_host_info_t info[4];
+    char             err[256];
+
+    list_fails = 1;
+    for (int i = 0; i < 3; i++)
+        CHECK(usbn_host_list(info, 4) == 0, "a failed listing gives no devices");
+    CHECK(usbn_host_open(0x1234, 0x5678, err, sizeof(err)) == NULL, "nor opens one");
+    CHECK(bad_frees == 0, "and frees no list (%d)", bad_frees);
+    list_fails = 0;
+    CHECK(usbn_host_list(info, 4) == 1, "the next listing works");
+}
+
 int
 main(void)
 {
@@ -521,6 +550,7 @@ main(void)
     test_iso_in();
     test_iso_out();
     test_iso_stops_on_set_interface();
+    test_list_fails();
     dev->destroy(dev);
 
     printf("host: %d checks, %d failed\n", checks, failures);

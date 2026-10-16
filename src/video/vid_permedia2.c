@@ -48,6 +48,8 @@
 #include <86box/video.h>
 #include <86box/vid_svga.h>
 #include <86box/vid_svga_render.h>
+#include <86box/i2c.h>
+#include <86box/vid_ddc.h>
 #include <86box/plat_unused.h>
 #include <86box/debug_cmd.h>
 
@@ -104,6 +106,15 @@ enum {
     VTG_SCREEN_BASE_RIGHT,
     VTG_NUM
 };
+
+/* Serial buses: DisplayData (VTG, the monitor's DDC) and VSSerialBusControl
+   (the video streams' bus to a TV encoder or decoder), XFree86's glint bits.
+   The inputs read the wired-AND of the outputs and the devices. */
+#define P2_VS_SERIAL_BUS 0x5810
+#define P2_I2C_DATA_IN   0x01
+#define P2_I2C_CLK_IN    0x02
+#define P2_I2C_DATA_OUT  0x04
+#define P2_I2C_CLK_OUT   0x08
 
 #define VC_ENABLE      0x00000001
 #define VC_LINE_DOUBLE 0x00000004
@@ -224,6 +235,10 @@ typedef struct p2_t {
     uint32_t vs_regs[0x400];     /* 0x5000-0x5fff, kept for read back. */
     uint32_t ext_brd[2];
     uint32_t vtg[VTG_NUM];
+
+    void *i2c_ddc; /* DisplayData: the monitor's EDID. */
+    void *ddc;
+    void *i2c_vs;  /* VSSerialBusControl: nothing on it. */
 
     /* TVP4020 RAMDAC. */
     uint8_t  dac_index;
@@ -1312,12 +1327,43 @@ p2_dma_run(p2_t *p2)
 }
 
 static void
+p2_i2c_write(void *i2c, uint32_t val)
+{
+    i2c_gpio_set(i2c, !!(val & P2_I2C_CLK_OUT), !!(val & P2_I2C_DATA_OUT));
+}
+
+static uint32_t
+p2_i2c_read(void *i2c, uint32_t val)
+{
+    val &= ~(P2_I2C_DATA_IN | P2_I2C_CLK_IN);
+    if (i2c_gpio_get_scl(i2c))
+        val |= P2_I2C_CLK_IN;
+    if (i2c_gpio_get_sda(i2c))
+        val |= P2_I2C_DATA_IN;
+    return val;
+}
+
+/* Both buses released at reset. */
+static void
+p2_i2c_reset(p2_t *p2)
+{
+    p2->vtg[VTG_DISPLAY_DATA]                    = P2_I2C_CLK_OUT | P2_I2C_DATA_OUT;
+    p2->vs_regs[(P2_VS_SERIAL_BUS & 0xfff) >> 2] = P2_I2C_CLK_OUT | P2_I2C_DATA_OUT;
+    p2_i2c_write(p2->i2c_ddc, p2->vtg[VTG_DISPLAY_DATA]);
+    p2_i2c_write(p2->i2c_vs, p2->vs_regs[(P2_VS_SERIAL_BUS & 0xfff) >> 2]);
+}
+
+static void
 p2_vtg_write(p2_t *p2, int idx, uint32_t val)
 {
     svga_t *svga = &p2->svga;
 
     switch (idx) {
         case VTG_LINE_COUNT:
+            return;
+        case VTG_DISPLAY_DATA:
+            p2->vtg[idx] = val;
+            p2_i2c_write(p2->i2c_ddc, val);
             return;
         case VTG_SCREEN_BASE:
             p2->vtg[idx] = val;
@@ -1364,6 +1410,8 @@ p2_ctrl_write_int(p2_t *p2, uint32_t addr, uint32_t val)
 
         case 0x5000:
             p2->vs_regs[(addr & 0xfff) >> 2] = val;
+            if (addr == P2_VS_SERIAL_BUS)
+                p2_i2c_write(p2->i2c_vs, val);
             return;
 
         case 0x6000:
@@ -1480,6 +1528,8 @@ p2_ctrl_read_int(p2_t *p2, uint32_t addr)
             if (!(addr & 7) && ((addr & 0xfff) >> 3) < VTG_NUM) {
                 if (((addr & 0xfff) >> 3) == VTG_LINE_COUNT)
                     return svga->vc;
+                if (((addr & 0xfff) >> 3) == VTG_DISPLAY_DATA)
+                    return p2_i2c_read(p2->i2c_ddc, p2->vtg[VTG_DISPLAY_DATA]);
                 return p2->vtg[(addr & 0xfff) >> 3];
             }
             return 0;
@@ -1488,6 +1538,8 @@ p2_ctrl_read_int(p2_t *p2, uint32_t addr)
             return p2_dac_read(p2, (addr >> 3) & 0x0f);
 
         case 0x5000:
+            if (addr == P2_VS_SERIAL_BUS)
+                return p2_i2c_read(p2->i2c_vs, p2->vs_regs[(addr & 0xfff) >> 2]);
             return p2->vs_regs[(addr & 0xfff) >> 2];
 
         case 0x6000:
@@ -2338,6 +2390,12 @@ p2_texture_color(p2_t *p2, int *raw)
             *raw = 1;
             return v;
         }
+        /* CI4 indexes count from TexelLUTIndex (without DirectIndex): the
+           3Dlabs Win9x driver loads a 4-bit DIB's 16 colours at 80h and
+           sets TexelLUTIndex back to 80h before each CI4 draw, LUTOffset 0;
+           its CI8 draws leave TexelLUTIndex wherever the last load left it. */
+        if ((fmt == 15) && !(lutm & 2))
+            v += p2->gp[TAG_TEXEL_LUT_INDEX];
         v = (v + ((lutm >> 2) & 0xff)) & 0xff;
         return (v < 16) ? p2->gp[TAG_TEXEL_LUT0 + v] : p2->texel_lut[v];
     }
@@ -3179,6 +3237,15 @@ p2_draw_step(p2_t *p2)
 
         color = p2_fb_read(p2, src * bpp, bpp);
         raw   = 1;
+    } else if (!(cmd & RENDER_FAST_FILL) && (rm & FBRM_PACKED) && !r->shade && !(p2->gp[TAG_COLOR_DDA_MODE] & 1)) {
+        /* Packed data with neither host data nor a source read is the
+           FBSourceData register, a byte lane per pixel: the 3Dlabs Win9x
+           driver's disabled (embossed) text XORs a rectangle with the
+           colour it writes there. */
+        const uint32_t lane = (uint32_t) ((p2->gp[TAG_FB_WINDOW_BASE] + p2->gp[TAG_FB_PIXEL_OFFSET] + x) * bpp) & 3;
+
+        color = p2->gp[TAG_FB_SOURCE_DATA] >> (lane << 3);
+        raw   = 1;
     }
 
     if (draw)
@@ -3309,6 +3376,18 @@ p2_raster_start(p2_t *p2, uint32_t command)
     if (r->prim == PRIM_RECT) {
         r->columns = p2->gp[TAG_RECT_SIZE] & 0xffff;
         r->rows    = p2->gp[TAG_RECT_SIZE] >> 16;
+        /* A rectangle leaves the trapezoid registers describing it: Windows
+           2000's perm2 uploads an 8x8 brush as a rectangle, then widens it
+           with trapezoid copies that set only StartXDom/StartXSub (tooltip
+           and balloon backgrounds came out black but for every fourth
+           8 pixels). */
+        p2->gp[TAG_START_X_DOM] = (uint32_t) r->origin_x << 16;
+        p2->gp[TAG_START_X_SUB] = (uint32_t) (r->origin_x + (int) r->columns) << 16;
+        p2->gp[TAG_START_Y]     = (uint32_t) r->origin_y << 16;
+        p2->gp[TAG_DX_DOM]      = 0;
+        p2->gp[TAG_DX_SUB]      = 0;
+        p2->gp[TAG_DY]          = 1 << 16;
+        p2->gp[TAG_COUNT]       = r->rows;
         /* Packed rectangles count DWORD groups; the framebuffer unit widens them. */
         if ((rm & FBRM_PACKED) && !(command & RENDER_FAST_FILL) && !p2_upload_cmd(p2, command) && (r->bpp != 3)) {
             r->origin_x *= 4 / r->bpp;
@@ -4169,6 +4248,7 @@ p2_reset_state(p2_t *p2)
     p2->chip_config   = 0x00000006 | (p2->is_agp ? 0x00000200 : 0);
     p2->mem_config    = 0xe6002021;
     memset(p2->vtg, 0, sizeof(p2->vtg));
+    p2_i2c_reset(p2);
     memset(p2->gp, 0, sizeof(p2->gp));
     memset(&p2->raster, 0, sizeof(p2->raster));
     p2->gp[0x104] = 0xffffffff; /* FBSoftwareWriteMask */
@@ -4394,6 +4474,10 @@ p2_init(const device_t *info)
     mem_mapping_disable(&p2->ap_mapping[0]);
     mem_mapping_disable(&p2->ap_mapping[1]);
 
+    p2->i2c_ddc = i2c_gpio_init("ddc_permedia2");
+    p2->ddc     = ddc_init(i2c_gpio_get_bus(p2->i2c_ddc));
+    p2->i2c_vs  = i2c_gpio_init("i2c_permedia2_vs");
+
     p2_init_pci_regs(p2);
     p2_reset_state(p2);
 
@@ -4432,6 +4516,9 @@ p2_close(void *priv)
         p2_dbg = NULL;
     }
     svga_close(&p2->svga);
+    ddc_close(p2->ddc);
+    i2c_gpio_close(p2->i2c_ddc);
+    i2c_gpio_close(p2->i2c_vs);
     free(p2->hold_tag);
     free(p2->hold_val);
     free(p2);
