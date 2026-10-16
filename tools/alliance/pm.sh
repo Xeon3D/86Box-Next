@@ -38,5 +38,6 @@ shot)
 running)
     vm_pids | wc -l ;;
 stop)
-    for pid in $(vm_pids); do powershell -NoProfile -Command "Stop-Process -Id $pid -Force"; done ;;
+    for pid in $(vm_pids); do powershell -NoProfile -Command "Stop-Process -Id $pid -Force"; done
+    for i in $(seq 1 50); do [ "$(vm_pids | wc -l)" = "0" ] && break; sleep 0.2; done ;;
 esac

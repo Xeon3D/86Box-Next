@@ -86,6 +86,29 @@ typedef struct pm_t {
     uint8_t sr[0x40]; /* SR08 and up */
     uint8_t cr[0x40]; /* CR19 and up */
     uint8_t xr[XR_SIZE];
+
+    /* Drawing engine: an operation in progress. */
+    struct {
+        uint32_t ctrl;
+        int      op;
+        int      bpp;   /* bytes per pixel the engine works in */
+        int      pitch; /* bytes per line in X/Y addressing */
+        int      w, h;
+        int      dx, dy; /* direction: +1 or -1 */
+        int      x, y;   /* destination X/Y of the current row */
+        uint32_t dst;    /* linear destination of the current row */
+        int      row;    /* rows done */
+
+        /* Host data (blit port writes) for the current row. */
+        uint8_t  host[16384];
+        int      host_len;
+        int      host_row_bytes;
+        int      host_skip; /* leading bits (mono) or bytes (colour) */
+
+        /* Screen-to-host data waiting to be read. */
+        uint8_t *rd_buf;
+        uint32_t rd_len, rd_pos, rd_size;
+    } blt;
 } pm_t;
 
 static int pm_do_log = 1;
@@ -138,6 +161,557 @@ pm_translate_address(uint32_t addr, void *priv)
     return addr;
 }
 
+/* ------------------------------------------------------------------------- */
+/* Drawing engine                                                            */
+/*                                                                           */
+/* XR40 (dword) is the command: bits 3:0 the operation, 6/7 X/Y direction    */
+/* negative, 8 Y major (lines), 9 source linear, 11 source contiguous,       */
+/* 10 the mono pattern (XR48-XR4F) as source, 12 mono source, 13 source      */
+/* transparency, 16 24 bpp (byte-wise), 18 destination linear, 19 contiguous,*/
+/* 23:22 pattern (1 = 4x4 dither, 3 = 8x8 colour), 26:24 the screen width    */
+/* model, 28:27 destination update, 30:29 quick start, 31 start. Linear      */
+/* addresses are pixel addresses split as bits 31:16 = address 23:12 and     */
+/* bits 11:0 = address 11:0. The ROP (XR46) is a Windows ROP3 in which the   */
+/* chips without a pattern unit see the pattern as the source (the drivers   */
+/* use CCh for both).                                                        */
+/* ------------------------------------------------------------------------- */
+
+enum {
+    BLT_OP_NOP       = 0x0,
+    BLT_OP_SS        = 0x1,
+    BLT_OP_RECT      = 0x2,
+    BLT_OP_STRETCH   = 0x3,
+    BLT_OP_STRIP     = 0x4,
+    BLT_OP_MS        = 0x8, /* host to screen through the blit port */
+    BLT_OP_SM        = 0x9, /* screen to host */
+    BLT_OP_LINE      = 0xc,
+    BLT_OP_LINE_NOEND = 0xd
+};
+
+#define BLT_DIR_XNEG     (1u << 6)
+#define BLT_DIR_YNEG     (1u << 7)
+#define BLT_MAJOR_Y      (1u << 8)
+#define BLT_SRC_LINEAR   (1u << 9)
+#define BLT_SRC_PATTERN  (1u << 10)
+#define BLT_SRC_CONTIG   (1u << 11)
+#define BLT_SRC_MONO     (1u << 12)
+#define BLT_SRC_XPARENT  (1u << 13)
+#define BLT_24BPP        (1u << 16)
+#define BLT_DST_LINEAR   (1u << 18)
+#define BLT_DST_CONTIG   (1u << 19)
+#define BLT_PAT_MASK     (3u << 22)
+#define BLT_PAT_DITHER   (1u << 22)
+#define BLT_PAT_MONO     (2u << 22)
+#define BLT_PAT_COLOR8   (3u << 22)
+#define BLT_START        (1u << 31)
+
+static uint16_t
+pm_xr16(pm_t *pm, int addr)
+{
+    return pm->xr[addr] | (pm->xr[addr + 1] << 8);
+}
+
+static uint32_t
+pm_xr32(pm_t *pm, int addr)
+{
+    return pm_xr16(pm, addr) | (pm_xr16(pm, addr + 2) << 16);
+}
+
+static void
+pm_xr_set16(pm_t *pm, int addr, uint16_t val)
+{
+    pm->xr[addr]     = val & 0xff;
+    pm->xr[addr + 1] = val >> 8;
+}
+
+/* Bytes per pixel of the current display format. */
+static int
+pm_bytes_pp(pm_t *pm)
+{
+    switch (pm->xr[0x80] & 0x0f) {
+        case 0x0c:
+        case 0x0d:
+            return 2;
+        case 0x0e:
+            return 3;
+        case 0x0f:
+            return 4;
+        default:
+            break;
+    }
+    if (pm->ramdac && (pm->svga.bpp > 8))
+        return (pm->svga.bpp + 7) >> 3;
+    return 1;
+}
+
+static uint32_t
+pm_lin_addr(uint32_t reg)
+{
+    return ((reg >> 16) << 12) | (reg & 0xfff);
+}
+
+static uint32_t
+pm_rop(uint8_t rop, uint32_t p, uint32_t s, uint32_t d)
+{
+    uint32_t r = 0;
+
+    for (int i = 0; i < 8; i++) {
+        if (!(rop & (1 << i)))
+            continue;
+        r |= ((i & 4) ? p : ~p) & ((i & 2) ? s : ~s) & ((i & 1) ? d : ~d);
+    }
+    return r;
+}
+
+static uint32_t
+pm_vram_read(pm_t *pm, uint32_t addr, int bpp)
+{
+    const svga_t *svga = &pm->svga;
+    uint32_t      val  = 0;
+
+    for (int i = 0; i < bpp; i++)
+        val |= svga->vram[(addr + i) & pm->vram_mask] << (i << 3);
+    return val;
+}
+
+static void
+pm_vram_write(pm_t *pm, uint32_t addr, int bpp, uint32_t val)
+{
+    svga_t *svga = &pm->svga;
+
+    for (int i = 0; i < bpp; i++) {
+        const uint32_t a = (addr + i) & pm->vram_mask;
+
+        svga->vram[a]             = val >> (i << 3);
+        svga->changedvram[a >> 12] = svga->monitor->mon_changeframecount;
+    }
+}
+
+static int
+pm_clipped(pm_t *pm, int x, int y)
+{
+    if (!(pm->xr[XR_CLIP_CTRL] & 0x01))
+        return 0;
+    return (x < (int16_t) pm_xr16(pm, 0x38)) || (y < (int16_t) pm_xr16(pm, 0x3a)) ||
+           (x > (int16_t) pm_xr16(pm, 0x3c)) || (y > (int16_t) pm_xr16(pm, 0x3e));
+}
+
+/* The pattern colour at destination (x, y), or the foreground colour. */
+static uint32_t
+pm_pattern(pm_t *pm, int x, int y, int *valid)
+{
+    const uint32_t ctrl = pm->blt.ctrl;
+    uint8_t        bits;
+
+    *valid = 1;
+    switch (ctrl & BLT_PAT_MASK) {
+        case BLT_PAT_DITHER: {
+            /* 4x4 nibbles: the 16 colours at the ends of the palette. */
+            const uint32_t pat = (y & 2) ? pm_xr32(pm, 0x4c) : pm_xr32(pm, 0x48);
+            const int      sh  = (((y & 1) << 4) | ((x & 3) << 2));
+            uint8_t        c   = (pat >> sh) & 0x0f;
+
+            return (c < 8) ? c : (c + 0xf0);
+        }
+        case BLT_PAT_COLOR8:
+            /* TODO: the 8x8 colour pattern's data source. */
+            return pm_xr32(pm, 0x60);
+        default:
+            break;
+    }
+    if ((ctrl & BLT_SRC_PATTERN) || ((ctrl & BLT_PAT_MASK) == BLT_PAT_MONO)) {
+        bits = pm->xr[0x48 + (y & 7)];
+        if (bits & (0x80 >> (x & 7)))
+            return pm_xr32(pm, 0x60);
+        if (ctrl & BLT_SRC_XPARENT)
+            *valid = 0;
+        return pm_xr32(pm, 0x64);
+    }
+    return pm_xr32(pm, 0x60);
+}
+
+static void
+pm_plot(pm_t *pm, uint32_t addr, int x, int y, uint32_t src, int has_src)
+{
+    const int      bpp  = pm->blt.bpp;
+    const uint32_t mask = (bpp >= 4) ? 0xffffffff : ((1u << (bpp << 3)) - 1);
+    uint32_t       pat;
+    uint32_t       d;
+    uint32_t       r;
+    int            valid;
+
+    if (pm_clipped(pm, x, y))
+        return;
+
+    pat = pm_pattern(pm, x, y, &valid);
+    if (!valid)
+        return;
+    if (!has_src)
+        src = pat;
+    else if (!(pm->blt.ctrl & (BLT_SRC_PATTERN | BLT_PAT_MASK)))
+        pat = src;
+
+    d = pm_vram_read(pm, addr, bpp);
+    r = pm_rop(pm->xr[0x46], pat, src, d) & mask;
+    if (bpp == 1)
+        r = (r & pm->xr[0x47]) | (d & ~pm->xr[0x47]);
+    pm_vram_write(pm, addr, bpp, r);
+}
+
+static uint32_t
+pm_blt_dst_addr(pm_t *pm, int x, int y)
+{
+    return (uint32_t) (y * pm->blt.pitch + x * pm->blt.bpp);
+}
+
+/* One row of a host-to-screen or screen-to-screen operation: src_at(i)
+   gives the colour of pixel i of the row, or -1 for a transparent one. */
+static void
+pm_blt_row(pm_t *pm, const uint8_t *data, int skip, int mono)
+{
+    const int bpp = pm->blt.bpp;
+
+    for (int i = 0; i < pm->blt.w; i++) {
+        const int x = pm->blt.x + i * pm->blt.dx;
+        uint32_t  addr;
+        uint32_t  src;
+
+        if (pm->blt.ctrl & BLT_DST_LINEAR)
+            addr = (pm->blt.dst + i * pm->blt.dx * bpp);
+        else
+            addr = pm_blt_dst_addr(pm, x, pm->blt.y);
+
+        if (mono) {
+            const int bit = skip + i;
+
+            if (data[bit >> 3] & (0x80 >> (bit & 7)))
+                src = pm_xr32(pm, 0x60);
+            else if (pm->blt.ctrl & BLT_SRC_XPARENT)
+                continue;
+            else
+                src = pm_xr32(pm, 0x64);
+        } else {
+            src = 0;
+            for (int b = 0; b < bpp; b++)
+                src |= data[skip + i * bpp + b] << (b << 3);
+        }
+        pm_plot(pm, addr, x, pm->blt.y, src, 1);
+    }
+}
+
+static void
+pm_blt_next_row(pm_t *pm)
+{
+    pm->blt.row++;
+    pm->blt.y += pm->blt.dy;
+    if (pm->blt.ctrl & BLT_DST_LINEAR) {
+        int step = pm->blt.w * pm->blt.bpp;
+
+        if (!(pm->blt.ctrl & BLT_DST_CONTIG))
+            step += (int16_t) pm_xr16(pm, 0x5c);
+        pm->blt.dst += step * pm->blt.dy;
+    }
+}
+
+static void
+pm_blt_done(pm_t *pm)
+{
+    pm->blt.op = BLT_OP_NOP;
+}
+
+static void
+pm_blt_line(pm_t *pm)
+{
+    int       x     = (int16_t) pm_xr16(pm, 0x54);
+    int       y     = (int16_t) pm_xr16(pm, 0x56);
+    const int axial = (int16_t) pm_xr16(pm, 0x70);
+    const int diag  = (int16_t) pm_xr16(pm, 0x72);
+    int       err   = (int16_t) pm_xr16(pm, 0x74);
+    int       n     = pm->blt.w;
+
+    if (pm->blt.op == BLT_OP_LINE_NOEND)
+        n--;
+    for (int i = 0; i < n; i++) {
+        pm_plot(pm, pm_blt_dst_addr(pm, x, y), x, y, 0, 0);
+        if (err >= 0) {
+            x += pm->blt.dx;
+            y += pm->blt.dy;
+            err += diag;
+        } else {
+            if (pm->blt.ctrl & BLT_MAJOR_Y)
+                y += pm->blt.dy;
+            else
+                x += pm->blt.dx;
+            err += axial;
+        }
+    }
+    pm_xr_set16(pm, 0x54, x);
+    pm_xr_set16(pm, 0x56, y);
+}
+
+static void
+pm_blt_screen_to_screen(pm_t *pm)
+{
+    const uint32_t ctrl = pm->blt.ctrl;
+    const int      bpp  = pm->blt.bpp;
+    uint8_t        row[16384];
+
+    if (ctrl & BLT_SRC_MONO) {
+        /* Mono source in video memory, rows of whole bytes, MSB first. */
+        uint32_t  src   = pm_lin_addr(pm_xr32(pm, 0x50)) * bpp;
+        const int bytes = (pm->blt.w + 7) >> 3;
+
+        for (int r = 0; r < pm->blt.h; r++) {
+            for (int i = 0; i < bytes && i < (int) sizeof(row); i++)
+                row[i] = pm->svga.vram[(src + i) & pm->vram_mask];
+            pm_blt_row(pm, row, 0, 1);
+            src += bytes;
+            pm_blt_next_row(pm);
+        }
+        return;
+    }
+
+    {
+        int      sx = (int16_t) pm_xr16(pm, 0x50);
+        int      sy = (int16_t) pm_xr16(pm, 0x52);
+        uint32_t src;
+
+        if (ctrl & BLT_SRC_LINEAR)
+            src = pm_lin_addr(pm_xr32(pm, 0x50)) * bpp;
+        else
+            src = sy * pm->blt.pitch + sx * bpp;
+
+        for (int r = 0; r < pm->blt.h; r++) {
+            uint32_t a = src;
+
+            /* Read the whole row first: the copy may overlap itself. */
+            for (int i = 0; i < pm->blt.w && (i + 1) * bpp <= (int) sizeof(row); i++) {
+                const uint32_t v = pm_vram_read(pm, a, bpp);
+
+                for (int b = 0; b < bpp; b++)
+                    row[i * bpp + b] = v >> (b << 3);
+                a += pm->blt.dx * bpp;
+            }
+            pm_blt_row(pm, row, 0, 0);
+
+            if (ctrl & BLT_SRC_LINEAR) {
+                int step = pm->blt.w * bpp;
+
+                if (!(ctrl & BLT_SRC_CONTIG))
+                    step += (int16_t) (pm_xr16(pm, 0x5e) ? pm_xr16(pm, 0x5e) : pm_xr16(pm, 0x5c));
+                src += step * pm->blt.dy;
+            } else
+                src += pm->blt.pitch * pm->blt.dy;
+            pm_blt_next_row(pm);
+        }
+    }
+}
+
+static void
+pm_blt_screen_to_host(pm_t *pm)
+{
+    const int bpp   = pm->blt.bpp;
+    const int skip  = (pm_xr16(pm, 0x54) & 3) * bpp & 3;
+    const int bytes = ((skip + pm->blt.w * bpp) + 3) & ~3;
+    int       sx    = (int16_t) pm_xr16(pm, 0x50);
+    int       sy    = (int16_t) pm_xr16(pm, 0x52);
+    uint32_t  need  = (uint32_t) bytes * pm->blt.h;
+
+    if (need > pm->blt.rd_size) {
+        free(pm->blt.rd_buf);
+        pm->blt.rd_buf  = malloc(need);
+        pm->blt.rd_size = need;
+    }
+    memset(pm->blt.rd_buf, 0, need);
+    for (int r = 0; r < pm->blt.h; r++) {
+        uint8_t *p = pm->blt.rd_buf + r * bytes + skip;
+        uint32_t a = (sy + r * pm->blt.dy) * pm->blt.pitch + sx * bpp;
+
+        for (int i = 0; i < pm->blt.w * bpp; i++)
+            p[i] = pm->svga.vram[(a + i) & pm->vram_mask];
+    }
+    pm->blt.rd_len = need;
+    pm->blt.rd_pos = 0;
+}
+
+static void
+pm_blt_start(pm_t *pm)
+{
+    static const int models[8] = { 0, 640, 800, 0, 1024, 1152, 1280, 1600 };
+    const uint32_t   ctrl      = pm_xr32(pm, XR_BLT_CTRL);
+    const int        model     = models[(ctrl >> 24) & 7];
+
+    pm->blt.ctrl = ctrl;
+    pm->blt.op   = ctrl & 0x0f;
+    pm->blt.bpp  = (ctrl & BLT_24BPP) ? 1 : pm_bytes_pp(pm);
+    pm->blt.pitch = model ? (model * pm->blt.bpp) : ((int16_t) pm_xr16(pm, 0x5c));
+    pm->blt.w    = pm_xr16(pm, 0x58);
+    pm->blt.h    = pm_xr16(pm, 0x5a);
+    pm->blt.dx   = (ctrl & BLT_DIR_XNEG) ? -1 : 1;
+    pm->blt.dy   = (ctrl & BLT_DIR_YNEG) ? -1 : 1;
+    pm->blt.x    = (int16_t) pm_xr16(pm, 0x54);
+    pm->blt.y    = (int16_t) pm_xr16(pm, 0x56);
+    pm->blt.dst  = pm_lin_addr(pm_xr32(pm, 0x54)) * pm->blt.bpp;
+    pm->blt.row  = 0;
+    pm->blt.host_len = 0;
+
+    if (pm_do_log)
+        pm_log("PM: BLT %08X rop %02X src %08X dst %08X dim %08X fg %08X bg %08X clip %02X\n", ctrl, pm->xr[0x46],
+               pm_xr32(pm, 0x50), pm_xr32(pm, 0x54), pm_xr32(pm, 0x58), pm_xr32(pm, 0x60), pm_xr32(pm, 0x64),
+               pm->xr[XR_CLIP_CTRL]);
+
+    switch (pm->blt.op) {
+        case BLT_OP_NOP:
+            break;
+
+        case BLT_OP_RECT:
+        case BLT_OP_STRIP:
+            for (int r = 0; r < pm->blt.h; r++) {
+                for (int i = 0; i < pm->blt.w; i++) {
+                    const int x = pm->blt.x + i * pm->blt.dx;
+                    uint32_t  addr;
+
+                    if (ctrl & BLT_DST_LINEAR)
+                        addr = pm->blt.dst + i * pm->blt.dx * pm->blt.bpp;
+                    else
+                        addr = pm_blt_dst_addr(pm, x, pm->blt.y);
+                    pm_plot(pm, addr, x, pm->blt.y, 0, 0);
+                }
+                pm_blt_next_row(pm);
+            }
+            pm_blt_done(pm);
+            break;
+
+        case BLT_OP_SS:
+            pm_blt_screen_to_screen(pm);
+            pm_blt_done(pm);
+            break;
+
+        case BLT_OP_MS:
+            /* Rows come through the blit port, each padded to a dword. */
+            if (ctrl & BLT_SRC_MONO) {
+                pm->blt.host_skip      = pm->xr[0x50] & 0x1f;
+                pm->blt.host_row_bytes = ((pm->blt.host_skip + pm->blt.w + 31) >> 5) << 2;
+            } else {
+                pm->blt.host_skip      = (pm->xr[0x50] & 3) * pm->blt.bpp & 3;
+                pm->blt.host_row_bytes = (pm->blt.host_skip + pm->blt.w * pm->blt.bpp + 3) & ~3;
+            }
+            if ((pm->blt.w <= 0) || (pm->blt.h <= 0) || (pm->blt.host_row_bytes > (int) sizeof(pm->blt.host)))
+                pm_blt_done(pm);
+            break;
+
+        case BLT_OP_SM:
+            if ((pm->blt.w > 0) && (pm->blt.h > 0))
+                pm_blt_screen_to_host(pm);
+            pm_blt_done(pm);
+            break;
+
+        case BLT_OP_LINE:
+        case BLT_OP_LINE_NOEND:
+            pm_blt_line(pm);
+            pm_blt_done(pm);
+            break;
+
+        default:
+            pm_log("PM: BLT unhandled operation %X\n", pm->blt.op);
+            pm_blt_done(pm);
+            break;
+    }
+}
+
+/* A dword written to the blit port. */
+static void
+pm_blt_port_write(pm_t *pm, uint32_t val, int bytes)
+{
+    if (pm->blt.op != BLT_OP_MS)
+        return;
+
+    for (int i = 0; i < bytes; i++) {
+        pm->blt.host[pm->blt.host_len++] = val >> (i << 3);
+        if (pm->blt.host_len >= pm->blt.host_row_bytes) {
+            pm_blt_row(pm, pm->blt.host, pm->blt.host_skip, !!(pm->blt.ctrl & BLT_SRC_MONO));
+            pm->blt.host_len = 0;
+            pm_blt_next_row(pm);
+            if (pm->blt.row >= pm->blt.h) {
+                pm_blt_done(pm);
+                return;
+            }
+        }
+    }
+}
+
+static uint8_t
+pm_blt_port_read(pm_t *pm)
+{
+    if (pm->blt.rd_pos < pm->blt.rd_len)
+        return pm->blt.rd_buf[pm->blt.rd_pos++];
+    return 0xff;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Hardware cursor (XR140-XR14D)                                             */
+/* ------------------------------------------------------------------------- */
+
+static void
+pm_update_cursor(pm_t *pm)
+{
+    svga_t *svga = &pm->svga;
+
+    svga->hwcursor.ena       = !!(pm->xr[0x140] & 0x01);
+    svga->hwcursor.cur_xsize = 64;
+    svga->hwcursor.cur_ysize = 64;
+    svga->hwcursor.x         = pm_xr16(pm, 0x148) & 0x7ff;
+    svga->hwcursor.y         = pm_xr16(pm, 0x14a) & 0x7ff;
+    svga->hwcursor.xoff      = pm->xr[0x14c] & 0x3f;
+    svga->hwcursor.yoff      = pm->xr[0x14d] & 0x3f;
+    svga->hwcursor.addr      = ((pm_xr16(pm, 0x144) << 10) + svga->hwcursor.yoff * 16) & pm->vram_mask;
+}
+
+static uint32_t
+pm_cursor_color(pm_t *pm, uint8_t c)
+{
+    if (pm_bytes_pp(pm) == 1)
+        return pm->svga.pallook[c];
+    /* Direct colour modes: RGB 3:3:2. */
+    return ((c & 0xe0) * 0x124 / 0x20) << 16 | (((c & 0x1c) >> 2) * 0x24) << 8 | ((c & 0x03) * 0x55);
+}
+
+static void
+pm_hwcursor_draw(svga_t *svga, int displine)
+{
+    pm_t          *pm   = (pm_t *) svga->priv;
+    const uint8_t *src  = &svga->vram[svga->hwcursor_latch.addr & pm->vram_mask];
+    uint32_t      *line = &svga->monitor->target_buffer->line[displine][svga->x_add];
+    const uint32_t c0   = pm_cursor_color(pm, pm->xr[0x142]);
+    const uint32_t c1   = pm_cursor_color(pm, pm->xr[0x141]);
+    int            x    = svga->hwcursor_latch.x;
+
+    for (int i = svga->hwcursor_latch.xoff; i < 64; i++, x++) {
+        const int c = (src[i >> 2] >> ((i & 3) << 1)) & 3;
+
+        if (x >= svga->hdisp)
+            break;
+        switch (c) {
+            case 0:
+                line[x] = c0;
+                break;
+            case 1:
+                line[x] = c1;
+                break;
+            case 3:
+                line[x] ^= 0xffffff;
+                break;
+            default:
+                break;
+        }
+    }
+    svga->hwcursor_latch.addr += 16;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Extended register access                                                  */
+/* ------------------------------------------------------------------------- */
+
 static uint8_t
 pm_xr_read(pm_t *pm, uint32_t addr)
 {
@@ -146,18 +720,29 @@ pm_xr_read(pm_t *pm, uint32_t addr)
     addr &= (XR_SIZE - 1);
     switch (addr) {
         case XR_STATUS:
-            ret = 0x08; /* FIFO empty: eight free entries, engine idle */
+            ret = 0x08; /* FIFO empty: eight free entries */
             break;
         case XR_STATUS + 1:
+            ret = 0x00;
+            if (pm->blt.op == BLT_OP_MS)
+                ret |= 0x01; /* the blit port wants data */
+            if (pm->blt.rd_pos < pm->blt.rd_len)
+                ret |= 0x02; /* screen-to-host data ready */
+            break;
         case XR_STATUS + 2:
         case XR_STATUS + 3:
             ret = 0x00;
+            break;
+        case 0x190 ... 0x193:
+            /* The aperture base: on the PCI chips, BAR 0 (the drivers read
+               it here). The BIOS writes a VL-bus address of its choosing. */
+            ret = pm->pci_regs[0x10 + (addr & 3)];
             break;
         default:
             ret = pm->xr[addr];
             break;
     }
-    if (pm_do_log >= 2 || (pm_do_log && addr != XR_STATUS && addr < 0x30))
+    if (pm_do_log >= 2)
         pm_log("PM: XR R %03X = %02X\n", addr, ret);
     return ret;
 }
@@ -166,17 +751,35 @@ static void
 pm_xr_write(pm_t *pm, uint32_t addr, uint8_t val)
 {
     addr &= (XR_SIZE - 1);
-    if (pm_do_log)
+    if (pm_do_log >= 2 || (pm_do_log && (addr >= 0x80) && (addr != 0xc0) && (addr != 0xc1) && ((addr < 0x140) || (addr > 0x14f))))
         pm_log("PM: XR W %03X = %02X\n", addr, val);
     pm->xr[addr] = val;
 
     switch (addr) {
+        case 0x43:
+            if (val & 0x80)
+                pm_blt_start(pm);
+            break;
+        case 0x58:
+        case 0x59:
+            /* Quick start on the X extent. */
+            if ((addr == 0x59) && (((pm_xr32(pm, XR_BLT_CTRL) >> 29) & 3) == 1))
+                pm_blt_start(pm);
+            break;
         case 0x80:
             svga_recalctimings(&pm->svga);
             break;
         case 0xc0:
         case 0xc1:
             pm_update_banks(pm);
+            break;
+        case 0x140 ... 0x14f:
+            pm_update_cursor(pm);
+            break;
+        case 0x1ff:
+            /* Abort. */
+            pm_blt_done(pm);
+            pm->blt.rd_len = pm->blt.rd_pos = 0;
             break;
         default:
             break;
@@ -237,6 +840,14 @@ pm_lfb_is_xr(pm_t *pm, uint32_t addr)
     return (pm->sr[0x1b - 8] & 0x04) && ((addr & (pm->lfb_size - 1)) >= (pm->lfb_size - XR_SIZE));
 }
 
+/* SR1B bits 5:3 map the blit port into the 30 KB below the registers. */
+static int
+pm_lfb_is_port(pm_t *pm, uint32_t addr)
+{
+    addr &= (pm->lfb_size - 1);
+    return (pm->sr[0x1b - 8] & 0x38) && (addr >= (pm->lfb_size - 0x8000)) && (addr < (pm->lfb_size - XR_SIZE));
+}
+
 static uint8_t
 pm_lfb_readb(uint32_t addr, void *priv)
 {
@@ -246,6 +857,8 @@ pm_lfb_readb(uint32_t addr, void *priv)
     addr -= pm->lfb_base;
     if (pm_lfb_is_xr(pm, addr))
         return pm_xr_read(pm, addr);
+    if (pm_lfb_is_port(pm, addr))
+        return pm_blt_port_read(pm);
     addr &= svga->decode_mask;
     if (addr >= pm->vram_size)
         return 0xff;
@@ -273,6 +886,10 @@ pm_lfb_writeb(uint32_t addr, uint8_t val, void *priv)
     addr -= pm->lfb_base;
     if (pm_lfb_is_xr(pm, addr)) {
         pm_xr_write(pm, addr, val);
+        return;
+    }
+    if (pm_lfb_is_port(pm, addr)) {
+        pm_blt_port_write(pm, val, 1);
         return;
     }
     addr &= svga->decode_mask;
@@ -525,10 +1142,16 @@ pm_in(uint16_t addr, void *priv)
 /* Display                                                                   */
 /* ------------------------------------------------------------------------- */
 
-/* XR80 bits 3:0, the pixel format of the extended (packed) modes. */
+/* XR80 bits 3:0, the pixel format of the extended (packed) modes. 02h is
+   also there in mode 13h: what sets the extended modes apart is SR1C, the
+   "flat model" control (bit 2; 05h in the BIOS's modes, 25h under the
+   Windows driver, 00h in the VGA modes). */
 static int
 pm_ext_bpp(pm_t *pm)
 {
+    if (!(pm->sr[0x1c - 8] & 0x04))
+        return 0;
+
     switch (pm->xr[0x80] & 0x0f) {
         case 0x02:
             return 8;
@@ -728,6 +1351,9 @@ pm_debug_hook(const char *args)
     pclog("PM: hdisp %i htotal %i dispend %i vtotal %i rowoff %i ma %06X bpp %i lfb %08X\n",
           svga->hdisp, svga->htotal, svga->dispend, svga->vtotal, svga->rowoffset, svga->memaddr_latch,
           svga->bpp, pm->lfb_base);
+    pclog("PM: cursor ena %i x %i y %i xoff %i yoff %i addr %06X latch ena %i y %i draw %p\n",
+          svga->hwcursor.ena, svga->hwcursor.x, svga->hwcursor.y, svga->hwcursor.xoff, svga->hwcursor.yoff,
+          svga->hwcursor.addr, svga->hwcursor_latch.ena, svga->hwcursor_latch.y, (void *) svga->hwcursor_draw);
     for (int row = 0; row < 0x200; row += 0x20) {
         n = 0;
         for (int i = row; i < row + 0x20; i++)
@@ -782,6 +1408,7 @@ pm_init(const device_t *info)
         pm->ramdac = device_add(&att498_ramdac_device);
     svga->vram_display_mask = pm->vram_mask;
     svga->translate_address = pm_translate_address;
+    svga->hwcursor_draw     = pm_hwcursor_draw;
 
     mem_mapping_add(&pm->lfb_mapping, 0, 0,
                     pm_lfb_readb, pm_lfb_readw, pm_lfb_readl,
@@ -838,6 +1465,7 @@ pm_close(void *priv)
         pm_dbg = NULL;
     }
     svga_close(&pm->svga);
+    free(pm->blt.rd_buf);
     free(pm);
 }
 
