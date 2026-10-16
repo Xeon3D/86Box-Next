@@ -71,6 +71,8 @@
 #define P2_DMA_CONTROL    0x0060
 #define P2_FIFO_DISCON    0x0068
 #define P2_CHIP_CONFIG    0x0070
+#define P2_OUT_DMA_ADDR   0x0080
+#define P2_OUT_DMA_COUNT  0x0088
 
 #define P2_REBOOT         0x1000
 #define P2_MEM_CONTROL    0x1040
@@ -123,6 +125,15 @@ enum {
 #define TVP_MEMCLK_1       0x30
 #define TVP_MEMCLK_STATUS  0x33
 
+/* Host-readable output FIFO. The real one is 8 words and stalls the
+   rasterizer; here a primitive runs to the end at once, so a whole upload
+   (and the Sync after it) must fit. */
+#define P2_OUT_FIFO 16384
+/* An upload stalls once this many words wait to be read. */
+#define P2_OUT_STALL 4096
+/* Register writes held back while a primitive is stalled. */
+#define P2_HOLD_QUEUE 65536
+
 /* Graphics processor tags (register = 0x8000 + 8 * tag). */
 #define GP_TAGS 0x1000
 
@@ -153,6 +164,7 @@ typedef struct p2_raster_t {
     int64_t  dcolor_dx[3];
     int64_t  dcolor_dy[3];
     uint32_t alpha;
+    int      out_wait;   /* An upload waiting for output FIFO space. */
     int      rel_offset; /* Last: kept from one primitive to the next. */
 } p2_raster_t;
 
@@ -185,6 +197,9 @@ typedef struct p2_t {
     uint32_t dma_address;
     uint32_t dma_count;
     uint32_t dma_control;
+    uint32_t out_dma_address;
+    uint32_t out_dma_cursor;
+    uint32_t out_dma_count;
     uint32_t fifo_discon;
     uint32_t chip_config;
     uint32_t mem_control;
@@ -209,15 +224,22 @@ typedef struct p2_t {
 
     /* Graphics processor. */
     uint32_t    gp[GP_TAGS];
+    uint32_t    texel_lut[256];
     p2_raster_t raster;
     uint32_t fifo_hdr_count;     /* Data words still owed to the current header. */
     uint32_t fifo_hdr_tag;
     uint32_t fifo_hdr_mode;
     uint32_t fifo_hdr_mask;
-    uint32_t out_fifo[256];
+    uint32_t out_fifo[P2_OUT_FIFO];
     int      out_rd;
     int      out_wr;
     int      out_count;
+    uint32_t *hold_tag;
+    uint32_t *hold_val;
+    int       hold_rd;
+    int       hold_wr;
+    int       hold_count;
+    int       in_resume;
 } p2_t;
 
 static video_timings_t timing_p2_pci = { .type = VIDEO_PCI, .write_b = 2, .write_w = 2, .write_l = 1, .read_b = 10, .read_w = 10, .read_l = 10 };
@@ -246,6 +268,7 @@ static uint32_t p2_ctrl_read(p2_t *p2, uint32_t addr);
 static void     p2_gp_write(p2_t *p2, uint32_t tag, uint32_t val);
 static void     p2_gp_command(p2_t *p2, uint32_t tag, uint32_t val);
 static void     p2_gp_reset(p2_t *p2);
+static void     p2_out_space(p2_t *p2);
 
 /* ------------------------------------------------------------------------- */
 /* Interrupts                                                                */
@@ -291,16 +314,6 @@ p2_vsync_callback(svga_t *svga)
 /* Output FIFO (host reads, filled by Sync and readback tags)                */
 /* ------------------------------------------------------------------------- */
 
-static void
-p2_out_fifo_push(p2_t *p2, uint32_t val)
-{
-    if (p2->out_count >= 256)
-        return;
-    p2->out_fifo[p2->out_wr] = val;
-    p2->out_wr               = (p2->out_wr + 1) & 255;
-    p2->out_count++;
-}
-
 static uint32_t
 p2_out_fifo_pop(p2_t *p2)
 {
@@ -309,9 +322,40 @@ p2_out_fifo_pop(p2_t *p2)
     if (!p2->out_count)
         return 0;
     val        = p2->out_fifo[p2->out_rd];
-    p2->out_rd = (p2->out_rd + 1) & 255;
+    p2->out_rd = (p2->out_rd + 1) & (P2_OUT_FIFO - 1);
     p2->out_count--;
     return val;
+}
+
+static uint32_t
+p2_dma_swap(p2_t *p2, uint32_t v)
+{
+    if (p2->dma_control & 0x10)
+        v = (v << 24) | ((v & 0xff00) << 8) | ((v >> 8) & 0xff00) | (v >> 24);
+    return v;
+}
+
+/* Output DMA: while OutDMACount runs, the output FIFO drains into system
+   memory (completion is polled through OutDMACount). */
+static void
+p2_out_dma_run(p2_t *p2)
+{
+    while (p2->out_dma_count && p2->out_count) {
+        mem_writel_phys(p2->out_dma_cursor, p2_dma_swap(p2, p2_out_fifo_pop(p2)));
+        p2->out_dma_cursor += 4;
+        p2->out_dma_count--;
+    }
+}
+
+static void
+p2_out_fifo_push(p2_t *p2, uint32_t val)
+{
+    if (p2->out_count >= P2_OUT_FIFO)
+        return;
+    p2->out_fifo[p2->out_wr] = val;
+    p2->out_wr               = (p2->out_wr + 1) & (P2_OUT_FIFO - 1);
+    p2->out_count++;
+    p2_out_dma_run(p2);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1123,7 +1167,7 @@ p2_ctrl_write_int(p2_t *p2, uint32_t addr, uint32_t val)
             if (p2->dma_count) {
                 /* Feed the input FIFO from system memory at once. */
                 while (p2->dma_count) {
-                    p2_fifo_write(p2, mem_readl_phys(p2->dma_address));
+                    p2_fifo_write(p2, p2_dma_swap(p2, mem_readl_phys(p2->dma_address)));
                     p2->dma_address += 4;
                     p2->dma_count--;
                 }
@@ -1132,6 +1176,15 @@ p2_ctrl_write_int(p2_t *p2, uint32_t addr, uint32_t val)
             break;
         case P2_ERROR_FLAGS:
             p2->error_flags &= ~val;
+            break;
+        case P2_OUT_DMA_ADDR:
+            p2->out_dma_address = val & ~3;
+            break;
+        case P2_OUT_DMA_COUNT:
+            p2->out_dma_count  = val & 0xffff;
+            p2->out_dma_cursor = p2->out_dma_address;
+            p2_out_dma_run(p2);
+            p2_out_space(p2);
             break;
         case P2_VCLK_CTL:
             p2->vclk_ctl = val;
@@ -1193,7 +1246,9 @@ p2_ctrl_read_int(p2_t *p2, uint32_t addr)
 
     switch (addr & 0xf000) {
         case 0x2000:
-            return p2_out_fifo_pop(p2);
+            ret = p2_out_fifo_pop(p2);
+            p2_out_space(p2);
+            return ret;
 
         case 0x3000:
             if (!(addr & 7) && ((addr & 0xfff) >> 3) < VTG_NUM) {
@@ -1260,6 +1315,12 @@ p2_ctrl_read_int(p2_t *p2, uint32_t addr)
         case P2_DMA_CONTROL:
             ret = p2->dma_control;
             break;
+        case P2_OUT_DMA_ADDR:
+            ret = p2->out_dma_address;
+            break;
+        case P2_OUT_DMA_COUNT:
+            ret = p2->out_dma_count;
+            break;
         case P2_FIFO_DISCON:
             ret = p2->fifo_discon;
             break;
@@ -1298,8 +1359,6 @@ p2_ctrl_write(p2_t *p2, uint32_t addr, uint32_t val)
 {
     if ((p2_do_log >= 2) && ((addr & 0xfffc) < 0x8000) && ((addr & 0xf000) != 0x2000))
         pclog("P2: W %04X = %08X\n", addr & 0xfffc, val);
-    if ((p2_do_log >= 3) && ((addr & 0xfffc) >= 0x8000))
-        pclog("P2: GP %03X = %08X\n", ((addr & 0xfffc) - 0x8000) >> 3, val);
     p2_ctrl_write_int(p2, addr, val);
 }
 
@@ -1390,12 +1449,29 @@ p2_gp_reset(p2_t *p2)
 {
     p2->fifo_hdr_count = 0;
     p2->out_rd = p2->out_wr = p2->out_count = 0;
+    p2->hold_rd = p2->hold_wr = p2->hold_count = 0;
+    p2->raster.active   = 0;
+    p2->raster.out_wait = 0;
 }
 
 static void
 p2_gp_write(p2_t *p2, uint32_t tag, uint32_t val)
 {
     tag &= GP_TAGS - 1;
+
+    /* Behind a stalled upload, later writes wait in the input FIFO. */
+    if ((p2->raster.active && p2->raster.out_wait) || (p2->hold_count && !p2->in_resume)) {
+        if (p2->hold_count < P2_HOLD_QUEUE) {
+            p2->hold_tag[p2->hold_wr] = tag;
+            p2->hold_val[p2->hold_wr] = val;
+            p2->hold_wr               = (p2->hold_wr + 1) & (P2_HOLD_QUEUE - 1);
+            p2->hold_count++;
+        }
+        return;
+    }
+
+    if (p2_do_log >= 3)
+        pclog("P2: GP %03X = %08X\n", tag, val);
 
     switch (tag) {
         case TAG_SYNC:
@@ -1457,7 +1533,14 @@ p2_gp_write(p2_t *p2, uint32_t tag, uint32_t val)
 #define TAG_TEXTURE_BASE        0x0b0
 #define TAG_TEXTURE_MAP_FORMAT  0x0b1
 #define TAG_TEXTURE_DATA_FORMAT 0x0b2
+#define TAG_DS_DY_DOM           0x073
+#define TAG_DT_DX               0x075
+#define TAG_DT_DY_DOM           0x076
+#define TAG_TEXEL_LUT_INDEX     0x098
+#define TAG_TEXEL_LUT_DATA      0x099
 #define TAG_TEXEL0              0x0c0
+#define TAG_TEXEL_LUT_MODE      0x0cf
+#define TAG_TEXEL_LUT0          0x1d0
 #define TAG_TEXTURE_READ_MODE   0x0ce
 #define TAG_R_START             0x0f0
 #define TAG_A_START             0x0f9
@@ -1468,6 +1551,8 @@ p2_gp_write(p2_t *p2, uint32_t tag, uint32_t val)
 #define TAG_FB_SOFT_WRITE_MASK  0x104
 #define TAG_LOGICAL_OP_MODE     0x105
 #define TAG_FB_WRITE_DATA       0x106
+#define TAG_TEXTURE_DATA        0x11d
+#define TAG_TEXTURE_DL_OFFSET   0x11e
 #define TAG_FB_READ_MODE        0x150
 #define TAG_FB_SOURCE_OFFSET    0x151
 #define TAG_FB_PIXEL_OFFSET     0x152
@@ -1863,20 +1948,105 @@ p2_load_texture_mask(p2_t *p2)
     r->payload_left = MIN(32, r->columns - r->col);
 }
 
-/* A texture copy's source texel: 8 bit, nearest, clamped, unit steps. */
-static uint32_t
-p2_texture_copy_color(p2_t *p2)
+static int64_t
+p2_tex_wrap(int64_t v, int bits, int mode)
 {
-    p2_raster_t   *r   = &p2->raster;
-    const uint32_t trm = p2->gp[TAG_TEXTURE_READ_MODE];
-    const int      wb  = (trm >> 9) & 15;
-    const int      hb  = (trm >> 13) & 15;
-    int64_t        s   = (int64_t) p2_sext(p2->gp[TAG_S_START], 32) / 0x100000 + r->col;
-    int64_t        t   = (int64_t) p2_sext(p2->gp[TAG_T_START], 32) / 0x100000 + r->row;
+    const int64_t size = (int64_t) 1 << bits;
 
-    s = MAX(0, MIN(((int64_t) 1 << wb) - 1, s));
-    t = MAX(0, MIN(((int64_t) 1 << hb) - 1, t));
-    return p2_fb_read(p2, (int64_t) p2->gp[TAG_TEXTURE_BASE] + t * p2_pitch(p2->gp[TAG_TEXTURE_MAP_FORMAT]) + s, 1);
+    switch (mode & 3) {
+        case 1: /* Repeat. */
+            return ((v % size) + size) % size;
+        case 2: /* Mirror. */
+            v = ((v % (2 * size)) + 2 * size) % (2 * size);
+            return (v < size) ? v : (2 * size - 1 - v);
+        default: /* Clamp. */
+            return MAX(0, MIN(size - 1, v));
+    }
+}
+
+/* A texel for texture copies: nearest sampling of S/T (integer at bit 20),
+   stepped per pixel (d?dx) and per scanline (d?dyDom). Returns an internal
+   AABBGGRR colour (*raw clear) or, for indexes without the LUT, the index
+   itself (*raw set). */
+static uint32_t
+p2_texture_color(p2_t *p2, int *raw)
+{
+    p2_raster_t   *r    = &p2->raster;
+    const uint32_t trm  = p2->gp[TAG_TEXTURE_READ_MODE];
+    const uint32_t tmf  = p2->gp[TAG_TEXTURE_MAP_FORMAT];
+    const uint32_t tdf  = p2->gp[TAG_TEXTURE_DATA_FORMAT];
+    const uint32_t lutm = p2->gp[TAG_TEXEL_LUT_MODE];
+    const int      fmt  = (tdf & 15) | ((tdf >> 2) & 16);
+    const int64_t  ss   = (int64_t) p2_sext(p2->gp[TAG_S_START], 32) + (int64_t) r->col * p2_sext(p2->gp[TAG_DS_DX], 32) +
+                       (int64_t) r->row * p2_sext(p2->gp[TAG_DS_DY_DOM], 32);
+    const int64_t  tt   = (int64_t) p2_sext(p2->gp[TAG_T_START], 32) + (int64_t) r->col * p2_sext(p2->gp[TAG_DT_DX], 32) +
+                       (int64_t) r->row * p2_sext(p2->gp[TAG_DT_DY_DOM], 32);
+    const int64_t  s    = p2_tex_wrap(p2_fixed_int(ss / 16), (trm >> 9) & 15, (trm >> 1) & 3);
+    const int64_t  t    = p2_tex_wrap(p2_fixed_int(tt / 16), (trm >> 13) & 15, (trm >> 3) & 3);
+    const int64_t  tex  = (int64_t) (p2->gp[TAG_TEXTURE_BASE] & 0xffffff) + t * p2_pitch(tmf) + s;
+    uint32_t       v;
+    uint32_t       rr;
+    uint32_t       gg;
+    uint32_t       bb;
+    uint32_t       aa = 0xff;
+
+    *raw = 0;
+    switch ((tmf >> 19) & 7) {
+        case 1:
+            v = p2_fb_read(p2, tex * 2, 2);
+            break;
+        case 2:
+            v = p2_fb_read(p2, tex * 4, 4);
+            break;
+        case 3: /* 4 bits a texel, the low nibble first. */
+            v = (p2_fb_read(p2, tex >> 1, 1) >> ((tex & 1) << 2)) & 15;
+            break;
+        case 4:
+            v = p2_fb_read(p2, tex * 3, 3);
+            break;
+        default:
+            v = p2_fb_read(p2, tex, 1);
+            break;
+    }
+
+    if ((fmt == 14) || (fmt == 15)) {
+        if (!(lutm & 1)) {
+            *raw = 1;
+            return v;
+        }
+        v = (v + ((lutm >> 2) & 0xff)) & 0xff;
+        return (v < 16) ? p2->gp[TAG_TEXEL_LUT0 + v] : p2->texel_lut[v];
+    }
+
+    switch (fmt) {
+        case 1: /* 5551 */
+            rr = (v & 0x1f) << 3;
+            gg = ((v >> 5) & 0x1f) << 3;
+            bb = ((v >> 10) & 0x1f) << 3;
+            aa = (v & 0x8000) ? 0xff : 0;
+            break;
+        case 2: /* 4444 */
+            rr = (v & 0xf) << 4;
+            gg = ((v >> 4) & 0xf) << 4;
+            bb = ((v >> 8) & 0xf) << 4;
+            aa = ((v >> 12) & 0xf) << 4;
+            break;
+        case 16: /* 565 */
+            rr = (v & 0x1f) << 3;
+            gg = ((v >> 5) & 0x3f) << 2;
+            bb = ((v >> 11) & 0x1f) << 3;
+            break;
+        default: /* 8888 */
+            return v;
+    }
+    if (tdf & 0x20) {
+        /* RGB order: red in the high bits. */
+        const uint32_t tmp = rr;
+
+        rr = bb;
+        bb = tmp;
+    }
+    return rr | (gg << 8) | (bb << 16) | (aa << 24);
 }
 
 /* One step of the primitive; 0 when it waits for host data. */
@@ -1917,7 +2087,12 @@ p2_draw_step(p2_t *p2)
     }
 
     if (p2_upload_cmd(p2, cmd)) {
-        /* Framebuffer reads to the output FIFO (FilterMode bits 8/9). */
+        /* Framebuffer reads to the output FIFO (FilterMode bits 8/9); the
+           rasterizer stalls while the host has not taken the words. */
+        if (p2->out_count >= P2_OUT_STALL) {
+            r->out_wait = 1;
+            return 0;
+        }
         const int     packed = !!(rm & FBRM_PACKED);
         const int64_t px     = (int64_t) x * (packed ? 4 / bpp : 1);
         const int     filter = (p2->gp[TAG_FILTER_MODE] >> 8) & 3;
@@ -1968,8 +2143,7 @@ p2_draw_step(p2_t *p2)
         r->payload >>= 1;
         r->payload_left--;
     } else if ((cmd & RENDER_TEXTURE) && !(cmd & RENDER_FAST_FILL)) {
-        color = p2_texture_copy_color(p2);
-        raw   = 1;
+        color = p2_texture_color(p2, &raw);
     } else if (mask) {
         const uint32_t rmode  = p2->gp[TAG_RASTERIZER_MODE];
         const int      mirror = rmode & 1;
@@ -2020,6 +2194,29 @@ p2_raster_run(p2_t *p2)
 {
     while (p2->raster.active && p2_draw_step(p2))
         ;
+}
+
+/* The host made room in the output FIFO: continue a stalled upload, then
+   the writes held behind it. */
+static void
+p2_out_space(p2_t *p2)
+{
+    if (p2->in_resume)
+        return;
+    p2->in_resume = 1;
+    if (p2->raster.active && p2->raster.out_wait && (p2->out_count < P2_OUT_STALL)) {
+        p2->raster.out_wait = 0;
+        p2_raster_run(p2);
+    }
+    while (p2->hold_count && !(p2->raster.active && p2->raster.out_wait)) {
+        const uint32_t tag = p2->hold_tag[p2->hold_rd];
+        const uint32_t val = p2->hold_val[p2->hold_rd];
+
+        p2->hold_rd = (p2->hold_rd + 1) & (P2_HOLD_QUEUE - 1);
+        p2->hold_count--;
+        p2_gp_write(p2, tag, val);
+    }
+    p2->in_resume = 0;
 }
 
 static void
@@ -2205,6 +2402,24 @@ p2_gp_command(p2_t *p2, uint32_t tag, uint32_t val)
             break;
         case TAG_FB_BLOCK_COLOR:
             p2->gp[TAG_FB_BLOCK_COLOR_L] = p2->gp[TAG_FB_BLOCK_COLOR_U] = val;
+            break;
+
+        case TAG_TEXEL_LUT_DATA:
+            p2->texel_lut[p2->gp[TAG_TEXEL_LUT_INDEX] & 0xff] = val;
+            if ((p2->gp[TAG_TEXEL_LUT_INDEX] & 0xff) < 16)
+                p2->gp[TAG_TEXEL_LUT0 + (p2->gp[TAG_TEXEL_LUT_INDEX] & 15)] = val;
+            p2->gp[TAG_TEXEL_LUT_INDEX] = (p2->gp[TAG_TEXEL_LUT_INDEX] + 1) & 0xff;
+            break;
+
+        case TAG_TEXTURE_DL_OFFSET:
+            p2->gp[TAG_TEXTURE_DL_OFFSET] = val & 0x3fffff;
+            break;
+        case TAG_TEXTURE_DATA:
+            /* Raw texture download (cached glyph masks, textures): a dword
+               at TextureDownloadOffset, past the rendering units, then the
+               offset steps. */
+            p2_fb_write(p2, (int64_t) (p2->gp[TAG_TEXTURE_DL_OFFSET] & 0x3fffff) * 4, 4, val, p2->gp[TAG_FB_HW_WRITE_MASK]);
+            p2->gp[TAG_TEXTURE_DL_OFFSET] = (p2->gp[TAG_TEXTURE_DL_OFFSET] + 1) & 0x3fffff;
             break;
 
         default:
@@ -2453,6 +2668,9 @@ p2_debug_hook(const char *args)
     pclog("P2: dac %s\n", line);
     pclog("P2: pal0 %02X %02X %02X pal7 %02X %02X %02X\n", svga->vgapal[0].r, svga->vgapal[0].g, svga->vgapal[0].b,
           svga->vgapal[7].r, svga->vgapal[7].g, svga->vgapal[7].b);
+    pclog("P2: filter %08X out %i intf %08X inte %08X fifo hdr %u tag %X active %i cmd %08X left %u\n",
+          p2->gp[TAG_FILTER_MODE], p2->out_count, p2->int_flags, p2->int_enable, p2->fifo_hdr_count, p2->fifo_hdr_tag,
+          p2->raster.active, p2->raster.command, p2->raster.payload_left);
     pclog("P2: x_add %i left_overscan %i y_add %i mon_overscan %i,%i hblankstart %i hblank_sub %i dpc %i ovc %08X\n",
           svga->x_add, svga->left_overscan, svga->y_add, svga->monitor->mon_overscan_x, svga->monitor->mon_overscan_y,
           svga->hblankstart, svga->hblank_sub, svga->dots_per_clock, svga->overscan_color);
@@ -2474,6 +2692,7 @@ p2_reset_state(p2_t *p2)
     p2->aperture[0]   = 0;
     p2->aperture[1]   = 0;
     p2->dma_count     = 0;
+    p2->out_dma_count = 0;
     p2->bypass_mask   = 0xffffffff;
     p2->fb_write_mask = 0xffffffff;
     p2->chip_config   = 0x00000006 | (p2->is_agp ? 0x00000200 : 0);
@@ -2589,6 +2808,9 @@ static void *
 p2_init(const device_t *info)
 {
     p2_t   *p2   = calloc(1, sizeof(p2_t));
+
+    p2->hold_tag = calloc(P2_HOLD_QUEUE, sizeof(uint32_t));
+    p2->hold_val = calloc(P2_HOLD_QUEUE, sizeof(uint32_t));
     svga_t *svga = &p2->svga;
 
     p2->is_agp    = !!(info->flags & DEVICE_AGP);
@@ -2671,6 +2893,8 @@ p2_close(void *priv)
         p2_dbg = NULL;
     }
     svga_close(&p2->svga);
+    free(p2->hold_tag);
+    free(p2->hold_val);
     free(p2);
 }
 
