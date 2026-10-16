@@ -339,13 +339,23 @@ cached_name(libusb_device *d, const struct libusb_device_descriptor *dd, uint8_t
 int
 usbn_host_list(usbn_host_info_t *out, int max)
 {
+    static int      list_failed_logged = 0;
     libusb_device **list;
     ssize_t         n;
     int             count = 0;
 
     if (!host_ctx_init())
         return 0;
+    /* On failure (e.g. LIBUSB_ERROR_OTHER when UsbDk's device denies access)
+       the list is not set, so there is nothing to free. */
     n = libusb_get_device_list(ctx, &list);
+    if (n < 0) {
+        if (!list_failed_logged) {
+            pclog("USB: the host's USB devices could not be listed: %s\n", libusb_error_name((int) n));
+            list_failed_logged = 1;
+        }
+        return 0;
+    }
     for (ssize_t i = 0; (i < n) && (count < max); i++) {
         struct libusb_device_descriptor dd;
         uint8_t                         path[8];
@@ -1332,6 +1342,10 @@ usbn_host_open(uint16_t vid, uint16_t pid, char *err, int errlen)
         return NULL;
     }
     n = libusb_get_device_list(ctx, &list);
+    if (n < 0) {
+        snprintf(err, errlen, "the USB devices could not be listed (%s)", libusb_error_name((int) n));
+        return NULL;
+    }
     for (ssize_t i = 0; i < n; i++) {
         struct libusb_device_descriptor dd;
         if ((libusb_get_device_descriptor(list[i], &dd) == 0) && (dd.idVendor == vid) && (dd.idProduct == pid)) {
