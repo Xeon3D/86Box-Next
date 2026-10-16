@@ -226,7 +226,8 @@ typedef struct savage_t {
         float    x, y, z, w;
         uint32_t diff, spec;
         float    u, v;
-    } vtx[3];
+    } vtx[4];
+    int strip_odd;
     int      nvtx;
     int      prim_count;
     int      mip_levels;
@@ -2823,11 +2824,13 @@ savage_3d_triangle(savage_t *dev, int i0, int i1, int i2)
 static void
 savage_3d_vertex(savage_t *dev, const uint32_t *p, uint32_t cmd)
 {
-    int      type = (dev->bci.prim_cmd >> 25) & 3; /* 0 list, 1 strip, 2 fan */
+    int      type = (dev->bci.prim_cmd >> 25) & 3; /* 0 list, 1 strip, 2 fan, 3 quad list */
     int      n    = 0;
     int      slot;
 
-    if (dev->nvtx < 3)
+    if (type == 3)
+        slot = dev->nvtx & 3;
+    else if (dev->nvtx < 3)
         slot = dev->nvtx;
     else
         slot = 2;
@@ -2843,7 +2846,7 @@ savage_3d_vertex(savage_t *dev, const uint32_t *p, uint32_t cmd)
         float           u = (cmd & 0x10) ? 0.0f : savage_float(p[n++]);
         float           v = (cmd & 0x20) ? 0.0f : savage_float(p[n++]);
 
-        if (dev->nvtx >= 3) {
+        if ((dev->nvtx >= 3) && (type != 3)) {
             /* Strip: drop the oldest; fan: keep the centre. */
             if (type == 2)
                 dev->vtx[1] = dev->vtx[2];
@@ -2863,12 +2866,34 @@ savage_3d_vertex(savage_t *dev, const uint32_t *p, uint32_t cmd)
         dev->vtx[slot].v  = v;
     }
 
-    if (dev->nvtx < 3)
+    /* Quad list (the Win9x OpenGL ICD's quads): 0-1-2, then 0-2-3. */
+    if (type == 3) {
+        if (++dev->nvtx == 3) {
+            savage_3d_triangle(dev, 0, 1, 2);
+            dev->prim_count++;
+        } else if (dev->nvtx >= 4) {
+            savage_3d_triangle(dev, 0, 2, 3);
+            dev->prim_count++;
+            dev->nvtx = 0;
+        }
+        return;
+    }
+
+    if (dev->nvtx < 3) {
         dev->nvtx++;
+        dev->strip_odd = 0;
+    }
     if (dev->nvtx < 3)
         return;
 
-    savage_3d_triangle(dev, 0, 1, 2);
+    /* A strip's odd triangles start at their newest vertex (3-2-1, 5-4-3...),
+       which is where flat shading takes the colour from: the Win9x OpenGL
+       ICD sends a quad as a 4-vertex strip with colours in vertices 0 and 3. */
+    if ((type == 1) && dev->strip_odd)
+        savage_3d_triangle(dev, 2, 1, 0);
+    else
+        savage_3d_triangle(dev, 0, 1, 2);
+    dev->strip_odd ^= 1;
     dev->prim_count++;
 
     if (type == 0)
@@ -3379,9 +3404,9 @@ s3_savage_debug_hook(const char *args)
           dev->bci.dwords_per_line);
     pclog("Savage GBD %08x %08x PBD %08x %08x SBD %08x %08x\n", dev->gbd.offset, dev->gbd.hi,
           dev->pbd.offset, dev->pbd.hi, dev->sbd.offset, dev->sbd.hi);
-    pclog("Savage 3D: %d triangles, TexAddr %08x TexDescr %08x TexCtrl %08x DrawCtrl %08x ZBufCtrl %08x DstCtrl %08x\n",
+    pclog("Savage 3D: %d triangles, TexAddr %08x TexDescr %08x TexCtrl %08x DrawCtrl %08x ZBufCtrl %08x ZBufOffset %08x DstCtrl %08x FogCtrl %08x\n",
           dev->prim_count, dev->regs3d[0x1a], dev->regs3d[0x1b], dev->regs3d[0x1c], dev->regs3d[0x31],
-          dev->regs3d[0x32], dev->regs3d[0x34]);
+          dev->regs3d[0x32], dev->regs3d[0x33], dev->regs3d[0x34], dev->regs3d[0x30]);
     for (uint32_t i = 0; i < 256; i++) {
         uint32_t n = dev->bci_hist_pos - 256 + i;
 
