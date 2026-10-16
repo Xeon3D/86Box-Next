@@ -49,10 +49,14 @@
 #include <86box/debug_cmd.h>
 
 #define BIOS_PM6410_PCPARTNER "roms/video/alliance/pcpartner_pm6410.bin"
+#define BIOS_AT3D_STINGRAY_230 "roms/video/alliance/at3d/hercules_stingray128_3d_v2.30.00-b27.bin"
+#define BIOS_AT3D_STINGRAY_435 "roms/video/alliance/at3d/hercules_stingray128_3d_v4.35.00-b11.bin"
+#define BIOS_AT3D_GA_RUSH6     "roms/video/alliance/at3d/gigabyte_ga-rush6_v4.350010.bin"
 
 enum {
     PM_6410 = 0, /* "GXX", PCI 1142:3210 */
     PM_6422,     /* "GXS", PCI 1142:6422 */
+    PM_AT3D,     /* ProMotion-AT3D / AT25, PCI 1142:643D (2D only here) */
 };
 
 /* Extended register block (offsets as the drivers use them). */
@@ -145,7 +149,9 @@ pm_update_banks(pm_t *pm)
     svga_t  *svga = &pm->svga;
     uint32_t bank = (pm->xr[0xc0] | (pm->xr[0xc1] << 8)) << 12; /* 4 KB units */
 
-    svga->write_bank = bank & pm->vram_mask;
+    /* The AT3D's BIOS sizes memory through a bank at 2 MB: on a 2 MB board
+       that is empty, not a mirror. */
+    svga->write_bank = (pm->chip >= PM_AT3D) ? (bank & 0x3fffff) : (bank & pm->vram_mask);
     svga->read_bank  = svga->write_bank;
     /* A banked chain-4 window addresses video memory a byte at a time. */
     svga->packed_chain4 = !!bank || (pm->sr[0x1c - 8] & 0x10);
@@ -210,6 +216,7 @@ enum {
 #define BLT_SRC_MONO     (1u << 12)
 #define BLT_SRC_XPARENT  (1u << 13)
 #define BLT_24BPP        (1u << 16)
+#define BLT_BYTE_LINEAR  (1u << 17) /* AT3D: see pm_blt_lin() */
 #define BLT_DST_LINEAR   (1u << 18)
 #define BLT_DST_CONTIG   (1u << 19)
 #define BLT_PAT_MASK     (3u << 22)
@@ -261,6 +268,31 @@ static uint32_t
 pm_lin_addr(uint32_t reg)
 {
     return ((reg >> 16) << 12) | (reg & 0xfff);
+}
+
+/* A linear source or destination address. X.org's format: a pixel address
+   with bits 23:12 in register bits 31:16. The AT3D's own Windows driver sets
+   XR40 bit 17 instead and gives plain byte addresses, its rectangles' row
+   strides in bytes in XR5C (destination) and XR5E (source). */
+static uint32_t
+pm_blt_lin(pm_t *pm, uint32_t reg)
+{
+    if ((pm->chip >= PM_AT3D) && (pm->blt.ctrl & BLT_BYTE_LINEAR))
+        return reg & 0xffffff;
+    return pm_lin_addr(reg) * pm->blt.bpp;
+}
+
+/* The step from one row of a linear rectangle to the next. */
+static int
+pm_blt_lin_step(pm_t *pm, int contig, int reg)
+{
+    const int w = pm->blt.w * pm->blt.bpp;
+
+    if (contig)
+        return w;
+    if ((pm->chip >= PM_AT3D) && (pm->blt.ctrl & BLT_BYTE_LINEAR))
+        return (int16_t) pm_xr16(pm, reg);
+    return w + (int16_t) pm_xr16(pm, reg);
 }
 
 static uint32_t
@@ -326,9 +358,18 @@ pm_pattern(pm_t *pm, int x, int y, int *valid)
 
             return (c < 8) ? c : (c + 0xf0);
         }
-        case BLT_PAT_COLOR8:
-            /* TODO: the 8x8 colour pattern's data source. */
-            return pm_xr32(pm, 0x60);
+        case BLT_PAT_COLOR8: {
+            /* An 8x8 block of pixels in video memory at the source X/Y,
+               aligned to the screen origin (X.org's HARDWARE_PATTERN_
+               SCREEN_ORIGIN); transparency against the background colour. */
+            const int      sx = (int16_t) pm_xr16(pm, 0x50) + (x & 7);
+            const int      sy = (int16_t) pm_xr16(pm, 0x52) + (y & 7);
+            const uint32_t c  = pm_vram_read(pm, sy * pm->blt.pitch + sx * pm->blt.bpp, pm->blt.bpp);
+
+            if ((ctrl & BLT_SRC_XPARENT) && (c == pm_xr32(pm, 0x64)))
+                *valid = 0;
+            return c;
+        }
         default:
             break;
     }
@@ -417,13 +458,8 @@ pm_blt_next_row(pm_t *pm)
 {
     pm->blt.row++;
     pm->blt.y += pm->blt.dy;
-    if (pm->blt.ctrl & BLT_DST_LINEAR) {
-        int step = pm->blt.w * pm->blt.bpp;
-
-        if (!(pm->blt.ctrl & BLT_DST_CONTIG))
-            step += (int16_t) pm_xr16(pm, 0x5c);
-        pm->blt.dst += step * pm->blt.dy;
-    }
+    if (pm->blt.ctrl & BLT_DST_LINEAR)
+        pm->blt.dst += pm_blt_lin_step(pm, pm->blt.ctrl & BLT_DST_CONTIG, 0x5c) * pm->blt.dy;
 }
 
 static void
@@ -489,7 +525,7 @@ pm_blt_screen_to_screen(pm_t *pm)
 
     if (ctrl & BLT_SRC_MONO) {
         /* Mono source in video memory, rows of whole bytes, MSB first. */
-        uint32_t  src   = pm_lin_addr(pm_xr32(pm, 0x50)) * bpp;
+        uint32_t  src   = pm_blt_lin(pm, pm_xr32(pm, 0x50));
         const int bytes = (pm->blt.w + 7) >> 3;
 
         for (int r = 0; r < pm->blt.h; r++) {
@@ -508,7 +544,7 @@ pm_blt_screen_to_screen(pm_t *pm)
         uint32_t src;
 
         if (ctrl & BLT_SRC_LINEAR)
-            src = pm_lin_addr(pm_xr32(pm, 0x50)) * bpp;
+            src = pm_blt_lin(pm, pm_xr32(pm, 0x50));
         else
             src = sy * pm->blt.pitch + sx * bpp;
 
@@ -525,13 +561,9 @@ pm_blt_screen_to_screen(pm_t *pm)
             }
             pm_blt_row(pm, row, 0, 0);
 
-            if (ctrl & BLT_SRC_LINEAR) {
-                int step = pm->blt.w * bpp;
-
-                if (!(ctrl & BLT_SRC_CONTIG))
-                    step += (int16_t) (pm_xr16(pm, 0x5e) ? pm_xr16(pm, 0x5e) : pm_xr16(pm, 0x5c));
-                src += step * pm->blt.dy;
-            } else
+            if (ctrl & BLT_SRC_LINEAR)
+                src += pm_blt_lin_step(pm, ctrl & BLT_SRC_CONTIG, pm_xr16(pm, 0x5e) ? 0x5e : 0x5c) * pm->blt.dy;
+            else
                 src += pm->blt.pitch * pm->blt.dy;
             pm_blt_next_row(pm);
         }
@@ -575,6 +607,14 @@ pm_blt_start(pm_t *pm)
     pm->blt.ctrl = ctrl;
     pm->blt.op   = ctrl & 0x0f;
     pm->blt.bpp  = (ctrl & BLT_24BPP) ? 1 : pm_bytes_pp(pm);
+    if (pm->chip >= PM_AT3D) {
+        /* XR40 bits 16:14: 1 = 8, 2 = 16, 3 = 32 bpp; 4 = 24 bpp, worked
+           byte by byte with linear addresses (X.org's 24 bpp paths). */
+        static const int depth[8] = { 0, 1, 2, 4, 1, 0, 0, 0 };
+
+        if (depth[(ctrl >> 14) & 7])
+            pm->blt.bpp = depth[(ctrl >> 14) & 7];
+    }
     pm->blt.pitch = model ? (model * pm->blt.bpp) : ((int16_t) pm_xr16(pm, 0x5c));
     pm->blt.w    = pm_xr16(pm, 0x58);
     pm->blt.h    = pm_xr16(pm, 0x5a);
@@ -584,7 +624,7 @@ pm_blt_start(pm_t *pm)
     pm->blt.y    = (int16_t) pm_xr16(pm, 0x56);
     pm->blt.x0   = pm->blt.x;
     pm->blt.y0   = pm->blt.y;
-    pm->blt.dst  = pm_lin_addr(pm_xr32(pm, 0x54)) * pm->blt.bpp;
+    pm->blt.dst  = pm_blt_lin(pm, pm_xr32(pm, 0x54));
     pm->blt.row  = 0;
     pm->blt.host_len = 0;
 
@@ -616,7 +656,19 @@ pm_blt_start(pm_t *pm)
             break;
 
         case BLT_OP_SS:
-            pm_blt_screen_to_screen(pm);
+            if ((pm->chip >= PM_AT3D) && ((ctrl & BLT_PAT_MASK) >= BLT_PAT_MONO)) {
+                /* With the 8x8 pattern unit selected the source registers
+                   locate the pattern: a pattern fill. */
+                for (int r = 0; r < pm->blt.h; r++) {
+                    for (int i = 0; i < pm->blt.w; i++) {
+                        const int x = pm->blt.x + i * pm->blt.dx;
+
+                        pm_plot(pm, pm_blt_dst_addr(pm, x, pm->blt.y), x, pm->blt.y, 0, 0);
+                    }
+                    pm_blt_next_row(pm);
+                }
+            } else
+                pm_blt_screen_to_screen(pm);
             pm_blt_done(pm);
             break;
 
@@ -918,6 +970,10 @@ pm_xr_read(pm_t *pm, uint32_t addr)
                1142h here before it accepts the card). */
             ret = pm->pci_regs[addr & 3];
             break;
+        case 0x1f4 ... 0x1f7:
+            /* The AT3D's SST status (Voodoo Rush): idle. */
+            ret = 0x00;
+            break;
         case 0x190 ... 0x193:
             /* The aperture base: on the PCI chips, BAR 0 (the drivers read
                it here). The BIOS writes a VL-bus address of its choosing. */
@@ -949,7 +1005,7 @@ pm_xr_write(pm_t *pm, uint32_t addr, uint8_t val)
        and Detect_2D_Hardware_Version). */
     if ((addr >= 0x200) && (addr < 0x2c0))
         return;
-    if (addr == 0x42)
+    if ((addr == 0x42) && (pm->chip < PM_AT3D))
         val &= ~0x01;
     pm->xr[addr] = val;
 
@@ -967,14 +1023,16 @@ pm_xr_write(pm_t *pm, uint32_t addr, uint8_t val)
             break;
         case 0x50 ... 0x5b: {
             /* Quick start (XR40 bits 30:29) on the X extent (1), source (2)
-               or destination (3): the operation starts when the access
-               ends, after a dword write has delivered both halves (the
-               STB driver writes each glyph's width and height at once). */
+               or destination (3) X -- the low word: the AT3D driver's
+               polygon fill writes a span's Y first and its X last. The
+               operation starts when the access ends, after a dword write
+               has delivered both halves (the STB driver writes each glyph's
+               width and height at once). */
             static const uint8_t qs_reg[4] = { 0, 0x58, 0x50, 0x54 };
             const int            qs        = (pm_xr32(pm, XR_BLT_CTRL) >> 29) & 3;
             const int            mode      = ((addr & ~3) == 0x58) ? 1 : (((addr & ~3) == 0x50) ? 2 : 3);
 
-            if (qs && ((addr & ~3) == qs_reg[qs]))
+            if (qs && ((addr & ~1) == qs_reg[qs]))
                 pm->blt_pending = 1;
             else if ((addr & ~3) != 0x5c)
                 pm->qs_written |= 1 << mode;
@@ -1130,6 +1188,35 @@ pm_xr_writel(uint32_t addr, uint32_t val, void *priv)
 /* Linear aperture                                                           */
 /* ------------------------------------------------------------------------- */
 
+static void    pm_out(uint16_t addr, uint8_t val, void *priv);
+static uint8_t pm_in(uint16_t addr, void *priv);
+
+/* The AT3D's 16 MB aperture (X.org's apm driver): video memory at 0 MB with
+   the blit port over its top 32 KB, all of video memory again at 8 MB, the
+   extended registers at FFEC00h and the VGA ports at FFF000h + port.
+   Returns 1 and the XR offset, 2 for a VGA port, 3 for the blit port, 0 for
+   video memory (*off the video memory address), -1 for nothing. */
+static int
+pm_at3d_decode(pm_t *pm, uint32_t addr, uint32_t *off)
+{
+    addr &= 0xffffff;
+    if ((addr >= 0xffec00) && (addr < 0xfff000)) {
+        *off = addr - 0xffec00;
+        return 1;
+    }
+    if (addr >= 0xfff000) {
+        *off = addr & 0x3ff;
+        return 2;
+    }
+    if ((addr >= 0x3f8000) && (addr < 0x400000) && (pm->sr[0x1b - 8] & 0x38))
+        return 3;
+    if ((addr < 0x400000) || ((addr >= 0x800000) && (addr < 0xc00000))) {
+        *off = addr & 0x3fffff;
+        return 0;
+    }
+    return -1;
+}
+
 static int
 pm_lfb_is_xr(pm_t *pm, uint32_t addr)
 {
@@ -1153,6 +1240,22 @@ pm_lfb_readb(uint32_t addr, void *priv)
     svga_t *svga = &pm->svga;
 
     addr -= pm->lfb_base;
+    if (pm->chip >= PM_AT3D) {
+        uint32_t off = 0;
+
+        switch (pm_at3d_decode(pm, addr, &off)) {
+            case 1:
+                return pm_xr_read(pm, off);
+            case 2:
+                return ((off >= 0x3b0) && (off < 0x3e0)) ? pm_in(off, pm) : 0xff;
+            case 3:
+                return pm_blt_port_read(pm);
+            case 0:
+                return (off < pm->vram_size) ? svga->vram[off] : 0xff;
+            default:
+                return 0xff;
+        }
+    }
     if (pm_lfb_is_xr(pm, addr))
         return pm_xr_read(pm, addr);
     if (pm_lfb_is_port(pm, addr))
@@ -1182,6 +1285,30 @@ pm_lfb_write_raw(uint32_t addr, uint8_t val, void *priv)
     svga_t *svga = &pm->svga;
 
     addr -= pm->lfb_base;
+    if (pm->chip >= PM_AT3D) {
+        uint32_t off = 0;
+
+        switch (pm_at3d_decode(pm, addr, &off)) {
+            case 1:
+                pm_xr_write(pm, off, val);
+                return;
+            case 2:
+                if ((off >= 0x3b0) && (off < 0x3e0))
+                    pm_out(off, val, pm);
+                return;
+            case 3:
+                pm_blt_port_write(pm, val, 1);
+                return;
+            case 0:
+                if (off < pm->vram_size) {
+                    svga->vram[off]               = val;
+                    svga->changedvram[off >> 12] = svga->monitor->mon_changeframecount;
+                }
+                return;
+            default:
+                return;
+        }
+    }
     if (pm_lfb_is_xr(pm, addr)) {
         pm_xr_write(pm, addr, val);
         return;
@@ -1299,6 +1426,13 @@ pm_out(uint16_t addr, uint8_t val, void *priv)
         addr ^= 0x60;
 
     switch (addr) {
+        case 0x3c4:
+            /* The AT3D decodes six index bits: its BIOS sizes memory with
+               SR1C written as index DCh (its own encoding, bits 7:6 = SR). */
+            if (pm->chip >= PM_AT3D)
+                val &= 0x3f;
+            break;
+
         case 0x3c5:
             if (svga->seqaddr >= 0x08) {
                 const uint8_t idx = svga->seqaddr & 0x3f;
@@ -1489,10 +1623,14 @@ pm_recalctimings(svga_t *svga)
     pm_update_cursor(pm);
     pm_update_overlay(pm);
     svga->force_old_addr = 0;
+    svga->hoverride      = 0;
 
     /* CR1A: vertical bit 10s (total, display end, blank start, retrace
-       start); CR1B: horizontal bit 8s (total, display end), X.org's
-       ApmModeInit. 1280x1024 needs them. */
+       start, and bit 4 line compare -- the AT3D BIOS's 1600x1200 modes);
+       CR1B: horizontal bit 8s (total, display end), X.org's ApmModeInit.
+       1280x1024 needs them. */
+    if (pm->cr[0x1a] & 0x10)
+        svga->split += 0x400; /* the core has added 1 already */
     if (pm->cr[0x1a] & 0x01)
         svga->vtotal |= 0x400;
     if (pm->cr[0x1a] & 0x02)
@@ -1546,6 +1684,10 @@ pm_recalctimings(svga_t *svga)
     /* Extended modes: start address in dwords (CR1C bits 3:0 are bits
        19:16), offset in 8-byte units (CR1C bits 7:4 are bits 11:8). */
     svga->force_old_addr = 1;
+    /* Blanking spans more than the 64 characters a 6-bit end compare can
+       hold in the AT3D's 1600x1200 modes; show extended modes with plain
+       borders. */
+    svga->hoverride      = 1;
     svga->memaddr_latch  = (((pm->cr[0x1c] & 0x0f) << 16) | (svga->crtc[0x0c] << 8) | svga->crtc[0x0d]) << 2;
     svga->rowoffset      = svga->crtc[0x13] | ((pm->cr[0x1c] & 0xf0) << 4);
     svga->lowres         = 0;
@@ -1652,7 +1794,10 @@ pm_init_pci_regs(pm_t *pm)
 
     pm->pci_regs[0x00] = 0x42; /* Alliance Semiconductor */
     pm->pci_regs[0x01] = 0x11;
-    if (pm->chip == PM_6422) {
+    if (pm->chip == PM_AT3D) {
+        pm->pci_regs[0x02] = 0x3d;
+        pm->pci_regs[0x03] = 0x64;
+    } else if (pm->chip == PM_6422) {
         pm->pci_regs[0x02] = 0x22;
         pm->pci_regs[0x03] = 0x64;
     } else {
@@ -1784,9 +1929,13 @@ pm_init(const device_t *info)
     pm->chip      = info->local;
     pm->vram_size = device_get_config_int("memory") << 20;
     pm->vram_mask = pm->vram_size - 1;
-    pm->lfb_size  = 0x400000;
+    pm->lfb_size  = (pm->chip >= PM_AT3D) ? 0x1000000 : 0x400000;
 
-    rom_init(&pm->bios_rom, BIOS_PM6410_PCPARTNER, 0xc0000, 0x8000, 0x7fff, 0, MEM_MAPPING_EXTERNAL);
+    if (pm->chip >= PM_AT3D)
+        rom_init(&pm->bios_rom, device_get_bios_file(info, device_get_config_bios("bios"), 0),
+                 0xc0000, 0x8000, 0x7fff, 0, MEM_MAPPING_EXTERNAL);
+    else
+        rom_init(&pm->bios_rom, BIOS_PM6410_PCPARTNER, 0xc0000, 0x8000, 0x7fff, 0, MEM_MAPPING_EXTERNAL);
     mem_mapping_disable(&pm->bios_rom.mapping);
 
     video_inform(VIDEO_FLAG_TYPE_SPECIAL, &timing_pm_pci);
@@ -1796,7 +1945,7 @@ pm_init(const device_t *info)
               pm_in, pm_out,
               NULL,
               NULL);
-    svga->decode_mask       = pm->lfb_size - 1;
+    svga->decode_mask       = (pm->chip >= PM_AT3D) ? 0x3fffff : (pm->lfb_size - 1);
 
     /* The 6410 drives an external RAMDAC: an AT&T 20C498, which the BIOS
        knows as its 16-bit DAC (type 81h). */
@@ -1822,7 +1971,7 @@ pm_init(const device_t *info)
     pm->ddc = ddc_init(i2c_gpio_get_bus(pm->i2c));
 
     pm_init_pci_regs(pm);
-    if (pm->chip != PM_6410)
+    if (pm->chip == PM_6422)
         pm_patch_bios_id(pm);
     pm_reset_state(pm);
 
@@ -1937,4 +2086,81 @@ const device_t pm6422_pci_device = {
     .speed_changed = pm_speed_changed,
     .force_redraw  = pm_force_redraw,
     .config        = pm6410_config
+};
+
+static const device_config_t pm_at3d_config[] = {
+    {
+        .name           = "bios",
+        .description    = "Board (BIOS)",
+        .type           = CONFIG_BIOS,
+        .default_string = "stingray_435",
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .bios           = {
+            {
+                .name          = "Hercules Stingray 128/3D (AT25, BIOS 4.35.00-B11)",
+                .internal_name = "stingray_435",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0,
+                .size          = 32768,
+                .flags         = 0,
+                .files         = { BIOS_AT3D_STINGRAY_435, "" }
+            },
+            {
+                .name          = "Hercules Stingray 128/3D (AT3D, BIOS 2.30.00-B27)",
+                .internal_name = "stingray_230",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0,
+                .size          = 32768,
+                .flags         = 0,
+                .files         = { BIOS_AT3D_STINGRAY_230, "" }
+            },
+            {
+                .name          = "Gigabyte GA-RUSH6 (AT25, BIOS 4.350010)",
+                .internal_name = "ga_rush6",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0,
+                .size          = 32768,
+                .flags         = 0,
+                .files         = { BIOS_AT3D_GA_RUSH6, "" }
+            },
+            { .files_no = 0 }
+        }
+    },
+    {
+        .name           = "memory",
+        .description    = "Memory size",
+        .type           = CONFIG_SELECTION,
+        .default_string = NULL,
+        .default_int    = 4,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = {
+            { .description = "2 MB", .value = 2 },
+            { .description = "4 MB", .value = 4 },
+            { .description = ""                 }
+        },
+        .bios           = { { 0 } }
+    },
+    { .name = "", .description = "", .type = CONFIG_END }
+};
+
+/* The AT3D/AT25: the ProMotion 2D core of the Voodoo Rush boards (the 3D
+   side is not emulated). */
+const device_t pm_at3d_pci_device = {
+    .name          = "Alliance ProMotion AT3D/AT25 PCI",
+    .internal_name = "pm_at3d_pci",
+    .flags         = DEVICE_PCI,
+    .local         = PM_AT3D,
+    .init          = pm_init,
+    .close         = pm_close,
+    .reset         = pm_reset,
+    .available     = NULL,
+    .speed_changed = pm_speed_changed,
+    .force_redraw  = pm_force_redraw,
+    .config        = pm_at3d_config
 };

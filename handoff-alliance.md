@@ -170,6 +170,35 @@ player). At 8 bpp the decoder does not use the overlay (software, dithered).
 HC800.REG on that ISO sets HKCC Display\Settings to 800x600x16 (desk.cpl's Colors list
 ignores our keys and clicks on this VM; regedit is the reliable route).
 
+## AT3D / AT25 (pm_at3d_pci, 2D only, 2026-10-16)
+
+PCI 1142:643D, 16 MB aperture (VRAM at 0, a second copy at +8 MB, XR at +FFEC00h, VGA ports
+at +FFF000h + port; X.org apm_driver.c), 2 or 4 MB. BIOS option: Hercules Stingray 128/3D
+4.35.00-b11 (default, "AT25", VBE 2.0, LFB), Stingray 2.30.00-b27 ("PMAT3D", VBE 1.2,
+banked only), Gigabyte GA-RUSH6 4.350010 (AT25, VBE 2.0) -- the first 32 KB of each dump,
+in ROMS-EXTRA/video/alliance/at3d/.
+- Memory sizing (BIOS 2B96h): XRC5 bit 0, SR1C &= ~8 | 10h, 55AAh at B800:4 with bank 0,
+  then a dword at B800:14 with the bank at 2 MB (XRC0/C1 = 0200h); SR20 = size in 64 KB.
+  The BIOS writes SR1C as index DCh (its own encoding: bits 7:6 = 11 means SR) straight to
+  3C4h, so the AT3D decodes six sequencer index bits. And the bank is not wrapped to the
+  fitted memory: a 2 MB board's bank at 2 MB is empty. 2 and 4 MB both size right.
+- 1600x1200x16: CR1A bit 4 = line compare bit 10 (the core has already added 1 to the
+  split, so it is += 400h); horizontal blanking spans more than the 64 characters a 6-bit
+  end compare holds, so extended modes run with hoverride (plain borders), all chips.
+- VBETest (work-pmdos): all three BIOSes, 1024x768x16/32 LFB, 1280x1024x8, 1600x1200x16,
+  banked 1024x768x16 on 2.30. No 24 bpp VBE modes in these BIOSes.
+- Windows 98 SE (VM work-pmat3d, a copy of work-pmw98): Alliance's AT3D/AT25 driver
+  4.10.01.2072 (Feb 1998, G:\Old OS\Drivers\video\alliance\AT3D-AT25\Win95.zip; on
+  work-pmat3d\at3ddrv.iso) installs through the New Hardware wizard from the CD. Full mode
+  list; 800x600x16 / 1024x768x16 / 1024x768x32 run, live switching works, GDITEST matches
+  the 6422 pixel for pixel. Two engine changes for it:
+  - XR40 bit 17 (not in X.org): linear source/destination are plain byte addresses, and a
+    rectangle's row stride is XR5C (destination) / XR5E (source) in bytes -- the driver
+    keeps menus and save-unders in off-screen bitmaps that way.
+  - Quick start fires on the low word only (destination X, source X, X extent): the
+    driver's polygon fill arms "start on destination", writes the span's Y, then width,
+    height and X. The 6422 drivers are unaffected (GDITEST identical).
+
 ## Not done / next
 
 1. Interlaced modes: XRD2 bit 0 (STB's InterlaceControl) is set by the drivers' 1024x768
@@ -191,7 +220,8 @@ ignores our keys and clicks on this VM; regedit is the reliable route).
    i686-w64-mingw32-gcc; C:\GDITEST.EXE on work-pmw98) draws convex and non-convex
    polygons, ellipses, the six hatches and a line fan -- all match GDI now.
 4. Done: NT 4 on the 6410. work-pmnt4 is left configured as pm6410_pci, work-pmw98 and
-   work-pmw95 as pm6422_pci; work-pmdos as pm6410_pci.
-5. AT3D/AT25 with the Stingray/GA-RUSH6 BIOSes (16 MB aperture: VGA regs at +FFF000h, XR at
-   +FFEC00h; X.org apm_driver.c), no Voodoo Rush 3D.
+   work-pmw95 as pm6422_pci; work-pmdos as pm_at3d_pci (Stingray 4.35), work-pmat3d too.
+5. AT3D: done for 2D (see its section). Open: its DirectDraw (PROMDD32 2072) and the NT 4
+   driver (G:\Old OS\Drivers\video\alliance\AT3D-AT25\WinNT4.zip), 24 bpp (no BIOS
+   or driver mode uses it), the 3D engine (out of scope), Voodoo Rush boards.
 6. Before merging: pm_do_log default 0, ROM into Xeon3D/roms, README.
