@@ -13,6 +13,8 @@
 
 Windows x64 builds are on the [releases page](https://github.com/Xeon3D/86Box-Next/releases). They are static: one `86Box-Next.exe` and one `isp-server.exe`, no DLLs. The ROMs are not included: use the [86Box ROM set](https://github.com/86Box/roms). The NVIDIA BIOSes are not in it; they are in [Xeon3D/roms](https://github.com/Xeon3D/roms) (`roms/video/nvidia/nv3` and `nv4`), which is the 86Box set plus those.
 
+**[NEXT-ADDITIONS.md](NEXT-ADDITIONS.md)** lists every addition over upstream 86Box in one table, with its status (working, partly working, experimental) and its known bugs.
+
 Extra features
 --------------
 
