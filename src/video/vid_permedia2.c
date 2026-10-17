@@ -199,6 +199,7 @@ typedef struct p2_raster_t {
     int64_t  dk_dx[3];
     int64_t  dk_dy[3];
     int      out_wait;   /* An upload waiting for output FIFO space. */
+    uint32_t mask_skip;  /* Block fills: rows the scissor kept out of the mask stream. */
     uint32_t snap_row1;  /* Packed copies: row + 1 of the span's source snapshot. */
     int64_t  snap_lo;    /* Its first source pixel and length. */
     int64_t  snap_n;
@@ -2612,7 +2613,7 @@ p2_load_texture_mask(p2_t *p2)
     const int        tbytes = texel_bytes[(p2->gp[TAG_TEXTURE_MAP_FORMAT] >> 19) & 7];
     const int        bits   = tbytes * 8;
     const int64_t    blocks = (r->columns + bits - 1) / bits;
-    const int64_t    block  = (int64_t) r->row * blocks + r->col / bits;
+    const int64_t    block  = (int64_t) (r->row - r->mask_skip) * blocks + r->col / bits;
     const int64_t  s      = (int64_t) p2_sext(p2->gp[TAG_S_START], 32) / 0x100000 +
                       block * ((int64_t) p2_sext(p2->gp[TAG_DS_DX], 32) / 0x100000);
     const int64_t  width  = (int64_t) 1 << ((p2->gp[TAG_TEXTURE_READ_MODE] >> 9) & 15);
@@ -3606,6 +3607,21 @@ p2_draw_step(p2_t *p2)
     if (!r->columns) {
         p2_next_fragment(p2);
         return 1;
+    }
+    if (r->texture_block && !r->col && (r->prim == PRIM_RECT) && (p2->gp[TAG_SCISSOR_MODE] & 1)) {
+        /* Rows above or below the user scissor are not rasterized and take
+           no texels from the mask stream: the 3Dlabs Win9x driver draws a
+           cached glyph whole and leaves the cut to the scissor, so a glyph
+           cut at the top showed its first rows in place of the visible ones
+           (CARDTEST GDICHK TEXT's clipped run, CLIP's text). */
+        const int ry = r->origin_y + ((cmd & RENDER_Y_POSITIVE) ? (int) r->row : (int) (r->rows - 1 - r->row));
+
+        if ((ry < p2_sext(p2->gp[TAG_SCISSOR_MIN] >> 16, 16)) || (ry >= p2_sext(p2->gp[TAG_SCISSOR_MAX] >> 16, 16))) {
+            r->mask_skip++;
+            r->col = r->columns - 1;
+            p2_next_fragment(p2);
+            return 1;
+        }
     }
     if (r->texture_block && !r->payload_left)
         p2_load_texture_mask(p2);
