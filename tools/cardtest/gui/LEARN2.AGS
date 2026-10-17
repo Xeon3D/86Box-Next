@@ -1,0 +1,57 @@
+# LEARN2.AGS -- developer aid, round 2: DirectX 7, then each benchmark's
+# main window one level deep, dumped.
+autodismiss 1
+closeclass CabinetWClass
+ifexist "%WIN%\SYSTEM\d3dim700.dll" hasdx7
+log DirectX 7 install
+run "%CD1%\THIRD\DX7\dx70eng.exe" "%CD1%\THIRD\DX7"
+wizard 1200
+shotscreen afterdx7
+:hasdx7
+closeclass CabinetWClass
+log 3DMark 99: New benchmark, Run menu
+run "%PF%\3DMark 99 Max\3dmark.exe" "%PF%\3DMark 99 Max"
+wait "3DMark 99 Max" 90
+sleep 5
+wait class:#32770 30
+click "New 3DMark Benchmark"
+sleep 10
+dump
+shotscreen m99a
+wait "3DMark 99 Max" 10
+keys {ALT+R}
+sleep 3
+dump
+shotscreen m99b
+keys {ESC}{ESC}
+kill
+sleep 3
+log Final Reality first start
+run "%PF%\Final Reality\FR.exe" "%PF%\Final Reality"
+sleep 40
+dump
+shotscreen fr1
+kill
+sleep 3
+log ZD benchmarks: programs
+dir C:\ZDBENCH\*.*
+dir C:\ZDBENCH\WB99\*.*
+dir C:\ZDBENCH\3DWB2000\*.*
+find WB99.exe C:\ZDBENCH nowb
+run "%F%"
+sleep 40
+dump
+shotscreen wb1
+kill
+:nowb
+find 3DWB*.exe C:\ZDBENCH no3dwb
+run "%F%"
+sleep 40
+dump
+shotscreen 3dwb1
+kill
+:no3dwb
+log SPECviewperf files
+dir "%PF%\SPECopc\SPECviewperf 6.1.2\*.*"
+dir "%PF%\SPECopc\SPECviewperf 6.1.2\viewperf\*.*"
+log done

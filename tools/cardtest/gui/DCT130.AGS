@@ -1,0 +1,52 @@
+# DCT130.AGS -- Microsoft WHQL Display Compatibility Test 1.30 (the display
+# logo tests of HCT 9.5: Windows 95/98/2000/NT 4) from disc 2: installs it to
+# C:\DCT (generic walker), starts its manager, unticks "Run As Windows Shell"
+# (no shell replacement / reboots), runs "All - Auto" (every automatic test
+# of every suite: PCI, PC 99, Power Mgmt, DirectDraw, Direct3D, D3D Dx6,
+# Win9x GDI, AGP, OpenGL), waits for the completion command (-x) and copies
+# every test log to C:\CTRES\GUI\DCT130. The DCT is a debug build: its
+# timecore.cpp assertion is answered Ignore. Prompts that want a human to
+# judge the screen are answered No and listed as MANUAL. It may leave the
+# desktop in another mode (RUNALL restores it).
+autodismiss 1
+on "Debug Assertion" Ignore
+manual "Did you"
+manual "Do you see"
+manual "Was the"
+manual "Is the"
+manual "Does the"
+closeclass CabinetWClass
+ifexist "C:\dct\Common\Shell\x86\dct.exe" installed
+log installing DCT 1.30
+run "%CD2%\DCT130\Setup.exe" "%CD2%\DCT130"
+wizard 1800
+closeclass CabinetWClass
+:installed
+ifexist "C:\dct\Common\Shell\x86\dct.exe" ok
+fail INSTALL "DCT 1.30 not installed"
+goto end
+:ok
+pass INSTALL
+taskbar off
+ifexist "%WIN%\SYSTEM32\CMD.EXE" nt
+run "C:\dct\Common\Shell\x86\dct.exe -l -xcommand.com /c echo done>C:\CTRES\GUI\DCT130\DCTEND.TXT" "C:\dct\Common\Shell\x86"
+goto started
+:nt
+run "C:\dct\Common\Shell\x86\dct.exe -l -xcmd.exe /c echo done>C:\CTRES\GUI\DCT130\DCTEND.TXT" "C:\dct\Common\Shell\x86"
+:started
+wait "Display Conformance Test" 900
+sleep 5
+check "Run As Windows Shell" 0
+choose "All - Auto"
+shot start
+click "Run"
+pause 60
+waitfile C:\CTRES\GUI\DCT130\DCTEND.TXT 21600
+sleep 10
+wait "Display Conformance Test" 120
+shot summary
+collect C:\dct *.log
+grep DCT130 C:\CTRES\GUI\DCT130\*.log "Passed"
+kill
+taskbar restore
+:end

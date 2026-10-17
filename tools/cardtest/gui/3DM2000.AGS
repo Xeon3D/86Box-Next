@@ -1,0 +1,51 @@
+# 3DM2000.AGS -- 3DMark2000 1.1 from disc 1: installs it if needed (generic
+# walker: licence accepted per the owner's standing OK, "Purchase Later" on the
+# registration page -- no key is typed; it may warn that DirectX 7 is needed),
+# runs the default benchmark and records the scores from the result window.
+autodismiss 1
+closeclass CabinetWClass
+ifexist "%PF%\MadOnion.com\3DMark2000\3DMark2000.exe" installed
+log installing 3DMark2000
+run "%CD1%\THIRD\3DM2000\3dmark2000.exe" "%CD1%\THIRD\3DM2000"
+wizard 1800
+closeclass CabinetWClass
+:installed
+ifexist "%PF%\MadOnion.com\3DMark2000\3DMark2000.exe" ok
+fail INSTALL "3DMark2000 not installed"
+goto end
+:ok
+pass INSTALL
+run "%PF%\MadOnion.com\3DMark2000\3DMark2000.exe" "%PF%\MadOnion.com\3DMark2000"
+wait class:#32770 120
+sleep 2
+ifwin "3DMark Error" noaccel
+autodismiss 0
+click "Run Default Benchmark"
+pause 120
+wait "Overall Score" 7200
+sleep 3
+shot score
+read score
+resultfrom 3DMARKS "3D marks"
+click "Show Details"
+sleep 8
+shotscreen score_details
+dump
+keys {ESC}
+sleep 2
+wait "Overall Score" 20
+click "Close"
+sleep 2
+autodismiss 1
+kill
+goto end
+:noaccel
+# e.g. "requires a DirectX 6 compatible 3D-accelerator" / "requires DirectX 7"
+wait "3DMark Error" 5
+read error
+shot error
+fail RUN "3DMark refused to start (see READ error)"
+autodismiss 1
+sleep 3
+kill
+:end

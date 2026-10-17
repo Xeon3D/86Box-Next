@@ -1,0 +1,8 @@
+# CARDTEST extras, run by CTRUN /JOBS (RUNXTRA.BAT), one job per line:
+# TYPE|timeout s|label|file|pattern|command line   (%CD% = the CD drive)
+# WAIT: watch the file for a line with the pattern, record it, close the program.
+# RUN : output to the file ("-" = none), wait for the program to end.
+WAIT|900|GLQUAKE|C:\CTRUN\GQ\ID1\QCONSOLE.LOG|fps|C:\CTRUN\GQ\GLQUAKE.EXE -window -width 640 -height 480 -nosound -nocdaudio -nojoy -condebug +timedemo demo1
+WAIT|900|Q2SOFT|C:\CTRUN\Q2\BASEQ2\QCONSOLE.LOG|fps|C:\CTRUN\Q2\QUAKE2.EXE +set cddir %CD%\THIRD\QUAKE2 +set logfile 2 +set vid_ref soft +set sw_mode 3 +set vid_fullscreen 0 +set s_initsound 0 +set nextserver disconnect +set timedemo 1 +demomap demo1.dm2
+WAIT|900|Q2GL|C:\CTRUN\Q2\BASEQ2\QCONSOLE.LOG|fps|C:\CTRUN\Q2\QUAKE2.EXE +set cddir %CD%\THIRD\QUAKE2 +set logfile 2 +set vid_ref gl +set gl_mode 3 +set vid_fullscreen 0 +set s_initsound 0 +set nextserver disconnect +set timedemo 1 +demomap demo1.dm2
+RUN|1800|GLEAN|C:\CTRES\GLEAN.TXT|-|%CD%\THIRD\GLEAN\BIN\GLEAN.EXE -r C:\CTRES\GLEAN

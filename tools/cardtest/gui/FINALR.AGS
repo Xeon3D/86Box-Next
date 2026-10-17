@@ -1,0 +1,40 @@
+# FINALR.AGS -- Final Reality 1.01 from disc 2: installs it if needed (generic
+# walker), accepts its licence (owner's standing OK), runs the benchmark
+# (Direct3D on-board accelerator) and records the result screen.
+autodismiss 1
+on "License Agreement" Accept
+closeclass CabinetWClass
+ifexist "%PF%\Final Reality\FR.exe" installed
+log installing Final Reality
+run "%CD2%\FINALRLT\SETUP.EXE" "%CD2%\FINALRLT"
+wizard 1200
+closeclass CabinetWClass
+:installed
+ifexist "%PF%\Final Reality\FR.exe" ok
+fail INSTALL "Final Reality not installed"
+goto end
+:ok
+pass INSTALL
+run "%PF%\Final Reality\FR.exe" "%PF%\Final Reality"
+wait "Final Reality Benchmark" 120
+read settings
+autodismiss 0
+click "Run benchmark"
+pause 60
+waitmode 5400
+sleep 5
+shotscreen result
+dump
+click "Display results"
+wait "Benchmark results" 60
+sleep 3
+shotscreen score
+# control ids of the "Benchmark results" dialog (from a dump)
+resultid REALITYMARKS 1100
+resultid 3D_PERFORMANCE 1088
+resultid 2D_IMAGE_PROCESSING 1093
+resultid BUS_TRANSFER 1056
+close
+autodismiss 1
+kill
+:end

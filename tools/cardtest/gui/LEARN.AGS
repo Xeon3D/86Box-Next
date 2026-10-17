@@ -1,0 +1,38 @@
+# LEARN.AGS -- developer aid: install every GUI benchmark with the generic
+# installer walker and dump each one's windows, to write the real scripts.
+autodismiss 1
+log 3DMark 99 Max install
+run "%CD1%\THIRD\3DM99SET\Setup.exe" "%CD1%\THIRD\3DM99SET"
+wizard 900
+shotscreen after3dm99
+log 3DMark 2000 install
+run "%CD1%\THIRD\3DM2000\3dmark2000.exe" "%CD1%\THIRD\3DM2000"
+wizard 1500
+shotscreen after3dm2000
+log ZD silent installs (their own SilentSU + setup.iss)
+run "%CD2%\ZDBench\wb99\SilentSU.exe" "%CD2%\ZDBench\wb99"
+waitexit 1200
+run "%CD2%\ZDBench\3dwb2000\SilentSU.exe" "%CD2%\ZDBench\3dwb2000"
+waitexit 1200
+log Final Reality install
+run "%CD2%\FINALRLT\SETUP.EXE" "%CD2%\FINALRLT"
+wizard 900
+shotscreen afterfr
+log SPECviewperf install
+run "%CD2%\SPECVP\SETUP.EXE" "%CD2%\SPECVP"
+wizard 1500
+shotscreen afterspec
+log --- what got installed
+find 3DMark*.exe "C:\Program Files"
+find *.exe "C:\ZDBENCH"
+find FR*.exe "C:\Program Files"
+find viewperf*.exe C:
+log --- first start of each, dumped
+find 3DMark*.exe "C:\Program Files" no99
+run "%F%"
+sleep 40
+dump
+shotscreen start3dm
+:no99
+kill
+sleep 5

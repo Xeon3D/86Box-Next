@@ -1,0 +1,34 @@
+# DX7.AGS -- DirectX 7 runtime (disc 2 \directx7) when Windows has an older
+# one (Windows 95/98 ship DirectX 5/6.1; 98 SE + 2000 the samples need 7).
+# It needs a restart: %CTRESUME% (set by RUNGUI.BAT or RUNALL.BAT) is put in
+# RunOnce so the run carries on after the restart, then Windows restarts.
+ifexist "%WIN%\SYSTEM32\D3DIM700.DLL" have
+ifexist "%WIN%\SYSTEM\D3DIM700.DLL" have
+ifexist "%CD2%\directx7\dxsetup.exe" install
+fail DX7 "DirectX 7 runtime not found on disc 2"
+goto end
+:install
+log installing the DirectX 7 runtime
+autodismiss 1
+# a half-installed DirectX makes setup offer "ReInstall DirectX" or "Close"
+on "DirectX(R) Setup" "ReInstall DirectX"
+# in RunOnce first, in case setup restarts Windows itself
+runonce "%CTRESUME%" CardtestResume
+run "%CD2%\directx7\dxsetup.exe" "%CD2%\directx7"
+wait "DirectX 7.0 Setup" 120
+autodismiss 0
+click "Yes"
+# then it copies the files and ends with "DirectX setup needs to restart your
+# machine, press OK": OK cannot restart Windows past RUNGUI's DOS box, so
+# AUTOGUI restarts it itself (forced; the files are all copied by then)
+wait "DirectX Setup" 900
+shot restart_box
+ifexist "%WIN%\SYSTEM\D3DIM700.DLL" restart
+fail DX7 "DirectX 7 setup did not install D3DIM700.DLL"
+goto end
+:restart
+pass DX7 "installed, restarting"
+reboot
+:have
+pass DX7 "already installed"
+:end

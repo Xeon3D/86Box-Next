@@ -1,0 +1,30 @@
+# SPECVP.AGS -- SPECviewperf 6.1.2 (OpenGL viewsets) from disc 2: installs
+# with the generic walker (licence accepted per the owner's standing OK),
+# then CTSPEC.BAT runs Dx-06, Light-04 and AWadvs-04 (edit CTSPEC for all six)
+# and copies each summary to C:\CTRES\GUI\SPECVP; the "Mean" lines become results.
+autodismiss 1
+closeclass CabinetWClass
+ifexist "%PF%\SPECopc\SPECviewperf 6.1.2\run_viewset.bat" installed
+log installing SPECviewperf 6.1.2
+run "%CD2%\SPECVP\SETUP.EXE" "%CD2%\SPECVP"
+wizard 1800
+closeclass CabinetWClass
+:installed
+ifexist "%PF%\SPECopc\SPECviewperf 6.1.2\run_viewset.bat" ok
+fail INSTALL "SPECviewperf not installed"
+goto end
+:ok
+pass INSTALL
+copy "%CD1%\GUI\CTSPEC.BAT" "%PF%\SPECopc\SPECviewperf 6.1.2\CTSPEC.BAT"
+ifexist "%WIN%\SYSTEM32\CMD.EXE" nt
+run "command.com /c ctspec.bat" "%PF%\SPECopc\SPECviewperf 6.1.2"
+goto wait
+:nt
+run "cmd.exe /c ctspec.bat" "%PF%\SPECopc\SPECviewperf 6.1.2"
+:wait
+waitexit 21600
+closeclass tty
+grep DX C:\CTRES\GUI\SPECVP\DX.TXT Mean
+grep LIGHT C:\CTRES\GUI\SPECVP\LIGHT.TXT Mean
+grep AWADVS C:\CTRES\GUI\SPECVP\AWADVS.TXT Mean
+:end

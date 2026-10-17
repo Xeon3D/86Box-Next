@@ -1,0 +1,49 @@
+# 3DM99.AGS -- 3DMark 99 Max from disc 1: installs it if needed (generic
+# walker: licence accepted per the owner's standing OK, "Purchase Later" on the
+# registration page -- no key is typed), runs the default benchmark
+# (800x600x16, all default tests) and records the scores from the result window.
+autodismiss 1
+closeclass CabinetWClass
+ifexist "%PF%\3DMark 99 Max\3dmark.exe" installed
+log installing 3DMark 99 Max
+run "%CD1%\THIRD\3DM99SET\Setup.exe" "%CD1%\THIRD\3DM99SET"
+wizard 1200
+closeclass CabinetWClass
+:installed
+ifexist "%PF%\3DMark 99 Max\3dmark.exe" ok
+fail INSTALL "3DMark 99 Max not installed"
+goto end
+:ok
+pass INSTALL
+run "%PF%\3DMark 99 Max\3dmark.exe" "%PF%\3DMark 99 Max"
+wait class:#32770 120
+sleep 2
+ifwin "3DMark Error" noaccel
+click "New 3DMark Benchmark"
+wait "Untitled" 60
+read settings
+shot settings
+autodismiss 0
+click "Benchmark"
+pause 120
+wait "Overall Score" 5400
+sleep 3
+shot score
+read score
+resultfrom 3DMARKS "3DMark Score"
+resultfrom CPU3DMARKS "CPU 3DMarks"
+click "Close"
+sleep 2
+autodismiss 1
+kill
+goto end
+:noaccel
+# e.g. "requires a DirectX 6 compatible 3D-accelerator" / "requires DirectX 7"
+wait "3DMark Error" 5
+read error
+shot error
+fail RUN "3DMark refused to start (see READ error)"
+autodismiss 1
+sleep 3
+kill
+:end
