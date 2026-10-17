@@ -76,6 +76,14 @@
 #define P2_CHIP_CONFIG    0x0070
 #define P2_OUT_DMA_ADDR   0x0080
 #define P2_OUT_DMA_COUNT  0x0088
+#define P2_AGP_TEX_BASE   0x0090 /* P2A: host texture base (TextureBaseAddress bit 30). */
+#define P2_BYDMA_ADDRESS  0x00a0 /* P2A bypass DMA controller (HRM 3.2.19-3.2.25). */
+#define P2_BYDMA_STRIDE   0x00b8
+#define P2_BYDMA_MEMADDR  0x00c0
+#define P2_BYDMA_SIZE     0x00c8
+#define P2_BYDMA_BYTEMASK 0x00d0
+#define P2_BYDMA_CONTROL  0x00d8
+#define P2_BYDMA_COMPLETE 0x00e8
 
 #define P2_REBOOT         0x1000
 #define P2_MEM_CONTROL    0x1040
@@ -125,6 +133,8 @@ enum {
 #define INT_ERROR    0x08
 #define INT_VRETRACE 0x10
 #define INT_SCANLINE 0x20
+#define INT_TEX_INVALID 0x40
+#define INT_BYPASS_DMA  0x80
 
 /* TVP4020 indexed registers. */
 #define TVP_CURSOR_CONTROL 0x06
@@ -176,6 +186,18 @@ typedef struct p2_raster_t {
     int64_t  dcolor_dx[3];
     int64_t  dcolor_dy[3];
     uint32_t alpha;
+    int      use3d;      /* Fragments through the texture, depth and blend units. */
+    int      frag_x;     /* The fragment in the 3D units (LUT DirectIndex). */
+    int      frag_y;
+    int64_t  z;          /* 17.11 */
+    int64_t  dz_dx;
+    int64_t  dz_dy;
+    int64_t  tex[3];     /* S, T (texels at bit 20), Q (one at bit 30). */
+    int64_t  dtex_dx[3];
+    int64_t  dtex_dy[3];
+    int64_t  k[3];       /* Fog, Ks, Kd: 2.16. */
+    int64_t  dk_dx[3];
+    int64_t  dk_dy[3];
     int      out_wait;   /* An upload waiting for output FIFO space. */
     int      rel_offset; /* Last: kept from one primitive to the next. */
 } p2_raster_t;
@@ -217,6 +239,13 @@ typedef struct p2_t {
     uint32_t out_dma_count;
     uint32_t fifo_discon;
     uint32_t chip_config;
+    uint32_t agp_tex_base;
+    uint32_t bydma[10];          /* 0xA0-0xE8 in 8-byte steps (bypass DMA). */
+    uint32_t bydma_x;            /* Aperture auto addressing cursor. */
+    uint32_t bydma_y;
+    int      tex_invalid;        /* TextureID/TexelLUTID loaded an invalid handle: halted. */
+    uint32_t tex_invalid_tag;
+    uint32_t tex_invalid_val;
     uint32_t mem_control;
     uint32_t boot_address;
     uint32_t mem_config;
@@ -243,8 +272,20 @@ typedef struct p2_t {
 
     /* Graphics processor. */
     uint32_t    gp[GP_TAGS];
+    uint32_t    tag_count[GP_TAGS]; /* Debug: writes per tag ("dev p2 tags"). */
+    int         mode_log;           /* Debug: "dev p2 modes" logs each new 3D mode set. */
+    int         modes_seen;
+    uint32_t    modes[256][9];
+    uint32_t    dl_start; /* Debug: the current texture download. */
+    uint32_t    dl_words;
+    int         range_logged;
     uint32_t    texel_lut[256];
     p2_raster_t raster;
+    double      vtx[3][16];      /* Delta vertex parameters (see p2_delta_vertex). */
+    uint32_t    delta_cmd;       /* The last DrawTriangle/DrawLine, for the Repeat commands. */
+    int         delta_line10;    /* The last line ran from vertex 1 to 0. */
+    int         suspended;       /* SuspendUntilFrameBlank: waiting for the next blank. */
+    uint32_t    suspend_base;
     uint32_t fifo_hdr_count;     /* Data words still owed to the current header. */
     uint32_t fifo_hdr_tag;
     uint32_t fifo_hdr_mode;
@@ -259,6 +300,7 @@ typedef struct p2_t {
     int       hold_wr;
     int       hold_count;
     int       in_resume;
+    int       hold_overflow;
 } p2_t;
 
 static video_timings_t timing_p2_pci = { .type = VIDEO_PCI, .write_b = 2, .write_w = 2, .write_l = 1, .read_b = 10, .read_w = 10, .read_l = 10 };
@@ -288,6 +330,9 @@ static void     p2_gp_write(p2_t *p2, uint32_t tag, uint32_t val);
 static void     p2_gp_command(p2_t *p2, uint32_t tag, uint32_t val);
 static void     p2_gp_reset(p2_t *p2);
 static void     p2_out_space(p2_t *p2);
+static void     p2_vtg_write(p2_t *p2, int idx, uint32_t val);
+static int      p2_gp_stalled(p2_t *p2);
+static int      p2_lb_upload_cmd(p2_t *p2, uint32_t command);
 
 /* ------------------------------------------------------------------------- */
 /* Interrupts                                                                */
@@ -325,6 +370,27 @@ p2_vsync_callback(svga_t *svga)
 
     /* The border follows the palette entry, which the BIOS loads after AR11. */
     svga->overscan_color = p2_vtg_active(p2) ? 0x000000 : svga->pallook[svga->attrregs[0x11]];
+
+    if (p2->suspended) {
+        /* SuspendUntilFrameBlank: the new frame is shown from this blank on,
+           and the graphics processor goes on with what was held back. */
+        p2->suspended = 0;
+        p2_vtg_write(p2, VTG_SCREEN_BASE, p2->suspend_base);
+        if (p2_vtg_active(p2)) {
+            /* The SVGA core latched this frame's start before calling us: the
+               new page must show from this frame on, or the drivers (released
+               now) draw into the page still on screen. */
+            if (svga->interlace && svga->oddeven)
+                svga->memaddr = svga->memaddr_backup = svga->memaddr_latch + (svga->rowoffset << 1) + svga->hblank_sub;
+            else
+                svga->memaddr = svga->memaddr_backup = svga->memaddr_latch + svga->hblank_sub;
+            if (!(svga->adv_flags & FLAG_NO_SHIFT3)) {
+                svga->memaddr <<= 2;
+                svga->memaddr_backup <<= 2;
+            }
+        }
+        p2_out_space(p2);
+    }
 
     p2_raise_int(p2, INT_VRETRACE);
 }
@@ -1023,12 +1089,17 @@ p2_lfb_readb(uint32_t addr, void *priv)
     return p2->svga.vram[addr & p2->vram_mask];
 }
 
+/* Unaligned words and dwords (the DIB engine reads 16 bpp sources at odd
+   pixels as dwords) reach the card as aligned PCI cycles with byte enables:
+   the bytes at the address asked for, each through its own byte lane. */
 static uint16_t
 p2_lfb_readw(uint32_t addr, void *priv)
 {
     const p2_t *p2 = (p2_t *) priv;
 
-    return *(uint16_t *) &p2->svga.vram[addr & p2->vram_mask & ~1];
+    if (addr & 1)
+        return p2_lfb_readb(addr, priv) | (p2_lfb_readb(addr + 1, priv) << 8);
+    return *(uint16_t *) &p2->svga.vram[addr & p2->vram_mask];
 }
 
 static uint32_t
@@ -1036,7 +1107,9 @@ p2_lfb_readl(uint32_t addr, void *priv)
 {
     const p2_t *p2 = (p2_t *) priv;
 
-    return *(uint32_t *) &p2->svga.vram[addr & p2->vram_mask & ~3];
+    if (addr & 3)
+        return p2_lfb_readw(addr, priv) | ((uint32_t) p2_lfb_readw(addr + 2, priv) << 16);
+    return *(uint32_t *) &p2->svga.vram[addr & p2->vram_mask];
 }
 
 
@@ -1058,7 +1131,12 @@ p2_lfb_writew(uint32_t addr, uint16_t val, void *priv)
     const uint16_t mask = p2->bypass_mask >> ((addr & 2) << 3);
     uint16_t      *v;
 
-    addr &= p2->vram_mask & ~1;
+    if (addr & 1) {
+        p2_lfb_writeb(addr, val, priv);
+        p2_lfb_writeb(addr + 1, val >> 8, priv);
+        return;
+    }
+    addr &= p2->vram_mask;
     v  = (uint16_t *) &p2->svga.vram[addr];
     *v = (*v & ~mask) | (val & mask);
     p2_vram_changed(p2, addr);
@@ -1070,7 +1148,12 @@ p2_lfb_writel(uint32_t addr, uint32_t val, void *priv)
     p2_t     *p2 = (p2_t *) priv;
     uint32_t *v;
 
-    addr &= p2->vram_mask & ~3;
+    if (addr & 3) {
+        p2_lfb_writew(addr, val, priv);
+        p2_lfb_writew(addr + 2, val >> 16, priv);
+        return;
+    }
+    addr &= p2->vram_mask;
     v  = (uint32_t *) &p2->svga.vram[addr];
     *v = (*v & ~p2->bypass_mask) | (val & p2->bypass_mask);
     p2_vram_changed(p2, addr);
@@ -1139,9 +1222,13 @@ p2_ap_read(p2_t *p2, int n, uint32_t addr, int size)
     return ret;
 }
 
+static int p2_bypass_aperture(p2_t *p2, int n, uint32_t val, int size);
+
 static void
 p2_ap_write(p2_t *p2, int n, uint32_t addr, uint32_t val, int size)
 {
+    if (p2_bypass_aperture(p2, n, val, size))
+        return;
     if (!p2_ap_rom(p2, n)) {
         switch (size) {
             case 1:
@@ -1277,6 +1364,169 @@ p2_fifo_write(p2_t *p2, uint32_t val)
     p2->fifo_hdr_count--;
 }
 
+/* ------------------------------------------------------------------------- */
+/* Bypass unit (P2A): host data straight into Permedia memory, by its own    */
+/* DMA master or written through an aperture, laid out as a texture (data    */
+/* size, pitch from partial products, X/Y offsets). Patch layouts are kept   */
+/* linear like everywhere else here.                                         */
+/* ------------------------------------------------------------------------- */
+
+static uint32_t p2_pitch(uint32_t mode);
+static void     p2_fb_write(p2_t *p2, int64_t addr, int bpp, uint32_t val, uint32_t hwmask);
+
+/* One data item (bypass data format: 8/16/32 bits, 4 bits, YUV planes) at
+   item X, Y of the transfer. */
+static void
+p2_bypass_store(p2_t *p2, uint32_t x, uint32_t y, uint32_t v)
+{
+    const uint32_t ctl   = p2->bydma[(P2_BYDMA_CONTROL - P2_BYDMA_ADDRESS) >> 3];
+    const uint32_t fmt   = (ctl >> 3) & 7;
+    const uint32_t pitch = p2_pitch(ctl >> 8);
+    const int64_t  base  = p2->bydma[(P2_BYDMA_MEMADDR - P2_BYDMA_ADDRESS) >> 3] & 0xffffff;
+    const int64_t  tx    = x + ((ctl >> 17) & 31);
+    const int64_t  ty    = y + ((ctl >> 22) & 31);
+    const int64_t  texel = base + ty * pitch + tx;
+
+    switch (fmt) {
+        case 0:
+            p2_fb_write(p2, texel, 1, v, 0xffffffff);
+            break;
+        case 1:
+            p2_fb_write(p2, texel * 2, 2, v, 0xffffffff);
+            break;
+        case 2:
+            p2_fb_write(p2, texel * 4, 4, v, 0xffffffff);
+            break;
+        case 3: {
+            /* 4 bits, the low nibble first. */
+            const uint32_t m = (texel & 1) ? 0xf0 : 0x0f;
+
+            p2_fb_write(p2, texel >> 1, 1, (texel & 1) ? (v << 4) : v, m * 0x01010101);
+            break;
+        }
+        case 4: /* Y plane into YUV 4:2:2 texels (byte 0). */
+            p2_fb_write(p2, texel * 2, 1, v, 0xffffffff);
+            break;
+        case 5: /* U plane: byte 1 of the even texel of each pair. */
+        case 6: /* V plane: byte 1 of the odd one. */
+        {
+            const int64_t t = base + ty * pitch + tx * 2 + (fmt == 6);
+
+            p2_fb_write(p2, t * 2 + 1, 1, v, 0xffffffff);
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+static uint32_t
+p2_bypass_swap(uint32_t ctl, uint32_t w)
+{
+    switch ((ctl >> 27) & 3) {
+        case 1:
+            return (w << 24) | ((w & 0xff00) << 8) | ((w >> 8) & 0xff00) | (w >> 24);
+        case 2:
+            return (w << 16) | (w >> 16);
+        default:
+            return w;
+    }
+}
+
+/* One host dword of a transfer: the data items it holds, the scanline's
+   edge byte masks applied to its first and last dwords. */
+static void
+p2_bypass_word(p2_t *p2, uint32_t w, uint32_t *x, uint32_t y, uint32_t width, int first)
+{
+    const uint32_t ctl   = p2->bydma[(P2_BYDMA_CONTROL - P2_BYDMA_ADDRESS) >> 3];
+    const uint32_t mask  = p2->bydma[(P2_BYDMA_BYTEMASK - P2_BYDMA_ADDRESS) >> 3];
+    const uint32_t fmt   = (ctl >> 3) & 7;
+    const int      bits  = (fmt == 1) ? 16 : ((fmt == 2) ? 32 : ((fmt == 3) ? 4 : 8));
+    const int      items = 32 / bits;
+    const int      last  = (*x + items) >= width;
+
+    w = p2_bypass_swap(ctl, w);
+    for (int i = 0; (i < items) && (*x < width); i++) {
+        const int byte = (i * bits) >> 3;
+
+        /* Set mask bits leave that byte of the edge dword alone. */
+        if (!((first && ((mask >> byte) & 1)) || (last && ((mask >> (16 + byte)) & 1))))
+            p2_bypass_store(p2, *x, y, (bits == 32) ? w : ((w >> (i * bits)) & ((1u << bits) - 1)));
+        (*x)++;
+    }
+}
+
+static void p2_tex_restart(p2_t *p2);
+
+/* ByDMAControl mode 1: the whole transfer from host memory at once. */
+static void
+p2_bypass_dma(p2_t *p2)
+{
+    const uint32_t ctl    = p2->bydma[(P2_BYDMA_CONTROL - P2_BYDMA_ADDRESS) >> 3];
+    const uint32_t size   = p2->bydma[(P2_BYDMA_SIZE - P2_BYDMA_ADDRESS) >> 3];
+    const uint32_t width  = size & 0xfff;
+    const uint32_t height = (size >> 16) & 0xfff;
+    const uint32_t fmt    = (ctl >> 3) & 7;
+    const int      bits   = (fmt == 1) ? 16 : ((fmt == 2) ? 32 : ((fmt == 3) ? 4 : 8));
+    const uint32_t words  = (width * bits + 31) / 32;
+    uint32_t       src    = p2->bydma[0];
+
+    for (uint32_t y = 0; y < height; y++) {
+        uint32_t x = 0;
+        uint32_t a = src;
+
+        for (uint32_t i = 0; i < words; i++, a += 4)
+            p2_bypass_word(p2, mem_readl_phys(a), &x, y, width, i == 0);
+        src += p2->bydma[(P2_BYDMA_STRIDE - P2_BYDMA_ADDRESS) >> 3];
+    }
+    p2_raise_int(p2, INT_BYPASS_DMA);
+    if (ctl & 4)
+        p2_tex_restart(p2);
+}
+
+/* ByDMAControl modes 2/3: host writes to aperture 1/2 land at the transfer's
+   next position, whatever their address. Returns 1 if the write was taken. */
+static int
+p2_bypass_aperture(p2_t *p2, int n, uint32_t val, int size)
+{
+    const uint32_t ctl    = p2->bydma[(P2_BYDMA_CONTROL - P2_BYDMA_ADDRESS) >> 3];
+    const uint32_t sz     = p2->bydma[(P2_BYDMA_SIZE - P2_BYDMA_ADDRESS) >> 3];
+    const uint32_t width  = sz & 0xfff;
+    const uint32_t height = (sz >> 16) & 0xfff;
+
+    if (((ctl & 3) != (uint32_t) (2 + n)) || (p2->bydma_y >= height) || !width)
+        return 0;
+    if (size < 4)
+        val &= (1u << (size * 8)) - 1;
+    p2_bypass_word(p2, val, &p2->bydma_x, p2->bydma_y, width, !p2->bydma_x);
+    if (p2->bydma_x >= width) {
+        p2->bydma_x = 0;
+        if (++p2->bydma_y >= height) {
+            p2_raise_int(p2, INT_BYPASS_DMA);
+            if (ctl & 4)
+                p2_tex_restart(p2);
+        }
+    }
+    return 1;
+}
+
+/* Input DMA: feeds the input FIFO from system memory. DMACount counts words
+   moved into the FIFO, not executed ones: behind a stalled graphics processor
+   it goes on until the 256-entry FIFO is full (p2_out_space resumes it). */
+static void
+p2_dma_run(p2_t *p2)
+{
+    if (!p2->dma_count)
+        return;
+    while (p2->dma_count && (p2->hold_count < 256)) {
+        p2_fifo_write(p2, p2_dma_swap(p2, mem_readl_phys(p2->dma_address)));
+        p2->dma_address += 4;
+        p2->dma_count--;
+    }
+    if (!p2->dma_count)
+        p2_raise_int(p2, INT_DMA);
+}
+
 static void
 p2_i2c_write(void *i2c, uint32_t val)
 {
@@ -1397,15 +1647,7 @@ p2_ctrl_write_int(p2_t *p2, uint32_t addr, uint32_t val)
             break;
         case P2_DMA_COUNT:
             p2->dma_count = val & 0xffff;
-            if (p2->dma_count) {
-                /* Feed the input FIFO from system memory at once. */
-                while (p2->dma_count) {
-                    p2_fifo_write(p2, p2_dma_swap(p2, mem_readl_phys(p2->dma_address)));
-                    p2->dma_address += 4;
-                    p2->dma_count--;
-                }
-                p2_raise_int(p2, INT_DMA);
-            }
+            p2_dma_run(p2);
             break;
         case P2_ERROR_FLAGS:
             p2->error_flags &= ~val;
@@ -1437,6 +1679,25 @@ p2_ctrl_write_int(p2_t *p2, uint32_t addr, uint32_t val)
             break;
         case P2_FIFO_DISCON:
             p2->fifo_discon = val;
+            break;
+        case P2_AGP_TEX_BASE:
+            p2->agp_tex_base = val;
+            break;
+        case P2_BYDMA_ADDRESS:
+        case P2_BYDMA_STRIDE:
+        case P2_BYDMA_MEMADDR:
+        case P2_BYDMA_SIZE:
+        case P2_BYDMA_BYTEMASK:
+            p2->bydma[(addr - P2_BYDMA_ADDRESS) >> 3] = val;
+            break;
+        case P2_BYDMA_CONTROL:
+            p2->bydma[(addr - P2_BYDMA_ADDRESS) >> 3] = val;
+            p2->bydma_x = p2->bydma_y = 0;
+            if ((val & 3) == 1)
+                p2_bypass_dma(p2);
+            break;
+        case P2_BYDMA_COMPLETE:
+            p2_tex_restart(p2);
             break;
         case P2_CHIP_CONFIG:
             p2->chip_config = (p2->chip_config & 0x00000200) | (val & ~0x00000200);
@@ -1526,9 +1787,14 @@ p2_ctrl_read_int(p2_t *p2, uint32_t addr)
             /* Empty: 256 entries and two more in the input stage. ELSA's NT
                driver waits for 258 before it touches the core. */
             ret = 258;
+            if (p2->hold_count)
+                /* Words held behind a stall fill the FIFO: the host waits. */
+                ret = (p2->hold_count >= 256) ? 0 : (256 - p2->hold_count);
             break;
         case P2_OUT_FIFO_WORDS:
-            ret = p2->out_count;
+            /* The real FIFO holds 8 words: drivers read as many as this says
+               into buffers sized for the transfer (3Dlabs' 3dextdd). */
+            ret = MIN(p2->out_count, 8);
             break;
         case P2_DMA_ADDRESS:
             ret = p2->dma_address;
@@ -1562,6 +1828,20 @@ p2_ctrl_read_int(p2_t *p2, uint32_t addr)
             break;
         case P2_FIFO_DISCON:
             ret = p2->fifo_discon;
+            break;
+        case P2_AGP_TEX_BASE:
+            ret = p2->agp_tex_base;
+            break;
+        case P2_BYDMA_ADDRESS:
+        case P2_BYDMA_STRIDE:
+        case P2_BYDMA_MEMADDR:
+        case P2_BYDMA_SIZE:
+        case P2_BYDMA_BYTEMASK:
+        case P2_BYDMA_CONTROL:
+            ret = p2->bydma[(addr - P2_BYDMA_ADDRESS) >> 3];
+            break;
+        case P2_BYDMA_COMPLETE:
+            ret = p2->tex_invalid ? 1 : 0; /* The texture invalid flag. */
             break;
         case P2_CHIP_CONFIG:
             ret = p2->chip_config;
@@ -1682,8 +1962,17 @@ p2_mmio_writel(uint32_t addr, uint32_t val, void *priv)
 /* Graphics processor                                                        */
 /* ------------------------------------------------------------------------- */
 
-#define TAG_FILTER_MODE 0x180
-#define TAG_SYNC        0x188
+#define TAG_FILTER_MODE        0x180
+#define TAG_SYNC               0x188
+#define TAG_SUSPEND_FRAMEBLANK 0x18f
+
+/* The input FIFO is not drained while an upload waits for the host or a
+   page flip waits for the frame blank. */
+static int
+p2_gp_stalled(p2_t *p2)
+{
+    return (p2->raster.active && p2->raster.out_wait) || p2->suspended || p2->tex_invalid;
+}
 
 static void
 p2_gp_reset(p2_t *p2)
@@ -1693,6 +1982,8 @@ p2_gp_reset(p2_t *p2)
     p2->hold_rd = p2->hold_wr = p2->hold_count = 0;
     p2->raster.active   = 0;
     p2->raster.out_wait = 0;
+    p2->suspended       = 0;
+    p2->tex_invalid     = 0;
 }
 
 static void
@@ -1700,9 +1991,12 @@ p2_gp_write(p2_t *p2, uint32_t tag, uint32_t val)
 {
     tag &= GP_TAGS - 1;
 
-    /* Behind a stalled upload, later writes wait in the input FIFO. */
-    if ((p2->raster.active && p2->raster.out_wait) || (p2->hold_count && !p2->in_resume)) {
-        if (p2->hold_count < P2_HOLD_QUEUE) {
+    /* Behind a stalled upload or a frame blank wait, later writes wait in the input FIFO. */
+    if (p2_gp_stalled(p2) || (p2->hold_count && !p2->in_resume)) {
+        if (p2->hold_count >= P2_HOLD_QUEUE) {
+            if (!p2->hold_overflow++)
+                pclog("P2: input FIFO hold queue overflow (tag %03X)\n", tag);
+        } else {
             p2->hold_tag[p2->hold_wr] = tag;
             p2->hold_val[p2->hold_wr] = val;
             p2->hold_wr               = (p2->hold_wr + 1) & (P2_HOLD_QUEUE - 1);
@@ -1713,6 +2007,7 @@ p2_gp_write(p2_t *p2, uint32_t tag, uint32_t val)
 
     if (p2_do_log >= 3)
         pclog("P2: GP %03X = %08X\n", tag, val);
+    p2->tag_count[tag]++;
 
     switch (tag) {
         case TAG_SYNC:
@@ -1723,6 +2018,14 @@ p2_gp_write(p2_t *p2, uint32_t tag, uint32_t val)
                 p2_out_fifo_push(p2, val);
             if (val & (1 << 31))
                 p2_raise_int(p2, INT_SYNC);
+            break;
+
+        case TAG_SUSPEND_FRAMEBLANK:
+            /* Page flip: hold everything after it until the next frame blank,
+               which shows the frame at this address (VTG ScreenBase units). */
+            p2->gp[tag]        = val;
+            p2->suspend_base   = val;
+            p2->suspended      = 1;
             break;
 
         default:
@@ -1812,12 +2115,73 @@ p2_gp_write(p2_t *p2, uint32_t tag, uint32_t val)
 #define TAG_FB_SOURCE_DELTA     0x1b1
 #define TAG_CONFIG              0x1b2
 
+/* 3D units. */
+#define TAG_TEXTURE_ADDR_MODE   0x070
+#define TAG_Q_START             0x077
+#define TAG_DQ_DX               0x078
+#define TAG_DQ_DY_DOM           0x079
+#define TAG_TEXTURE_COLOR_MODE  0x0d0
+#define TAG_FOG_MODE            0x0d2
+#define TAG_FOG_COLOR           0x0d3
+#define TAG_F_START             0x0d4
+#define TAG_DF_DX               0x0d5
+#define TAG_DF_DY_DOM           0x0d6
+#define TAG_KS_START            0x0d9
+#define TAG_DKS_DX              0x0da
+#define TAG_DKS_DY_DOM          0x0db
+#define TAG_KD_START            0x0dc
+#define TAG_DKD_DX              0x0dd
+#define TAG_DKD_DY_DOM          0x0de
+#define TAG_ALPHA_BLEND_MODE    0x102
+#define TAG_LB_READ_MODE        0x110
+#define TAG_LB_READ_FORMAT      0x111
+#define TAG_LB_SOURCE_OFFSET    0x112
+#define TAG_LB_WINDOW_BASE      0x117
+#define TAG_LB_WRITE_MODE       0x118
+#define TAG_LB_WRITE_FORMAT     0x119
+#define TAG_WINDOW              0x130
+#define TAG_STENCIL_MODE        0x131
+#define TAG_STENCIL_DATA        0x132
+#define TAG_STENCIL             0x133
+#define TAG_DEPTH_MODE          0x134
+#define TAG_DEPTH               0x135
+#define TAG_Z_START_U           0x136
+#define TAG_Z_START_L           0x137
+#define TAG_DZ_DX_U             0x138
+#define TAG_DZ_DX_L             0x139
+#define TAG_DZ_DY_DOM_U         0x13a
+#define TAG_DZ_DY_DOM_L         0x13b
+#define TAG_YUV_MODE            0x1e0
+#define TAG_CHROMA_UPPER        0x1e1
+#define TAG_CHROMA_LOWER        0x1e2
+#define TAG_ALPHA_MAP_UPPER     0x1e3
+#define TAG_ALPHA_MAP_LOWER     0x1e4
+#define TAG_TEXEL_LUT_ADDRESS   0x09a
+#define TAG_TEXEL_LUT_TRANSFER  0x09b
+#define TAG_LB_DATA             0x113
+#define TAG_LB_STENCIL          0x115
+#define TAG_LB_DEPTH            0x116
+#define TAG_TEXTURE_ID          0x1ee
+#define TAG_TEXEL_LUT_ID        0x1ef
+/* Delta unit: three vertices of 16 parameters, fixed point then float. */
+#define TAG_V0_FIXED            0x200
+#define TAG_V0_FLOAT            0x230
+#define TAG_DELTA_MODE          0x260
+#define TAG_DRAW_TRIANGLE       0x261
+#define TAG_REPEAT_TRIANGLE     0x262
+#define TAG_DRAW_LINE01         0x263
+#define TAG_DRAW_LINE10         0x264
+#define TAG_REPEAT_LINE         0x265
+
 #define RENDER_AREA_STIPPLE  (1 << 0)
 #define RENDER_FAST_FILL     (1 << 3)
 #define RENDER_PRIM_MASK     0xc0
 #define RENDER_SYNC_BITMASK  (1 << 11)
 #define RENDER_SYNC_HOSTDATA (1 << 12)
 #define RENDER_TEXTURE       (1 << 13)
+#define RENDER_FOG           (1 << 14)
+#define RENDER_SUBPIXEL      (1 << 16)
+#define RENDER_REUSE_BITMASK (1 << 17)
 #define RENDER_X_POSITIVE    (1 << 21)
 #define RENDER_Y_POSITIVE    (1 << 22)
 
@@ -1945,51 +2309,87 @@ p2_logic_op(int op, uint32_t s, uint32_t d)
     }
 }
 
-/* An internal AABBGGRR colour in the framebuffer's format (the dither unit). */
+/* Colour formats of the texture, alpha blend and dither units: R, G, B and A
+   widths and the lowest bit (the "Back" formats sit in the upper half). In
+   BGR order red is packed lowest, in RGB order blue. */
+typedef struct p2_color_fmt_t {
+    uint8_t r, g, b, a, base;
+} p2_color_fmt_t;
+
+static const p2_color_fmt_t p2_color_fmts[32] = {
+    [0] = { 8, 8, 8, 8, 0 },  [1] = { 5, 5, 5, 1, 0 },  [2] = { 4, 4, 4, 4, 0 },
+    [5] = { 3, 3, 2, 0, 0 },  [6] = { 3, 3, 2, 0, 8 },  [9] = { 2, 3, 2, 1, 0 },
+    [10] = { 2, 3, 2, 1, 8 }, [11] = { 2, 3, 2, 0, 0 }, [12] = { 2, 3, 2, 0, 8 },
+    [13] = { 5, 5, 5, 1, 16 }, [16] = { 5, 6, 5, 0, 0 }, [17] = { 5, 6, 5, 0, 16 },
+};
+
+static uint32_t p2_pack_abgr(const uint32_t c[4]);
+static void     p2_unpack_abgr(uint32_t v, uint32_t c[4]);
+
+/* An internal AABBGGRR colour in the framebuffer's format (the dither unit,
+   DitherMode: every format of its table, Front/Back and CI values replicated
+   across the pixel, Offset formats +64, ordered dither, ForceAlpha). */
 static uint32_t
 p2_format_color(p2_t *p2, uint32_t v, int x, int y)
 {
-    const uint32_t dm  = p2->gp[TAG_DITHER_MODE];
-    const uint32_t fmt = ((dm >> 2) & 15) | ((dm >> 12) & 16);
-    const int      rgb = !!(dm & 0x400);
-    uint32_t       r   = v & 0xff;
-    uint32_t       g   = (v >> 8) & 0xff;
-    uint32_t       b   = (v >> 16) & 0xff;
-    uint32_t       lo  = rgb ? b : r;
-    uint32_t       hi  = rgb ? r : b;
-    uint32_t       a   = v >> 24;
+    const uint32_t        dm  = p2->gp[TAG_DITHER_MODE];
+    const uint32_t        fmt = ((dm >> 2) & 15) | ((dm >> 12) & 16);
+    const int             rgb = !!(dm & 0x400);
+    const p2_color_fmt_t *f   = &p2_color_fmts[fmt];
+    uint32_t              c[4];
+    uint32_t              packed;
+    int                   pos;
 
     if (!(dm & 1))
         return v;
-    if (fmt == 14)
-        return v & 0xff; /* Colour index. */
+    if (fmt == 14) {
+        /* Colour index, in every byte. */
+        v &= 0xff;
+        return v * 0x01010101;
+    }
+    p2_unpack_abgr(v, c);
+    if ((dm >> 12) & 3)
+        c[3] = (((dm >> 12) & 3) == 1) ? 0 : 0xf8;
+
+    if (!f->r) {
+        /* 8888. */
+        return rgb ? (c[2] | (c[1] << 8) | (c[0] << 16) | (c[3] << 24)) : p2_pack_abgr(c);
+    }
 
     if (dm & 2) {
-        /* 2x2 ordered dither before truncation. */
+        /* 2x2 ordered dither before truncation, a quarter step of each width. */
         static const uint8_t dither[2][2] = { { 0, 2 }, { 3, 1 } };
-        const uint32_t       f            = dither[(y + (dm >> 8)) & 1][(x + (dm >> 6)) & 1];
+        const uint32_t       d            = dither[(y + (dm >> 8)) & 1][(x + (dm >> 6)) & 1];
+        const int            w[3]         = { f->r, f->g, f->b };
 
-        lo = MIN(255, lo + f * 2);
-        g  = MIN(255, g + f);
-        hi = MIN(255, hi + f * 2);
+        for (int i = 0; i < 3; i++)
+            c[i] = MIN(255, c[i] + ((d << (8 - w[i])) >> 2));
     }
-    if (dm & 0x1000)
-        a = 0;
-    if (dm & 0x2000)
-        a = 0xf8;
 
-    switch (fmt) {
-        case 0:
-            return lo | (g << 8) | (hi << 16) | (a << 24);
-        case 1:
-            return (lo >> 3) | ((g >> 3) << 5) | ((hi >> 3) << 10) | ((a >> 7) << 15);
-        case 2:
-            return (lo >> 4) | ((g >> 4) << 4) | ((hi >> 4) << 8) | ((a >> 4) << 12);
-        case 16:
-            return (lo >> 3) | ((g >> 2) << 5) | ((hi >> 3) << 11);
-        default:
-            return 0;
+    /* Lowest field first: red in BGR order, blue in RGB order. */
+    {
+        const uint32_t vals[3]  = { rgb ? c[2] : c[0], c[1], rgb ? c[0] : c[2] };
+        const int      width[3] = { rgb ? f->b : f->r, f->g, rgb ? f->r : f->b };
+
+        packed = 0;
+        pos    = 0;
+        for (int i = 0; i < 3; i++) {
+            packed |= (vals[i] >> (8 - width[i])) << pos;
+            pos += width[i];
+        }
+        if (f->a)
+            packed |= (c[3] >> (8 - f->a)) << pos;
+        pos += f->a;
     }
+    if ((fmt == 11) || (fmt == 12))
+        packed += 64; /* Offset formats. */
+
+    /* Front and Back formats carry the value in both halves. */
+    if (pos <= 8)
+        return (packed | (packed << 8)) * 0x00010001;
+    if (pos <= 16)
+        return packed | (packed << 16);
+    return packed;
 }
 
 static int
@@ -2030,8 +2430,19 @@ p2_block_color(p2_t *p2, int x, int y)
     const int64_t  sign  = (p2->gp[TAG_FB_WRITE_CONFIG] & FBRM_ORIGIN_BOT) ? -1 : 1;
     const int64_t  pixel = (int64_t) p2->gp[TAG_FB_WINDOW_BASE] + p2->gp[TAG_FB_PIXEL_OFFSET] + x +
                           (int64_t) y * p2_pitch(p2->gp[TAG_FB_WRITE_CONFIG]) * sign;
-    const uint64_t pat   = p2->gp[TAG_FB_BLOCK_COLOR_L] | ((uint64_t) p2->gp[TAG_FB_BLOCK_COLOR_U] << 32);
+    const uint32_t lutm  = p2->gp[TAG_TEXEL_LUT_MODE];
+    uint64_t       pat   = p2->gp[TAG_FB_BLOCK_COLOR_L] | ((uint64_t) p2->gp[TAG_FB_BLOCK_COLOR_U] << 32);
 
+    if ((lutm & 3) == 3) {
+        /* LUT DirectIndex block fills: Y's low 3 bits pick two consecutive
+           entries for the lower and upper halves of the block colour. */
+        const uint32_t i = ((y & 7) * 2 + ((lutm >> 2) & 0xff)) & 0xff;
+
+        const uint32_t j = (i + 1) & 0xff;
+
+        pat = ((i < 16) ? p2->gp[TAG_TEXEL_LUT0 + i] : p2->texel_lut[i]) |
+              ((uint64_t) ((j < 16) ? p2->gp[TAG_TEXEL_LUT0 + j] : p2->texel_lut[j]) << 32);
+    }
     if (bpp == 3)
         return p2->gp[TAG_FB_BLOCK_COLOR];
     return (uint32_t) (pat >> ((((uint64_t) pixel * bpp) & 7) * 8));
@@ -2135,6 +2546,23 @@ p2_set_span(p2_t *p2)
         r->columns *= 4 / r->bpp;
 }
 
+/* The DDAs' step along the dominant edge to the next scanline. */
+static void
+p2_step_interpolants(p2_raster_t *r)
+{
+    if (r->shade) {
+        for (int i = 0; i < 3; i++)
+            r->color[i] += r->dcolor_dy[i];
+    }
+    if (r->use3d) {
+        r->z += r->dz_dy;
+        for (int i = 0; i < 3; i++) {
+            r->tex[i] += r->dtex_dy[i];
+            r->k[i] += r->dk_dy[i];
+        }
+    }
+}
+
 static void
 p2_next_fragment(p2_t *p2)
 {
@@ -2149,10 +2577,7 @@ p2_next_fragment(p2_t *p2)
         r->active = 0;
         return;
     }
-    if (r->shade) {
-        for (int i = 0; i < 3; i++)
-            r->color[i] += r->dcolor_dy[i];
-    }
+    p2_step_interpolants(r);
     if (r->prim != PRIM_RECT) {
         r->xdom += r->dxdom;
         r->xsub += r->dxsub;
@@ -2205,6 +2630,127 @@ p2_tex_wrap(int64_t v, int bits, int mode)
     }
 }
 
+/* ------------------------------------------------------------------------- */
+/* YUV unit: video playback                                                  */
+/*                                                                           */
+/* The chip has no overlay scaler: its video streams unit (control space     */
+/* 5000h-5FFFh) is the VMI capture port and the TV encoder port, and neither */
+/* reaches the monitor. Drivers show video by texture-mapping YUV surfaces   */
+/* onto the screen (DirectDraw FourCC stretch blits: YUY2, Y411), with the   */
+/* YUV unit converting to RGB and its chroma test giving the colour key.     */
+/* ------------------------------------------------------------------------- */
+
+#define TEXFMT_YUV444 18
+#define TEXFMT_YUV422 19
+
+/* A YUV texel as an internal colour: Y in the red byte, U in green, V in
+   blue (the BGR column of the TextureDataFormat table). YUV 4:2:2 texels are
+   16 bits, luma and one chroma sample each, U in the even texel of a pair
+   and V in the odd one; ColorOrder swaps the bytes (YUY2 / UYVY). */
+static uint32_t
+p2_texel_yuv(p2_t *p2, int fmt, int64_t tex, uint32_t v, int rgb_order)
+{
+    uint32_t y;
+    uint32_t u;
+    uint32_t w;
+
+    if (fmt == TEXFMT_YUV444) {
+        if (rgb_order)
+            v = (v & 0xff00ff00) | ((v >> 16) & 0xff) | ((v & 0xff) << 16);
+        return v;
+    }
+
+    w = p2_fb_read(p2, (tex ^ 1) * 2, 2);
+    if (rgb_order) {
+        y = (v >> 8) & 0xff;
+        u = v & 0xff;
+        w &= 0xff;
+    } else {
+        y = v & 0xff;
+        u = (v >> 8) & 0xff;
+        w = (w >> 8) & 0xff;
+    }
+    if (tex & 1) {
+        const uint32_t tmp = u; /* This texel carries V, its partner U. */
+
+        u = w;
+        w = tmp;
+    }
+    return y | (u << 8) | (w << 16) | 0xff000000;
+}
+
+static uint8_t
+p2_clamp8(int v)
+{
+    return (v < 0) ? 0 : ((v > 255) ? 255 : v);
+}
+
+/* ITU-R BT.601 (CCIR 601) YCbCr to RGB, Y 16-235, in 16.16 fixed point. */
+static uint32_t
+p2_yuv_to_rgb(uint32_t c)
+{
+    const int y = ((int) (c & 0xff) - 16) * 76284;
+    const int u = (int) ((c >> 8) & 0xff) - 128;
+    const int v = (int) ((c >> 16) & 0xff) - 128;
+    const int r = (y + 104595 * v + 32768) >> 16;
+    const int g = (y - 25690 * u - 53281 * v + 32768) >> 16;
+    const int b = (y + 132186 * u + 32768) >> 16;
+
+    return p2_clamp8(r) | (p2_clamp8(g) << 8) | (p2_clamp8(b) << 16) | (c & 0xff000000);
+}
+
+/* Each byte of a colour within ChromaLowerBound..ChromaUpperBound. */
+static int
+p2_chroma_in_bounds(p2_t *p2, uint32_t c)
+{
+    const uint32_t lo = p2->gp[TAG_CHROMA_LOWER];
+    const uint32_t hi = p2->gp[TAG_CHROMA_UPPER];
+
+    for (int i = 0; i < 32; i += 8) {
+        const uint32_t b = (c >> i) & 0xff;
+
+        if ((b < ((lo >> i) & 0xff)) || (b > ((hi >> i) & 0xff)))
+            return 0;
+    }
+    return 1;
+}
+
+/* YUVMode: bit 0 converts the texel to RGB; bits 2:1 test it against the
+   chroma bounds (1 passes texels inside, 2 rejects them -- the source colour
+   key); bit 3 tests the converted colour rather than the texel; bit 5 keeps
+   the texel out of the fragment's colour, which then comes from the colour
+   DDA or the framebuffer source as without texturing (the 3Dlabs driver's
+   overlay emulation: it marks the destination colour key's pixels with the
+   5551 alpha bit, then copies the converted overlay onto the marked ones).
+   Returns 0 when the fragment is rejected. */
+static int
+p2_yuv_unit(p2_t *p2, uint32_t *color)
+{
+    const uint32_t mode = p2->gp[TAG_YUV_MODE];
+    const uint32_t in   = *color;
+    int            pass = 1;
+
+    if (mode & 1)
+        *color = p2_yuv_to_rgb(in);
+    switch ((mode >> 1) & 3) {
+        case 1:
+            pass = p2_chroma_in_bounds(p2, (mode & 8) ? *color : in);
+            break;
+        case 2:
+            pass = !p2_chroma_in_bounds(p2, (mode & 8) ? *color : in);
+            break;
+        default:
+            break;
+    }
+    return pass;
+}
+
+static int
+p2_texel_test_only(p2_t *p2)
+{
+    return !!(p2->gp[TAG_YUV_MODE] & 0x20);
+}
+
 /* A texel for texture copies: nearest sampling of S/T (integer at bit 20),
    stepped per pixel (d?dx) and per scanline (d?dyDom). Returns an internal
    AABBGGRR colour (*raw clear) or, for indexes without the LUT, the index
@@ -2232,6 +2778,23 @@ p2_texture_color(p2_t *p2, int *raw)
     uint32_t       aa = 0xff;
 
     *raw = 0;
+    if ((lutm & 3) == 3) {
+        /* LUT DirectIndex (PRM 5.8.6): an 8x8 pattern by the fragment's
+           position, no texture read. The 2D drivers load a colour brush as
+           framebuffer pixels, PixelsPerEntry of them in an entry (16 bpp:
+           two), and fill packed rectangles with it; each pixel takes its
+           part of the entry. */
+        const int ppe = (lutm >> 10) & 3;
+        const int sub = r->frag_x & ((1 << ppe) - 1);
+
+        v = (uint32_t) (((r->frag_y & 7) * (8 >> ppe)) + ((r->frag_x & 7) >> ppe));
+        v = (v + ((lutm >> 2) & 0xff)) & 0xff;
+        v = (v < 16) ? p2->gp[TAG_TEXEL_LUT0 + v] : p2->texel_lut[v];
+        if (ppe)
+            v >>= sub * (32 >> ppe);
+        *raw = 1;
+        return v;
+    }
     switch ((tmf >> 19) & 7) {
         case 1:
             v = p2_fb_read(p2, tex * 2, 2);
@@ -2250,6 +2813,8 @@ p2_texture_color(p2_t *p2, int *raw)
             break;
     }
 
+    if ((fmt == TEXFMT_YUV444) || (fmt == TEXFMT_YUV422))
+        return p2_texel_yuv(p2, fmt, tex, v, !!(tdf & 0x20));
     if ((fmt == 14) || (fmt == 15)) {
         if (!(lutm & 1)) {
             *raw = 1;
@@ -2296,6 +2861,717 @@ p2_texture_color(p2_t *p2, int *raw)
     return rr | (gg << 8) | (bb << 16) | (aa << 24);
 }
 
+/* ------------------------------------------------------------------------- */
+/* 3D units: texture address/read, texture application, fog, stencil/depth  */
+/* (localbuffer) and alpha blending (Permedia 2 Programmer's Reference      */
+/* Manual, chapter 5, and its register reference).                         */
+/* ------------------------------------------------------------------------- */
+
+static uint32_t
+p2_expand(uint32_t v, int bits, int shift)
+{
+    if (!bits)
+        return 0;
+    v &= (1u << bits) - 1;
+    if (shift)
+        return v << (8 - bits);
+    return (v * 255 + ((1u << bits) - 1) / 2) / ((1u << bits) - 1);
+}
+
+/* A packed pixel to R, G, B, A (0-255). Formats without alpha read 0xFF. */
+static void
+p2_unpack(uint32_t v, int fmt, int rgb, int shift_color, int shift_alpha, uint32_t c[4])
+{
+    const p2_color_fmt_t *f = &p2_color_fmts[fmt & 31];
+    int                   pos;
+
+    if (!f->r) {
+        /* 8888 (and anything unknown). */
+        c[rgb ? 2 : 0] = v & 0xff;
+        c[1]           = (v >> 8) & 0xff;
+        c[rgb ? 0 : 2] = (v >> 16) & 0xff;
+        c[3]           = v >> 24;
+        return;
+    }
+    v >>= f->base;
+    pos = 0;
+    if (rgb) {
+        c[2] = p2_expand(v, f->b, shift_color);
+        pos += f->b;
+        c[1] = p2_expand(v >> pos, f->g, shift_color);
+        pos += f->g;
+        c[0] = p2_expand(v >> pos, f->r, shift_color);
+        pos += f->r;
+    } else {
+        c[0] = p2_expand(v, f->r, shift_color);
+        pos += f->r;
+        c[1] = p2_expand(v >> pos, f->g, shift_color);
+        pos += f->g;
+        c[2] = p2_expand(v >> pos, f->b, shift_color);
+        pos += f->b;
+    }
+    c[3] = f->a ? p2_expand(v >> pos, f->a, shift_alpha) : 0xff;
+}
+
+static uint32_t
+p2_pack_abgr(const uint32_t c[4])
+{
+    return c[0] | (c[1] << 8) | (c[2] << 16) | (c[3] << 24);
+}
+
+static void
+p2_unpack_abgr(uint32_t v, uint32_t c[4])
+{
+    for (int i = 0; i < 4; i++)
+        c[i] = (v >> (i * 8)) & 0xff;
+}
+
+static uint32_t
+p2_clamp255(int64_t v)
+{
+    return (uint32_t) MAX(0, MIN(255, v));
+}
+
+/* Texture memory: in the framebuffer, or (TextureBaseAddress bit 30) in
+   host memory, read across the bus. */
+static uint32_t
+p2_tex_read(p2_t *p2, int64_t addr, int bytes)
+{
+    uint32_t v = 0;
+
+    if (p2->gp[TAG_TEXTURE_BASE] & (1 << 30)) {
+        for (int i = 0; i < bytes; i++)
+            v |= (uint32_t) mem_readb_phys((uint32_t) (p2->agp_tex_base + addr + i)) << (i * 8);
+        return v;
+    }
+    return p2_fb_read(p2, addr, bytes);
+}
+
+/* The YUV unit's conversion on unpacked R/G/B/A (Y, U, V in R, G, B). */
+static void
+p2_yuv_to_rgb_c(uint32_t c[4])
+{
+    p2_unpack_abgr(p2_yuv_to_rgb(p2_pack_abgr(c)), c);
+}
+
+static int
+p2_in_bounds(const uint32_t c[4], uint32_t lower, uint32_t upper)
+{
+    for (int i = 0; i < 4; i++) {
+        const uint32_t lo = (lower >> (i * 8)) & 0xff;
+        const uint32_t hi = (upper >> (i * 8)) & 0xff;
+
+        if ((c[i] < lo) || (c[i] > hi))
+            return 0;
+    }
+    return 1;
+}
+
+/* One texel at integer S, T after the wrap modes; 0 if the alpha map
+   rejected it. */
+static int
+p2_texel(p2_t *p2, int64_t s, int64_t t, uint32_t c[4])
+{
+    const uint32_t trm  = p2->gp[TAG_TEXTURE_READ_MODE];
+    const uint32_t tmf  = p2->gp[TAG_TEXTURE_MAP_FORMAT];
+    const uint32_t tdf  = p2->gp[TAG_TEXTURE_DATA_FORMAT];
+    const uint32_t lutm = p2->gp[TAG_TEXEL_LUT_MODE];
+    const int      fmt  = (tdf & 15) | ((tdf >> 2) & 16);
+    const int      rgb  = !!(tdf & 0x20);
+    int64_t        tex;
+    uint32_t       v;
+
+    s   = p2_tex_wrap(s, (trm >> 9) & 15, (trm >> 1) & 3);
+    t   = p2_tex_wrap(t, (trm >> 13) & 15, (trm >> 3) & 3);
+    tex = (int64_t) (p2->gp[TAG_TEXTURE_BASE] & 0xffffff) + t * p2_pitch(tmf) * ((tmf & (1 << 16)) ? -1 : 1) + s;
+
+    switch ((tmf >> 19) & 7) {
+        case 1:
+            v = p2_tex_read(p2, tex * 2, 2);
+            break;
+        case 2:
+            v = p2_tex_read(p2, tex * 4, 4);
+            break;
+        case 3:
+            v = (p2_tex_read(p2, tex >> 1, 1) >> ((tex & 1) << 2)) & 15;
+            break;
+        case 4:
+            v = p2_tex_read(p2, tex * 3, 3);
+            break;
+        default:
+            v = p2_tex_read(p2, tex, 1);
+            break;
+    }
+
+    if ((fmt == 14) || (fmt == 15)) {
+        /* Colour index through the texel LUT (entries are BGR 888, no alpha:
+           the texel is opaque). */
+        if (lutm & 1) {
+            if (lutm & 2) {
+                /* DirectIndex: an 8x8 pattern by the fragment's position,
+                   PixelsPerEntry pixels to an entry (PRM 5.8.6). */
+                const int ppe = (lutm >> 10) & 3;
+
+                v = (uint32_t) (((p2->raster.frag_y & 7) * (8 >> ppe)) + ((p2->raster.frag_x & 7) >> ppe));
+            }
+            else if (fmt == 15) /* CI4 counts from TexelLUTIndex (see p2_texture_color). */
+                v += p2->gp[TAG_TEXEL_LUT_INDEX];
+            v = (v + ((lutm >> 2) & 0xff)) & 0xff;
+            v = (v < 16) ? p2->gp[TAG_TEXEL_LUT0 + v] : p2->texel_lut[v];
+        } else
+            v = v | (v << 8) | (v << 16);
+        p2_unpack(v | 0xff000000, 0, 0, 0, 0, c);
+    } else if ((fmt == 18) || (fmt == 19)) {
+        /* YUV, left unconverted here (Y, U, V in R, G, B): the YUV unit
+           converts after filtering. */
+        if (fmt == 19) {
+            /* 4:2:2: 16-bit texels of luma and one chroma sample, U in the
+               even texel of a pair and V in the odd; ColorOrder swaps bytes. */
+            const uint32_t w   = p2_tex_read(p2, (tex ^ 1) * 2, 2);
+            const uint32_t own = rgb ? (v & 0xff) : ((v >> 8) & 0xff);
+            const uint32_t oth = rgb ? (w & 0xff) : ((w >> 8) & 0xff);
+
+            c[0] = rgb ? ((v >> 8) & 0xff) : (v & 0xff);
+            c[1] = (tex & 1) ? oth : own;
+            c[2] = (tex & 1) ? own : oth;
+            c[3] = 0xff;
+        } else
+            p2_unpack(v, 0, rgb, 0, 0, c);
+    } else
+        p2_unpack(v, fmt, rgb, 0, 0, c);
+
+    if (tdf & 0x10)
+        c[3] = 0xff; /* No alpha buffer. */
+
+    if (tdf & 0x180) {
+        /* Alpha map (PRM 5.8.8), a colour key before filtering: Include
+           passes texels inside the bounds, Exclude fails them. A failed
+           texel's alpha becomes 0 and its colour takes no part in the
+           filter; a passed one keeps its alpha. */
+        const int in = p2_in_bounds(c, p2->gp[TAG_ALPHA_MAP_LOWER], p2->gp[TAG_ALPHA_MAP_UPPER]);
+
+        if (((tdf >> 7) & 3) == 1 ? !in : in) {
+            c[3] = 0;
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* The texture colour for the current fragment; 0 if the chroma test drops
+   the fragment, 2 if it leaves the fragment untextured. */
+static int
+p2_texture_3d(p2_t *p2, int64_t ss, int64_t tt, int64_t qq, uint32_t c[4])
+{
+    const uint32_t trm = p2->gp[TAG_TEXTURE_READ_MODE];
+    const uint32_t yuv = p2->gp[TAG_YUV_MODE];
+    double         s;
+    double         t;
+
+    if (p2->gp[TAG_TEXTURE_ADDR_MODE] & 2) {
+        /* Perspective correction: S/Q, T/Q. */
+        if (!qq)
+            qq = 1;
+        s = (double) ss * 1024.0 / (double) qq;
+        t = (double) tt * 1024.0 / (double) qq;
+    } else {
+        s = (double) ss / 1048576.0;
+        t = (double) tt / 1048576.0;
+    }
+    s = MAX(-1048576.0, MIN(1048576.0, s));
+    t = MAX(-1048576.0, MIN(1048576.0, t));
+
+    if (trm & (1 << 17)) {
+        /* Bilinear: the four texels around the sample, by 8-bit weights. */
+        const double  fs = s - 0.5;
+        const double  ft = t - 0.5;
+        const int64_t s0 = (int64_t) floor(fs);
+        const int64_t t0 = (int64_t) floor(ft);
+        const int     ws = (int) ((fs - (double) s0) * 256.0);
+        const int     wt = (int) ((ft - (double) t0) * 256.0);
+        uint32_t      c00[4];
+        uint32_t      c10[4];
+        uint32_t      c01[4];
+        uint32_t      c11[4];
+
+        const int     k00 = p2_texel(p2, s0, t0, c00);
+        const int     k10 = p2_texel(p2, s0 + 1, t0, c10);
+        const int     k01 = p2_texel(p2, s0, t0 + 1, c01);
+        const int     k11 = p2_texel(p2, s0 + 1, t0 + 1, c11);
+        const int     w00 = (256 - ws) * (256 - wt);
+        const int     w10 = ws * (256 - wt);
+        const int     w01 = (256 - ws) * wt;
+        const int     w11 = ws * wt;
+        /* Colour over the texels the alpha map passed, alpha over all four. */
+        const int     wc  = k00 * w00 + k10 * w10 + k01 * w01 + k11 * w11;
+
+        for (int i = 0; i < 3; i++)
+            c[i] = wc ? (uint32_t) (((int64_t) c00[i] * k00 * w00 + (int64_t) c10[i] * k10 * w10 +
+                                     (int64_t) c01[i] * k01 * w01 + (int64_t) c11[i] * k11 * w11) / wc)
+                      : 0;
+        c[3] = (uint32_t) ((c00[3] * w00 + c10[3] * w10 + c01[3] * w01 + c11[3] * w11) >> 16);
+    } else
+        p2_texel(p2, (int64_t) floor(s), (int64_t) floor(t), c);
+
+    {
+        /* YUV unit: BT.601 conversion, then the chroma test on the texel
+           (TestData: on the converted colour). */
+        const int fmt = (p2->gp[TAG_TEXTURE_DATA_FORMAT] & 15) | ((p2->gp[TAG_TEXTURE_DATA_FORMAT] >> 2) & 16);
+        uint32_t  pre[4];
+
+        memcpy(pre, c, sizeof(pre));
+        if ((yuv & 1) && ((fmt == 18) || (fmt == 19)))
+            p2_yuv_to_rgb_c(c);
+        if (yuv & 6) {
+            const uint32_t *k    = (yuv & 8) ? c : pre;
+            const int       in   = p2_in_bounds(k, p2->gp[TAG_CHROMA_LOWER], p2->gp[TAG_CHROMA_UPPER]);
+            const int       pass = (((yuv >> 1) & 3) == 1) ? in : !in;
+
+            if (!pass)
+                return (yuv & 0x10) ? 2 : 0;
+        }
+        if (yuv & 0x20)
+            return 2; /* TexelDisableUpdate: the texel is only tested. */
+    }
+    return 1;
+}
+
+/* Texture application (TextureColorMode); k[] = Ks, Kd in 0..2 (x256). */
+static void
+p2_apply_texture(p2_t *p2, uint32_t f[4], const uint32_t t[4], int ks, int kd)
+{
+    const uint32_t tcm = p2->gp[TAG_TEXTURE_COLOR_MODE];
+    const int      mode = (tcm >> 1) & 7;
+
+    if (tcm & 0x10) {
+        /* Ramp (QuickDraw 3D): decal, then modulate by Kd, then highlight Ks. */
+        if (mode & 1) {
+            for (int i = 0; i < 3; i++)
+                f[i] = (t[i] * t[3] + f[i] * (255 - t[3])) / 255;
+        } else {
+            for (int i = 0; i < 3; i++)
+                f[i] = t[i];
+            f[3] = t[3] * f[3] / 255;
+        }
+        if (mode & 2) {
+            for (int i = 0; i < 4; i++)
+                f[i] = p2_clamp255(((int64_t) f[i] * kd) >> 8);
+        }
+        if (mode & 4) {
+            for (int i = 0; i < 4; i++)
+                f[i] = p2_clamp255(f[i] + ((ks * 255) >> 8));
+        }
+        return;
+    }
+
+    switch (mode & 3) {
+        case 0: /* Modulate. */
+            for (int i = 0; i < 4; i++)
+                f[i] = (t[i] * f[i] + 127) / 255;
+            break;
+        case 1: /* Decal. */
+            for (int i = 0; i < 3; i++)
+                f[i] = (t[i] * t[3] + f[i] * (255 - t[3]) + 127) / 255;
+            break;
+        default: /* Copy. */
+            for (int i = 0; i < 4; i++)
+                f[i] = t[i];
+            break;
+    }
+    if (mode & 4) {
+        /* Highlight: add the specular term. */
+        for (int i = 0; i < 3; i++)
+            f[i] = p2_clamp255(f[i] + ((ks * 255) >> 8));
+    }
+}
+
+static int
+p2_compare(int func, uint32_t frag, uint32_t src)
+{
+    switch (func & 7) {
+        case 0:
+            return 0;
+        case 1:
+            return frag < src;
+        case 2:
+            return frag == src;
+        case 3:
+            return frag <= src;
+        case 4:
+            return frag > src;
+        case 5:
+            return frag != src;
+        case 6:
+            return frag >= src;
+        default:
+            return 1;
+    }
+}
+
+static uint32_t
+p2_stencil_op(int op, uint32_t s, uint32_t ref, uint32_t max)
+{
+    switch (op & 7) {
+        case 1:
+            return 0;
+        case 2:
+            return ref;
+        case 3:
+            return (s < max) ? s + 1 : max;
+        case 4:
+            return s ? s - 1 : 0;
+        case 5:
+            return ~s & max;
+        default:
+            return s;
+    }
+}
+
+/* Stencil and depth tests against the localbuffer (16-bit pixels: 16 or 15
+   bits of depth, the top bit stencil with 15) and its update. Returns 0 if
+   the fragment is dropped. */
+static int
+p2_lb_fragment(p2_t *p2, int x, int y, int64_t z)
+{
+    const uint32_t dm    = p2->gp[TAG_DEPTH_MODE];
+    const uint32_t sm    = p2->gp[TAG_STENCIL_MODE];
+    const uint32_t win   = p2->gp[TAG_WINDOW];
+    const uint32_t lrm   = p2->gp[TAG_LB_READ_MODE];
+    const uint32_t rfmt  = p2->gp[TAG_LB_READ_FORMAT];
+    const uint32_t wfmt  = p2->gp[TAG_LB_WRITE_FORMAT];
+    const uint32_t sd    = p2->gp[TAG_STENCIL_DATA];
+    const int      depth = dm & 1;
+    const int      sten  = sm & 1;
+    const int      force = !!(win & 8);
+    const uint32_t rdmax = ((rfmt & 3) == 3) ? 0x7fff : 0xffff;
+    const uint32_t wdmax = ((wfmt & 3) == 3) ? 0x7fff : 0xffff;
+    const int      wsten = (((wfmt >> 2) & 3) == 3) && (wdmax == 0x7fff);
+    const int64_t  addr  = ((int64_t) (p2->gp[TAG_LB_WINDOW_BASE] & 0xffffff) +
+                          (int64_t) y * p2_pitch(lrm) * ((lrm & (1 << 18)) ? -1 : 1) + x) * 2;
+    uint32_t       old;
+    uint32_t       src_z;
+    uint32_t       src_s;
+    uint32_t       frag_z;
+    uint32_t       new_z;
+    uint32_t       new_s;
+    int            spass = 1;
+    int            zpass = 1;
+
+    if (!depth && !sten && !force)
+        return 1;
+
+    old   = p2_fb_read(p2, addr, 2);
+    src_z = old & rdmax;
+    src_s = (((rfmt >> 2) & 3) == 3) && (rdmax == 0x7fff) ? (old >> 15) & 1 : 0;
+
+    switch ((dm >> 2) & 3) {
+        case 1: /* LBData (copies). */
+        case 3: /* LBSourceData. */
+            frag_z = p2_fb_read(p2, addr + (int64_t) p2_sext(p2->gp[TAG_LB_SOURCE_OFFSET], 24) * 2, 2) & rdmax;
+            break;
+        case 2: /* The Depth register. */
+            frag_z = p2->gp[TAG_DEPTH] & wdmax;
+            break;
+        default:
+            z      = z >> 11;
+            frag_z = (uint32_t) MAX(0, MIN((int64_t) wdmax, z));
+            break;
+    }
+
+    if (sten) {
+        const uint32_t mask = (sd >> 8) & 0xff;
+
+        spass = p2_compare(sm >> 10, sd & mask, src_s & mask);
+    }
+    if (depth && spass)
+        zpass = p2_compare(dm >> 4, frag_z, src_z);
+
+    new_z = src_z;
+    new_s = src_s;
+    if (sten) {
+        const int op = !spass ? (sm >> 7) : (!zpass ? (sm >> 4) : (sm >> 1));
+        uint32_t  ws;
+
+        /* The stencil source: the update method's result, the Stencil
+           register, or the source pixel's stencil (LBData / LBSourceData). */
+        switch ((sm >> 13) & 3) {
+            case 1:
+                ws = p2->gp[TAG_STENCIL] & 1;
+                break;
+            case 2:
+            case 3:
+                ws = (p2_fb_read(p2, addr + (int64_t) p2_sext(p2->gp[TAG_LB_SOURCE_OFFSET], 24) * 2, 2) >> 15) & 1;
+                break;
+            default:
+                ws = p2_stencil_op(op, src_s, sd & 1, 1);
+                break;
+        }
+
+        new_s = (ws & (sd >> 16) & 1) | (src_s & ~(sd >> 16) & 1);
+    }
+    if (depth && spass && zpass && (dm & 2))
+        new_z = frag_z;
+    if (force) {
+        /* Forced update: from the Depth/Stencil registers (clears), or the
+           source pixel's raw word (localbuffer copies, LBSourceOffset). */
+        if (win & 0x10) {
+            new_z = p2->gp[TAG_DEPTH] & wdmax;
+            new_s = p2->gp[TAG_STENCIL] & 1;
+        } else {
+            const uint32_t src = p2_fb_read(p2, addr + (int64_t) p2_sext(p2->gp[TAG_LB_SOURCE_OFFSET], 24) * 2, 2);
+
+            if (p2->gp[TAG_LB_WRITE_MODE] & 1)
+                p2_fb_write(p2, addr, 2, src, 0xffffffff);
+            return 1;
+        }
+    }
+
+    if ((p2->gp[TAG_LB_WRITE_MODE] & 1) && !(win & (1 << 18)) &&
+        (force || (new_z != src_z) || (new_s != src_s))) {
+        const uint32_t v = (new_z & wdmax) | (wsten ? (new_s << 15) : (old & ~wdmax & 0xffff));
+
+        p2_fb_write(p2, addr, 2, v, 0xffffffff);
+    }
+
+    return force || (spass && zpass);
+}
+
+/* A blend factor (0-256) for one channel. */
+static int
+p2_blend_factor(int code, int dst_side, const uint32_t s[4], const uint32_t d[4], int i)
+{
+    const uint32_t sa = s[3] + (s[3] >> 7);
+    const uint32_t da = d[3] + (d[3] >> 7);
+
+    switch (code) {
+        case 0:
+            return 0;
+        case 1:
+            return 256;
+        case 2: /* DST_COLOR for the source, SRC_COLOR for the destination. */
+            return dst_side ? (s[i] + (s[i] >> 7)) : (d[i] + (d[i] >> 7));
+        case 3:
+            return 256 - (dst_side ? (s[i] + (s[i] >> 7)) : (d[i] + (d[i] >> 7)));
+        case 4:
+            return sa;
+        case 5:
+            return 256 - sa;
+        case 6:
+            return da;
+        case 7:
+            return 256 - da;
+        default: /* SRC_ALPHA_SATURATE. */
+            return (i == 3) ? 256 : MIN(sa, 256 - da);
+    }
+}
+
+static int64_t
+p2_span_error(const p2_raster_t *r)
+{
+    /* From the dominant edge (the Delta adds a half pixel less a bit) to the
+       centre of the span's first fragment, in the direction of the span. */
+    const int     fwd   = r->xdom <= r->xsub;
+    const int64_t first = p2_fixed_int(r->xdom) - (fwd ? 0 : 1);
+    const int64_t e     = first * 65536 + 65535 - r->xdom;
+
+    return fwd ? e : -e;
+}
+
+static int
+p2_stipple_pass(p2_t *p2, int x, int y)
+{
+    const uint32_t am = p2->gp[TAG_AREA_STIPPLE_MODE];
+    uint32_t       ax;
+    uint32_t       ay;
+    int            bit;
+
+    if (!(p2->raster.command & RENDER_AREA_STIPPLE) || !(am & 1))
+        return 1;
+    ax = (x + (am >> 7)) & 7;
+    ay = (y + (am >> 12)) & 7;
+    if (am & (1 << 18))
+        ax = 7 - ax;
+    if (am & (1 << 19))
+        ay = 7 - ay;
+    bit = (p2->gp[TAG_AREA_STIPPLE_PAT + ay] >> ax) & 1;
+    if (am & (1 << 17))
+        bit = !bit;
+    return bit;
+}
+
+/* One fragment of a 3D primitive through every unit to the framebuffer. */
+static void
+p2_fragment_3d(p2_t *p2, int x, int y)
+{
+    p2_raster_t   *r     = &p2->raster;
+    const uint32_t cmd   = r->command;
+    const int      span  = (r->prim == PRIM_TRAP) || (r->prim == PRIM_RECT);
+    const int64_t  col   = span ? (int64_t) r->col : 0;
+    const int64_t  err   = ((r->prim == PRIM_TRAP) && (cmd & RENDER_SUBPIXEL)) ? p2_span_error(r) : 0;
+    const uint32_t cdm   = p2->gp[TAG_COLOR_DDA_MODE];
+    const uint32_t abm   = p2->gp[TAG_ALPHA_BLEND_MODE];
+    const uint32_t wc    = p2->gp[TAG_FB_WRITE_CONFIG];
+    const uint32_t lop   = p2->gp[TAG_LOGICAL_OP_MODE];
+    const int      bpp   = r->bpp;
+    uint32_t       f[4];
+    uint32_t       t[4];
+    int64_t        addr;
+    uint32_t       old;
+    uint32_t       value;
+    int            ks = 0;
+    int            kd = 256;
+
+#define P2_AT(v, d) ((v) + col * (d) + ((err * (d)) >> 16))
+
+    if (p2_clipped(p2, x, y, 0) || !p2_stipple_pass(p2, x, y))
+        return;
+    r->frag_x = x;
+    r->frag_y = y;
+
+    /* Colour DDA. */
+    if (r->shade) {
+        for (int i = 0; i < 3; i++)
+            f[i] = p2_clamp255(P2_AT(r->color[i], r->dcolor_dx[i]) / 2048);
+        f[3] = r->alpha;
+    } else
+        p2_unpack_abgr((cdm & 1) ? p2->gp[TAG_CONSTANT_COLOR] : p2->gp[TAG_COLOR], f);
+
+    /* Specular and diffuse terms for the texture unit: DDAs or the start registers. */
+    {
+        const uint32_t tcm = p2->gp[TAG_TEXTURE_COLOR_MODE];
+
+        ks = (int) (((tcm & 0x40) ? P2_AT(r->k[1], r->dk_dx[1]) : p2_sext(p2->gp[TAG_KS_START] >> 6, 18)) >> 8);
+        kd = (int) (((tcm & 0x20) ? P2_AT(r->k[2], r->dk_dx[2]) : p2_sext(p2->gp[TAG_KD_START] >> 6, 18)) >> 8);
+        ks = MAX(0, MIN(512, ks));
+        kd = MAX(0, MIN(512, kd));
+    }
+
+    /* Texture. */
+    if ((cmd & RENDER_TEXTURE) && (p2->gp[TAG_TEXTURE_READ_MODE] & 1)) {
+        const int res = p2_texture_3d(p2, P2_AT(r->tex[0], r->dtex_dx[0]), P2_AT(r->tex[1], r->dtex_dx[1]),
+                                      P2_AT(r->tex[2], r->dtex_dx[2]), t);
+
+        if ((p2_do_log >= 3) && (r->row < 2) && (r->col < 3))
+            pclog("P2: frag3d %i,%i s %llX t %llX q %llX res %i texel %02X%02X%02X%02X f %02X%02X%02X%02X\n", x, y,
+                  (unsigned long long) P2_AT(r->tex[0], r->dtex_dx[0]), (unsigned long long) P2_AT(r->tex[1], r->dtex_dx[1]),
+                  (unsigned long long) P2_AT(r->tex[2], r->dtex_dx[2]), res, t[3], t[2], t[1], t[0], f[3], f[2], f[1], f[0]);
+        if (!res)
+            return;
+        if ((res == 1) && (p2->gp[TAG_TEXTURE_COLOR_MODE] & 1))
+            p2_apply_texture(p2, f, t, ks, kd);
+    }
+
+    /* Fog: C = f * C + (1 - f) * FogColor. */
+    if ((cmd & RENDER_FOG) && (p2->gp[TAG_FOG_MODE] & 1)) {
+        const int64_t fog = P2_AT(r->k[0], r->dk_dx[0]);
+        const int     fi  = (int) MAX(0, MIN(65536, fog)) >> 8;
+        uint32_t      fc[4];
+
+        if ((p2->gp[TAG_FOG_MODE] & 4) && (fog < 0))
+            return;
+        p2_unpack_abgr(p2->gp[TAG_FOG_COLOR], fc);
+        for (int i = 0; i < 3; i++)
+            f[i] = (f[i] * fi + fc[i] * (256 - fi)) >> 8;
+    }
+
+    /* Stencil and depth. */
+    if (!p2_lb_fragment(p2, x, y, P2_AT(r->z, r->dz_dx)))
+        return;
+
+#undef P2_AT
+
+    if (!(p2->gp[TAG_FB_WRITE_MODE] & 1))
+        return;
+
+    addr = ((int64_t) p2->gp[TAG_FB_WINDOW_BASE] + p2->gp[TAG_FB_PIXEL_OFFSET] + x +
+            (int64_t) y * p2_pitch(wc) * ((wc & FBRM_ORIGIN_BOT) ? -1 : 1)) * bpp;
+    old  = p2_fb_read(p2, addr, bpp);
+
+    if ((abm & 1) && (((abm >> 1) & 0x7f) != 16)) {
+        /* Alpha blend with the framebuffer pixel in AlphaBlendMode's format. */
+        const int fmt  = ((abm >> 8) & 15) | ((abm >> 12) & 16);
+        const int sfac = (abm >> 1) & 15;
+        const int dfac = (abm >> 5) & 7;
+        uint32_t  d[4];
+        uint32_t  o[4];
+
+        if (fmt == 14)
+            p2_unpack_abgr(old * 0x01010101, d);
+        else
+            p2_unpack(old, fmt, !!(abm & (1 << 13)), !!(abm & (1 << 17)), !!(abm & (1 << 18)), d);
+        if (abm & (1 << 12))
+            d[3] = 0xff;
+        for (int i = 0; i < 4; i++)
+            o[i] = p2_clamp255(((int64_t) f[i] * p2_blend_factor(sfac, 0, f, d, i) +
+                                (int64_t) d[i] * p2_blend_factor(dfac, 1, f, d, i)) >> 8);
+        memcpy(f, o, sizeof(o));
+    }
+
+    value = p2_format_color(p2, p2_pack_abgr(f), x, y);
+    {
+        const uint32_t dst = (p2->gp[TAG_FB_READ_MODE] & FBRM_DST_ENABLE) ? old : 0;
+        const uint32_t swm = p2->gp[TAG_FB_SOFT_WRITE_MASK];
+
+        if (lop & 1)
+            value = p2_logic_op(lop >> 1, value, dst);
+        value = (value & swm) | (old & ~swm);
+    }
+    p2_fb_write(p2, addr, bpp, value, p2->gp[TAG_FB_HW_WRITE_MASK]);
+}
+
+/* Whether a primitive needs the 3D fragment path rather than the 2D one. */
+static int
+p2_need_3d(p2_t *p2, uint32_t cmd)
+{
+    const uint32_t abm = p2->gp[TAG_ALPHA_BLEND_MODE];
+
+    if (cmd & (RENDER_FAST_FILL | RENDER_SYNC_BITMASK | RENDER_SYNC_HOSTDATA))
+        return 0;
+    if (p2_upload_cmd(p2, cmd) || p2_lb_upload_cmd(p2, cmd))
+        return 0;
+    if (p2->gp[TAG_YUV_MODE] & 0x20)
+        return 0; /* Texel-test-only copies (overlay emulation) read the framebuffer source. */
+    if ((p2->gp[TAG_DEPTH_MODE] & 1) || (p2->gp[TAG_STENCIL_MODE] & 1) ||
+        ((p2->gp[TAG_LB_WRITE_MODE] & 1) && (p2->gp[TAG_WINDOW] & 8)))
+        return 1;
+    if ((abm & 1) && (((abm >> 1) & 0x7f) != 16))
+        return 1;
+    if ((cmd & RENDER_FOG) && (p2->gp[TAG_FOG_MODE] & 1))
+        return 1;
+    if (cmd & RENDER_TEXTURE) {
+        const uint32_t tcm = p2->gp[TAG_TEXTURE_COLOR_MODE];
+
+        /* YUV conversion and the chroma test alone stay on the 2D path (the
+           drivers' video blits and overlay colour keys). */
+        if ((p2->gp[TAG_TEXTURE_ADDR_MODE] & 2) || (p2->gp[TAG_TEXTURE_READ_MODE] & (1 << 17)) ||
+            (p2->gp[TAG_TEXTURE_DATA_FORMAT] & 0x180))
+            return 1;
+        if ((tcm & 1) && ((tcm & 0x1e) != 6))
+            return 1;
+    }
+    return 0;
+}
+
+/* A fragment's localbuffer word (16-bit pixels from LBWindowBase). */
+static int64_t
+p2_lb_addr(p2_t *p2, int x, int y)
+{
+    const uint32_t lrm = p2->gp[TAG_LB_READ_MODE];
+
+    return ((int64_t) (p2->gp[TAG_LB_WINDOW_BASE] & 0xffffff) +
+            (int64_t) y * p2_pitch(lrm) * ((lrm & (1 << 18)) ? -1 : 1) + x) * 2;
+}
+
+/* Localbuffer uploads: LBReadMode DataType stencil (1) or depth (2) with
+   destination reads. */
+static int
+p2_lb_upload_cmd(p2_t *p2, uint32_t command)
+{
+    const uint32_t lrm = p2->gp[TAG_LB_READ_MODE];
+
+    return !(command & RENDER_FAST_FILL) && (lrm & (1 << 10)) && ((((lrm >> 16) & 3) == 1) || (((lrm >> 16) & 3) == 2));
+}
+
 /* One step of the primitive; 0 when it waits for host data. */
 static int
 p2_draw_step(p2_t *p2)
@@ -2318,12 +3594,26 @@ p2_draw_step(p2_t *p2)
     }
     if (r->texture_block && !r->payload_left)
         p2_load_texture_mask(p2);
+    if (mask && !host && (cmd & RENDER_REUSE_BITMASK) && !r->payload_left) {
+        /* ReuseBitMask: an expired mask starts over instead of waiting. */
+        r->payload      = p2->gp[TAG_BIT_MASK_PATTERN];
+        r->payload_left = 32;
+    }
     if ((mask || host) && !r->payload_left)
         return 0;
 
     if (r->prim == PRIM_RECT) {
         x = r->origin_x + ((cmd & RENDER_X_POSITIVE) ? (int) r->col : (int) (r->columns - 1 - r->col));
         y = r->origin_y + ((cmd & RENDER_Y_POSITIVE) ? (int) r->row : (int) (r->rows - 1 - r->row));
+    } else if (r->prim == PRIM_LINE) {
+        /* Lines take the pixel whose centre the DDA has passed: the integer
+           part of the position less a half. Both the 3Dlabs and ELSA Win9x
+           drivers load StartXDom/StartY as X + 1 - 1/65536 with no bias,
+           which this makes exactly GDI's GIQ lines in every octant (plain
+           truncation drew every line pixel whose fraction is below .5 one
+           step too far: CARDTEST GDICHK LINES, polygon outlines, clipping). */
+        y = (int) p2_fixed_int(r->y - 0x8000);
+        x = (int) p2_fixed_int(r->xdom - 0x8000);
     } else {
         y = (int) p2_fixed_int(r->y);
         x = (int) p2_fixed_int(r->xdom);
@@ -2331,6 +3621,32 @@ p2_draw_step(p2_t *p2)
             x *= 4 / bpp;
         if (r->prim == PRIM_TRAP)
             x += (r->xsub >= r->xdom) ? (int) r->col : -(int) r->col - 1;
+    }
+    r->frag_x = x;
+    r->frag_y = y;
+    if ((p2_do_log >= 4) && (r->prim != PRIM_RECT))
+        pclog("P2: frag %i,%i row %u col %u\n", x, y, r->row, r->col);
+
+    if (p2_lb_upload_cmd(p2, cmd)) {
+        /* Localbuffer reads to the output FIFO (LBReadMode DataType: depth or
+           stencil; FilterMode bits 4/5, 6/7 pass tag and data). */
+        if (p2->out_count >= P2_OUT_STALL) {
+            r->out_wait = 1;
+            return 0;
+        }
+        if (!p2_clipped(p2, x, y, 0)) {
+            const uint32_t v       = p2_fb_read(p2, p2_lb_addr(p2, x, y), 2);
+            const int      stencil = (((p2->gp[TAG_LB_READ_MODE] >> 16) & 3) == 1);
+            const int      filter  = (p2->gp[TAG_FILTER_MODE] >> (stencil ? 6 : 4)) & 3;
+            const uint32_t dmask   = ((p2->gp[TAG_LB_READ_FORMAT] & 3) == 3) ? 0x7fff : 0xffff;
+
+            if (filter & 1)
+                p2_out_fifo_push(p2, stencil ? TAG_LB_STENCIL : TAG_LB_DEPTH);
+            if (filter & 2)
+                p2_out_fifo_push(p2, stencil ? ((v >> 15) & 1) : (v & dmask));
+        }
+        p2_next_fragment(p2);
+        return 1;
     }
 
     if (p2_upload_cmd(p2, cmd)) {
@@ -2354,6 +3670,12 @@ p2_draw_step(p2_t *p2)
             if (filter & 2)
                 p2_out_fifo_push(p2, v);
         }
+        p2_next_fragment(p2);
+        return 1;
+    }
+
+    if (r->use3d) {
+        p2_fragment_3d(p2, x, y);
         p2_next_fragment(p2);
         return 1;
     }
@@ -2389,8 +3711,10 @@ p2_draw_step(p2_t *p2)
         draw = r->payload & 1;
         r->payload >>= 1;
         r->payload_left--;
-    } else if ((cmd & RENDER_TEXTURE) && !(cmd & RENDER_FAST_FILL)) {
+    } else if ((cmd & RENDER_TEXTURE) && !(cmd & RENDER_FAST_FILL) && !p2_texel_test_only(p2)) {
         color = p2_texture_color(p2, &raw);
+        if (!raw)
+            draw = p2_yuv_unit(p2, &color);
     } else if (mask) {
         const uint32_t rmode  = p2->gp[TAG_RASTERIZER_MODE];
         const int      mirror = rmode & 1;
@@ -2410,9 +3734,42 @@ p2_draw_step(p2_t *p2)
             } else
                 draw = 0;
         }
+    } else if (host && ((r->payload_tag == TAG_DEPTH) || (r->payload_tag == TAG_STENCIL))) {
+        /* Depth / Stencil from the host (the registers hold the value):
+           through the stencil/depth unit to the localbuffer only. */
+        if (!p2_clipped(p2, x, y, 0))
+            p2_lb_fragment(p2, x, y, (int64_t) (p2->gp[TAG_DEPTH] & 0xffff) << 11);
+        r->payload_left--;
+        draw = 0;
+    } else if (host && (r->payload_tag == TAG_TEXEL0)) {
+        /* Texel0 from the host (procedural texture): the texel colour. */
+        color = r->payload;
+        raw   = 0;
+        r->payload_left--;
+    } else if (host && (r->payload_tag == TAG_LB_DATA)) {
+        /* Localbuffer download: the raw depth/stencil word, no framebuffer write. */
+        if ((p2->gp[TAG_LB_WRITE_MODE] & 1) && !p2_clipped(p2, x, y, 0))
+            p2_fb_write(p2, p2_lb_addr(p2, x, y), 2, r->payload, 0xffffffff);
+        r->payload_left--;
+        draw = 0;
     } else if (host) {
+        const uint32_t abm = p2->gp[TAG_ALPHA_BLEND_MODE];
+
         color = r->payload;
         raw   = (r->payload_tag != TAG_COLOR);
+        if ((r->payload_tag == TAG_FB_DATA) && (abm & 1) && (((abm >> 1) & 0x7f) == 16) && !(rm & FBRM_PACKED)) {
+            /* Image download with formatting: AlphaBlendMode's format to the
+               internal colour, then DitherMode's (PRM 5.12.6). */
+            const int fmt = ((abm >> 8) & 15) | ((abm >> 12) & 16);
+            uint32_t  c[4];
+
+            if (fmt == 14)
+                p2_unpack_abgr((color & 0xff) * 0x01010101, c);
+            else
+                p2_unpack(color, fmt, !!(abm & (1 << 13)), !!(abm & (1 << 17)), !!(abm & (1 << 18)), c);
+            color = p2_pack_abgr(c);
+            raw   = 0;
+        }
         if (bpp < 4) {
             if (raw || !(p2->gp[TAG_DITHER_MODE] & 1) || (rm & FBRM_PACKED))
                 color &= (1u << (bpp * 8)) - 1;
@@ -2437,6 +3794,13 @@ p2_draw_step(p2_t *p2)
 
         color = p2->gp[TAG_FB_SOURCE_DATA] >> (lane << 3);
         raw   = 1;
+    }
+    if ((cmd & RENDER_TEXTURE) && !(cmd & RENDER_FAST_FILL) && p2_texel_test_only(p2)) {
+        int      texel_raw;
+        uint32_t texel = p2_texture_color(p2, &texel_raw);
+
+        if (!texel_raw)
+            draw &= p2_yuv_unit(p2, &texel);
     }
 
     if (draw)
@@ -2464,7 +3828,7 @@ p2_out_space(p2_t *p2)
         p2->raster.out_wait = 0;
         p2_raster_run(p2);
     }
-    while (p2->hold_count && !(p2->raster.active && p2->raster.out_wait)) {
+    while (p2->hold_count && !p2_gp_stalled(p2)) {
         const uint32_t tag = p2->hold_tag[p2->hold_rd];
         const uint32_t val = p2->hold_val[p2->hold_rd];
 
@@ -2473,6 +3837,7 @@ p2_out_space(p2_t *p2)
         p2_gp_write(p2, tag, val);
     }
     p2->in_resume = 0;
+    p2_dma_run(p2);
 }
 
 static void
@@ -2487,6 +3852,20 @@ p2_raster_start(p2_t *p2, uint32_t command)
     r->command  = command;
     r->prim     = command & RENDER_PRIM_MASK;
     r->bpp      = p2_fb_bpp(p2);
+    if ((p2->gp[TAG_FB_WRITE_CONFIG] & (1 << 18)) && (p2->gp[TAG_TEXTURE_MAP_FORMAT] & 0x1ff)) {
+        /* PatchEnable: a texture download through the framebuffer unit
+           (the ICD's glTexImage) writes texels of the texture map's size,
+           whatever FBReadPixel says (CI8 indices sent as 32-bit colours to
+           a byte address). The patch permutation itself is not modelled:
+           downloads and texture reads both stay linear. The 2D/D3D drivers'
+           Blt loads leave TextureMapFormat at 0 (no partial products: no
+           texture) and give the size in FBReadPixel only; taking 8-bit
+           texels from it wrote 16-bit textures as bytes at half their
+           address, and those textures sampled black (CARDTEST D3DCHK). */
+        static const int texel_bytes[8] = { 1, 2, 4, 1, 3, 4, 4, 4 };
+
+        r->bpp = texel_bytes[(p2->gp[TAG_TEXTURE_MAP_FORMAT] >> 19) & 7];
+    }
     r->origin_x = p2_sext(p2->gp[TAG_RECT_ORIGIN], 16);
     r->origin_y = p2_sext(p2->gp[TAG_RECT_ORIGIN] >> 16, 16);
     r->xdom     = p2_sext(p2->gp[TAG_START_X_DOM], 32);
@@ -2504,6 +3883,50 @@ p2_raster_start(p2_t *p2, uint32_t command)
             r->dcolor_dy[i] = p2_sext(p2->gp[TAG_R_START + i * 3 + 2] >> 4, 20);
         }
         r->alpha = MAX(0, MIN(255, p2_sext(p2->gp[TAG_A_START] >> 4, 20) / 2048));
+    }
+
+    r->use3d = p2_need_3d(p2, command);
+    if (r->use3d && p2->mode_log) {
+        /* Debug ("dev p2 modes"): each new combination of the 3D unit modes once. */
+        const uint32_t m[9] = { command, p2->gp[TAG_TEXTURE_COLOR_MODE], p2->gp[TAG_ALPHA_BLEND_MODE], p2->gp[TAG_DEPTH_MODE],
+                                p2->gp[TAG_TEXTURE_DATA_FORMAT], p2->gp[TAG_TEXTURE_READ_MODE], p2->gp[TAG_YUV_MODE],
+                                p2->gp[TAG_FOG_MODE], p2->gp[TAG_STENCIL_MODE] };
+        int            seen = 0;
+
+        for (int i = 0; (i < p2->modes_seen) && !seen; i++)
+            seen = !memcmp(p2->modes[i], m, sizeof(m));
+        if (!seen && (p2->modes_seen < 256)) {
+            memcpy(p2->modes[p2->modes_seen++], m, sizeof(m));
+            pclog("P2: 3D render %08X tcm %X abm %X dm %X tdf %X trm %X yuv %X fog %X sm %X | tmf %X lut %X dither %X "
+                  "fbrm %X lbrm %X lbf %X win %X cdda %X key %08X-%08X amap %08X-%08X base %X\n",
+                  m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], p2->gp[TAG_TEXTURE_MAP_FORMAT],
+                  p2->gp[TAG_TEXEL_LUT_MODE], p2->gp[TAG_DITHER_MODE], p2->gp[TAG_FB_READ_MODE],
+                  p2->gp[TAG_LB_READ_MODE], p2->gp[TAG_LB_READ_FORMAT], p2->gp[TAG_WINDOW], p2->gp[TAG_COLOR_DDA_MODE],
+                  p2->gp[TAG_CHROMA_LOWER], p2->gp[TAG_CHROMA_UPPER], p2->gp[TAG_ALPHA_MAP_LOWER], p2->gp[TAG_ALPHA_MAP_UPPER],
+                  p2->gp[TAG_TEXTURE_BASE]);
+        }
+    }
+    if (r->use3d) {
+        /* Depth 17.11 (upper: sign and integer, lower: 11 fraction bits at 31:21). */
+        r->z     = (int64_t) p2_sext(p2->gp[TAG_Z_START_U], 17) * 2048 + (p2->gp[TAG_Z_START_L] >> 21);
+        r->dz_dx = (int64_t) p2_sext(p2->gp[TAG_DZ_DX_U], 17) * 2048 + (p2->gp[TAG_DZ_DX_L] >> 21);
+        r->dz_dy = (int64_t) p2_sext(p2->gp[TAG_DZ_DY_DOM_U], 17) * 2048 + (p2->gp[TAG_DZ_DY_DOM_L] >> 21);
+        for (int i = 0; i < 3; i++) {
+            /* S, T, Q: start, d/dx, d/dyDom at consecutive tags. */
+            r->tex[i]     = p2_sext(p2->gp[TAG_S_START + i * 3], 32);
+            r->dtex_dx[i] = p2_sext(p2->gp[TAG_S_START + i * 3 + 1], 32);
+            r->dtex_dy[i] = p2_sext(p2->gp[TAG_S_START + i * 3 + 2], 32);
+        }
+        /* Fog, Ks and Kd: signed 2.16 in bits 23:6. */
+        {
+            static const uint32_t ktag[3] = { TAG_F_START, TAG_KS_START, TAG_KD_START };
+
+            for (int i = 0; i < 3; i++) {
+                r->k[i]     = p2_sext(p2->gp[ktag[i]] >> 6, 18);
+                r->dk_dx[i] = p2_sext(p2->gp[ktag[i] + 1] >> 6, 18);
+                r->dk_dy[i] = p2_sext(p2->gp[ktag[i] + 2] >> 6, 18);
+            }
+        }
     }
 
     r->texture_block = ((command & (RENDER_FAST_FILL | RENDER_TEXTURE)) == (RENDER_FAST_FILL | RENDER_TEXTURE)) &&
@@ -2548,6 +3971,19 @@ p2_raster_start(p2_t *p2, uint32_t command)
            p2->gp[TAG_PACKED_DATA_LIMITS], p2->gp[TAG_RASTERIZER_MODE], p2->gp[TAG_SCISSOR_MODE], p2->gp[TAG_SCISSOR_MIN],
            p2->gp[TAG_SCISSOR_MAX], p2->gp[TAG_FB_WRITE_DATA], p2->gp[TAG_TEXEL0], p2->gp[TAG_FB_WRITE_MODE],
            p2->gp[TAG_FB_SOURCE_DELTA]);
+    if (p2->gp[TAG_FB_WRITE_CONFIG] & (1 << 18))
+        p2_log("P2: render patched: tmf %08X bpp %i\n", p2->gp[TAG_TEXTURE_MAP_FORMAT], r->bpp);
+    if (command & RENDER_TEXTURE)
+        p2_log("P2: render tex base %08X tmf %08X tdf %08X trm %08X tam %08X tcm %08X lutm %08X lutidx %X s %08X %08X %08X t %08X %08X %08X\n",
+               p2->gp[TAG_TEXTURE_BASE], p2->gp[TAG_TEXTURE_MAP_FORMAT], p2->gp[TAG_TEXTURE_DATA_FORMAT],
+               p2->gp[TAG_TEXTURE_READ_MODE], p2->gp[TAG_TEXTURE_ADDR_MODE], p2->gp[TAG_TEXTURE_COLOR_MODE],
+               p2->gp[TAG_TEXEL_LUT_MODE], p2->gp[TAG_TEXEL_LUT_INDEX], p2->gp[TAG_S_START], p2->gp[TAG_S_START + 1],
+               p2->gp[TAG_S_START + 2], p2->gp[TAG_S_START + 3], p2->gp[TAG_S_START + 4], p2->gp[TAG_S_START + 5]);
+    if (command & RENDER_TEXTURE)
+        p2_log("P2: render tex q %08X %08X %08X rgb %08X %08X %08X a %08X ks %08X kd %08X\n",
+               p2->gp[TAG_Q_START], p2->gp[TAG_Q_START + 1], p2->gp[TAG_Q_START + 2], p2->gp[TAG_R_START],
+               p2->gp[TAG_R_START + 3], p2->gp[TAG_R_START + 6], p2->gp[TAG_A_START], p2->gp[TAG_KS_START],
+               p2->gp[TAG_KD_START]);
 
     r->active = r->rows && (r->columns || (r->prim == PRIM_TRAP));
     p2_raster_run(p2);
@@ -2563,6 +3999,7 @@ p2_raster_continue(p2_t *p2, uint32_t tag, uint32_t count)
         r->xdom += r->dxdom;
         r->xsub += r->dxsub;
         r->y += r->dy;
+        p2_step_interpolants(r);
     }
     switch (tag) {
         case TAG_CONTINUE_NEW_DOM:
@@ -2589,6 +4026,386 @@ p2_raster_continue(p2_t *p2, uint32_t tag, uint32_t count)
     p2_raster_run(p2);
 }
 
+/* ------------------------------------------------------------------------- */
+/* Delta unit: triangle and line setup from three float or fixed vertices.   */
+/* It writes the rasterizer, colour, depth, texture and fog registers and    */
+/* issues the render as the host would (PRM chapter 8 and Appendix D). The   */
+/* edge and sample rules follow ES40's Permedia 2 model.                     */
+/* ------------------------------------------------------------------------- */
+
+/* Vertex parameters, by the low 4 bits of the tag. */
+enum {
+    VP_S = 0, VP_T, VP_Q, VP_KS, VP_KD, VP_R, VP_G, VP_B, VP_A, VP_F, VP_X, VP_Y, VP_Z,
+    VP_PACKED = 14
+};
+
+static double
+p2_u2f(uint32_t v)
+{
+    union {
+        uint32_t u;
+        float    f;
+    } x;
+
+    x.u = v;
+    return x.f;
+}
+
+static void
+p2_delta_vertex(p2_t *p2, uint32_t tag, uint32_t val)
+{
+    const int      slot  = (tag - TAG_V0_FIXED) >> 4; /* 0-2 fixed, 3-5 float. */
+    const int      v     = slot % 3;
+    const int      param = tag & 15;
+    const uint32_t mode  = p2->gp[TAG_DELTA_MODE];
+    double         d;
+
+    if (param == VP_PACKED) {
+        /* Packed 8-bit colour, ABGR or (ColorOrder) ARGB. */
+        const int rgb = !!(mode & (1 << 18));
+
+        p2->vtx[v][VP_R] = ((val >> (rgb ? 16 : 0)) & 0xff) / 255.0;
+        p2->vtx[v][VP_G] = ((val >> 8) & 0xff) / 255.0;
+        p2->vtx[v][VP_B] = ((val >> (rgb ? 0 : 16)) & 0xff) / 255.0;
+        p2->vtx[v][VP_A] = (val >> 24) / 255.0;
+        return;
+    }
+    if ((param == 13) || (param == 15))
+        return;
+
+    if (slot >= 3)
+        d = p2_u2f(val);
+    else {
+        switch (param) {
+            case VP_X:
+            case VP_Y:
+                d = p2_sext(val, 32) / 65536.0;
+                break;
+            case VP_KS:
+            case VP_KD:
+                d = (val & 0xffffff) / 4194304.0;
+                break;
+            case VP_F:
+                d = p2_sext(val, 32) / 4194304.0;
+                break;
+            case VP_S:
+            case VP_T:
+            case VP_Q:
+                d = p2_sext(val, 32) / 1073741824.0;
+                break;
+            default:
+                d = (val & 0x7fffffff) / 1073741824.0;
+                break;
+        }
+    }
+    if (!isfinite(d))
+        d = 0.0;
+    if (param <= VP_Q) {
+        if (((mode >> 14) & 3) == 1)
+            d = MAX(-1.0, MIN(1.0, d));
+    } else if (mode & (1 << 13)) {
+        /* ClampEnable: each parameter to its range. */
+        const double lo = (param == VP_F) ? -512.0 : (((param == VP_X) || (param == VP_Y)) ? -32768.0 : 0.0);
+        const double hi = (param == VP_KS) ? 2.0 : ((param == VP_F) ? 512.0 : (((param == VP_X) || (param == VP_Y)) ? 32767.0 : 1.0));
+
+        d = MAX(lo, MIN(hi, d));
+    }
+    p2->vtx[v][param] = d;
+}
+
+static int64_t
+p2_d2fix(double v, double scale, int64_t lo, int64_t hi)
+{
+    const double f = trunc(v * scale);
+
+    if (!isfinite(f))
+        return (f > 0) ? hi : lo;
+    return (int64_t) MAX((double) lo, MIN((double) hi, f));
+}
+
+/* Rasterizer coordinates: signed 12.15 aligned to 16.16. */
+static uint32_t
+p2_delta_coord(double x)
+{
+    return (uint32_t) p2_d2fix(x, 32768.0, -67108864, 67108863) * 2;
+}
+
+static int64_t
+p2_delta_scanline(double y)
+{
+    return p2_fixed_int((int64_t) trunc(y * 65536.0) + 0x7fff);
+}
+
+/* Interpolant registers: [start, d/dx, d/dyDom] with the formats of the
+   colour (9.11 at bit 4), depth (17.11 split), texture (S, T at bit 20, Q
+   at bit 30) and fog/Ks/Kd (2.16 at bit 6) DDAs. */
+static void
+p2_delta_write_param(p2_t *p2, int param, const double v[3], double zscale)
+{
+    switch (param) {
+        case VP_R:
+        case VP_G:
+        case VP_B: {
+            static const uint32_t tag[3] = { TAG_R_START, TAG_R_START + 3, TAG_R_START + 6 };
+
+            for (int i = 0; i < 3; i++)
+                p2->gp[tag[param - VP_R] + i] = (uint32_t) p2_d2fix(v[i], 255.0 * 2048.0, -524288, 524287) << 4;
+            break;
+        }
+        case VP_Z: {
+            static const uint32_t tag[3] = { TAG_Z_START_U, TAG_DZ_DX_U, TAG_DZ_DY_DOM_U };
+
+            for (int i = 0; i < 3; i++) {
+                const int64_t z = p2_d2fix(v[i], zscale, -134217728, 134217727);
+
+                p2->gp[tag[i]]     = (uint32_t) (z >> 11) & 0x1ffff;
+                p2->gp[tag[i] + 1] = (uint32_t) (z & 0x7ff) << 21;
+            }
+            break;
+        }
+        case VP_S:
+        case VP_T:
+            for (int i = 0; i < 3; i++)
+                p2->gp[TAG_S_START + (param - VP_S) * 3 + i] = (uint32_t) p2_d2fix(v[i], 2147483648.0, INT32_MIN, INT32_MAX);
+            break;
+        case VP_Q:
+            for (int i = 0; i < 3; i++)
+                p2->gp[TAG_Q_START + i] = (uint32_t) p2_d2fix(v[i], 1073741824.0, INT32_MIN, INT32_MAX);
+            break;
+        default: {
+            const uint32_t base = (param == VP_F) ? TAG_F_START : ((param == VP_KS) ? TAG_KS_START : TAG_KD_START);
+
+            for (int i = 0; i < 3; i++)
+                p2->gp[base + i] = ((uint32_t) p2_d2fix(v[i], 65536.0, -131072, 131071) & 0x3ffff) << 6;
+            break;
+        }
+    }
+}
+
+/* The parameters the DeltaMode and the draw command ask for. */
+static int
+p2_delta_params(p2_t *p2, uint32_t value, int *list)
+{
+    const uint32_t mode = p2->gp[TAG_DELTA_MODE];
+    int            n    = 0;
+
+    if (mode & 0x40) {
+        list[n++] = VP_R;
+        list[n++] = VP_G;
+        list[n++] = VP_B;
+    }
+    if (mode & 0x80)
+        list[n++] = VP_Z;
+    if ((mode & 0x20) && (value & RENDER_TEXTURE)) {
+        list[n++] = VP_S;
+        list[n++] = VP_T;
+        list[n++] = VP_Q;
+    }
+    if ((mode & 0x10) && (value & RENDER_FOG))
+        list[n++] = VP_F;
+    if (mode & 0x100)
+        list[n++] = VP_KS;
+    if (mode & 0x200)
+        list[n++] = VP_KD;
+    return n;
+}
+
+/* S, T and Q of the three vertices after TextureParameterMode. */
+static void
+p2_delta_texparams(p2_t *p2, double p[3][16])
+{
+    if (((p2->gp[TAG_DELTA_MODE] >> 14) & 3) == 2) {
+        /* Normalize: scale all three together into -1..1 (S/Q, T/Q kept). */
+        double m = 0.0;
+
+        for (int v = 0; v < 3; v++)
+            for (int i = VP_S; i <= VP_Q; i++)
+                m = MAX(m, fabs(p[v][i]));
+        if (m > 0.0) {
+            for (int v = 0; v < 3; v++)
+                for (int i = VP_S; i <= VP_Q; i++)
+                    p[v][i] /= m;
+        }
+    }
+}
+
+static void
+p2_delta_render(p2_t *p2, uint32_t cmd)
+{
+    p2->gp[TAG_RENDER] = cmd;
+    if (!(p2->gp[TAG_DELTA_MODE] & (1 << 12))) /* NoDraw. */
+        p2_raster_start(p2, cmd);
+}
+
+static void
+p2_delta_triangle(p2_t *p2, uint32_t value)
+{
+    const uint32_t mode       = p2->gp[TAG_DELTA_MODE];
+    const uint32_t cmd        = (value & ~(0x80000u | 0x100000u) & ~RENDER_PRIM_MASK) | PRIM_TRAP;
+    const int      correction = (value & RENDER_SUBPIXEL) && (mode & 0x400);
+    const double   zscale     = (((mode >> 2) & 3) ? 65535.0 : 32767.0) * 2048.0;
+    const int      bias       = (p2->gp[TAG_RASTERIZER_MODE] >> 4) & 3;
+    const int64_t  b          = (bias == 1) ? 0x8000 : ((bias == 2) ? 0x7fff : 0);
+    double         p[3][16];
+    const double  *a;
+    const double  *bv;
+    const double  *c;
+    int            order[3] = { 0, 1, 2 };
+    int            list[16];
+    int            n;
+    double         area;
+
+    memcpy(p, p2->vtx, sizeof(p));
+    if (p2->mode_log && (p2->range_logged < 16)) {
+        /* Debug: vertices beyond the rasterizer's 12.15 range. */
+        for (int v = 0; v < 3; v++) {
+            if ((fabs(p[v][VP_X]) > 2047.0) || (fabs(p[v][VP_Y]) > 2047.0)) {
+                p2->range_logged++;
+                pclog("P2: delta vertex out of range: (%.1f,%.1f) (%.1f,%.1f) (%.1f,%.1f)\n", p[0][VP_X], p[0][VP_Y],
+                      p[1][VP_X], p[1][VP_Y], p[2][VP_X], p[2][VP_Y]);
+                break;
+            }
+        }
+    }
+    area = (p[1][VP_X] - p[0][VP_X]) * (p[2][VP_Y] - p[0][VP_Y]) - (p[2][VP_X] - p[0][VP_X]) * (p[1][VP_Y] - p[0][VP_Y]);
+    if ((area == 0.0) || !isfinite(area))
+        return;
+    if ((mode & 0x20000) && ((value & 0x100000) ? (area < 0.0) : (area > 0.0)))
+        return; /* Back face culled. */
+    p2_delta_texparams(p2, p);
+
+    /* Top to bottom (stable). */
+    for (int i = 0; i < 2; i++)
+        for (int j = 0; j < 2 - i; j++)
+            if (p[order[j]][VP_Y] > p[order[j + 1]][VP_Y]) {
+                const int t  = order[j];
+                order[j]     = order[j + 1];
+                order[j + 1] = t;
+            }
+    a  = p[order[0]];
+    bv = p[order[1]];
+    c  = p[order[2]];
+
+    {
+        const double   long_slope   = (c[VP_X] - a[VP_X]) / (c[VP_Y] - a[VP_Y]);
+        const double   first_slope  = (bv[VP_Y] == a[VP_Y]) ? 0.0 : (bv[VP_X] - a[VP_X]) / (bv[VP_Y] - a[VP_Y]);
+        const double   second_slope = (c[VP_Y] == bv[VP_Y]) ? 0.0 : (c[VP_X] - bv[VP_X]) / (c[VP_Y] - bv[VP_Y]);
+        const int64_t  first_y      = p2_delta_scanline(a[VP_Y]);
+        const int64_t  middle_y     = p2_delta_scanline(bv[VP_Y]);
+        const int64_t  last_y       = p2_delta_scanline(c[VP_Y]);
+        const uint32_t first_rows   = (uint32_t) MAX(0, middle_y - first_y);
+        const uint32_t second_rows  = (uint32_t) MAX(0, last_y - middle_y);
+        const int64_t  start_y      = first_rows ? first_y : middle_y;
+        const double   sample_y     = (double) start_y + 0.5;
+        const double   error_y      = correction ? sample_y - a[VP_Y] : 0.0;
+        const double   xdom         = a[VP_X] + error_y * long_slope;
+        const double   xsub         = first_rows ? a[VP_X] + error_y * first_slope
+                                                 : bv[VP_X] + (correction ? sample_y - bv[VP_Y] : 0.0) * second_slope;
+        const int      split        = first_rows && second_rows;
+        const double   knee_x       = bv[VP_X] + (correction ? (double) middle_y + 0.5 - bv[VP_Y] : 0.0) * second_slope;
+        const double   det          = (bv[VP_X] - a[VP_X]) * (c[VP_Y] - a[VP_Y]) - (c[VP_X] - a[VP_X]) * (bv[VP_Y] - a[VP_Y]);
+        const double   dir          = (det > 0.0) ? 1.0 : -1.0;
+
+        if ((!first_rows && !second_rows) || !isfinite(long_slope) || (det == 0.0))
+            return;
+
+        /* Edges; the Delta supplies the (nearly) half pixel bias itself. */
+        p2->gp[TAG_START_X_DOM] = p2_delta_coord(xdom) + 0x7fff - (uint32_t) b;
+        p2->gp[TAG_START_X_SUB] = p2_delta_coord(xsub) + 0x7fff - (uint32_t) b;
+        p2->gp[TAG_START_Y]     = (uint32_t) (start_y * 65536) - (uint32_t) b;
+        p2->gp[TAG_DX_DOM]      = p2_delta_coord(long_slope);
+        p2->gp[TAG_DX_SUB]      = p2_delta_coord(first_rows ? first_slope : second_slope);
+        p2->gp[TAG_DY]          = 65536;
+        p2->gp[TAG_COUNT]       = first_rows ? first_rows : second_rows;
+
+        /* Interpolants: plane gradients; d/dyDom walks the dominant edge,
+           d/dx steps along the span (away from the dominant edge). */
+        n = p2_delta_params(p2, value, list);
+        for (int i = 0; i < n; i++) {
+            const int    k  = list[i];
+            const double gx = ((bv[k] - a[k]) * (c[VP_Y] - a[VP_Y]) - (c[k] - a[k]) * (bv[VP_Y] - a[VP_Y])) / det;
+            const double gy = ((bv[VP_X] - a[VP_X]) * (c[k] - a[k]) - (c[VP_X] - a[VP_X]) * (bv[k] - a[k])) / det;
+            const double dom = gy + long_slope * gx;
+            const double v[3] = { a[k] + error_y * dom, gx * dir, dom };
+
+            p2_delta_write_param(p2, k, v, zscale);
+        }
+        if (mode & 0x40) {
+            /* Alpha is flat across a primitive (not interpolated): the mean. */
+            const double alpha = (p[0][VP_A] + p[1][VP_A] + p[2][VP_A]) / 3.0;
+
+            p2->gp[TAG_A_START] = (uint32_t) p2_d2fix(alpha, 255.0 * 2048.0, 0, 524287) << 4;
+        }
+
+        p2_delta_render(p2, cmd);
+        if (split && !(mode & (1 << 12)) && !p2->raster.active) {
+            p2->gp[TAG_START_X_SUB] = p2_delta_coord(knee_x) + 0x7fff;
+            p2->gp[TAG_DX_SUB]      = p2_delta_coord(second_slope);
+            p2_raster_continue(p2, TAG_CONTINUE_NEW_SUB, second_rows);
+        }
+    }
+}
+
+/* DrawLine01 (from vertex 0 to 1) and DrawLine10. */
+static void
+p2_delta_line(p2_t *p2, uint32_t value, int from, int to)
+{
+    const uint32_t mode   = p2->gp[TAG_DELTA_MODE];
+    const uint32_t cmd    = (value & ~(0x80000u | 0x100000u) & ~RENDER_PRIM_MASK) | PRIM_LINE;
+    const double   zscale = (((mode >> 2) & 3) ? 65535.0 : 32767.0) * 2048.0;
+    const int      bias   = (p2->gp[TAG_RASTERIZER_MODE] >> 4) & 3;
+    const int64_t  b      = (bias == 1) ? 0x8000 : ((bias == 2) ? 0x7fff : 0);
+    double         p[3][16];
+    const double  *a;
+    const double  *e;
+    double         dx;
+    double         dy;
+    double         steps;
+    int            list[16];
+    int            n;
+
+    memcpy(p, p2->vtx, sizeof(p));
+    p2_delta_texparams(p2, p);
+    a     = p[from];
+    e     = p[to];
+    dx    = e[VP_X] - a[VP_X];
+    dy    = e[VP_Y] - a[VP_Y];
+    steps = floor(MAX(fabs(dx), fabs(dy)) + 0.5);
+    if ((steps < 1.0) || !isfinite(steps))
+        return;
+
+    p2->gp[TAG_START_X_DOM] = p2_delta_coord(a[VP_X]) + 0x7fff - (uint32_t) b;
+    p2->gp[TAG_START_Y]     = p2_delta_coord(a[VP_Y]) + 0x7fff - (uint32_t) b;
+    p2->gp[TAG_DX_DOM]      = p2_delta_coord(dx / steps);
+    p2->gp[TAG_DY]          = p2_delta_coord(dy / steps);
+    p2->gp[TAG_COUNT]       = (uint32_t) MIN(65535.0, steps);
+
+    n = p2_delta_params(p2, value, list);
+    for (int i = 0; i < n; i++) {
+        const int    k    = list[i];
+        const double v[3] = { a[k], 0.0, (e[k] - a[k]) / steps };
+
+        p2_delta_write_param(p2, k, v, zscale);
+    }
+    if (mode & 0x40)
+        p2->gp[TAG_A_START] = (uint32_t) p2_d2fix(a[VP_A], 255.0 * 2048.0, 0, 524287) << 4;
+
+    p2_delta_render(p2, cmd);
+}
+
+/* The host has loaded a texture the graphics processor halted on (bypass
+   DMA RestartGP, ByDMAComplete): load the handle again and go on. */
+static void
+p2_tex_restart(p2_t *p2)
+{
+    if (!p2->tex_invalid)
+        return;
+    p2->tex_invalid = 0;
+    p2_gp_command(p2, p2->tex_invalid_tag, p2->tex_invalid_val);
+    if (!p2->tex_invalid)
+        p2_out_space(p2);
+}
+
 /* Register side effects and host data. Returns 1 if the write was data for a
    waiting primitive. */
 static void
@@ -2599,7 +4416,9 @@ p2_gp_command(p2_t *p2, uint32_t tag, uint32_t val)
     /* A primitive waiting for data is abandoned by anything else. */
     if (r->active && (r->command & (RENDER_SYNC_BITMASK | RENDER_SYNC_HOSTDATA))) {
         const int is_data = (r->command & RENDER_SYNC_BITMASK) ? (tag == TAG_BIT_MASK_PATTERN)
-                                                                : ((tag == TAG_COLOR) || (tag == TAG_FB_DATA) || (tag == TAG_FB_SOURCE_DATA));
+                                                                : ((tag == TAG_COLOR) || (tag == TAG_FB_DATA) || (tag == TAG_FB_SOURCE_DATA) ||
+                                                                   (tag == TAG_LB_DATA) || (tag == TAG_DEPTH) || (tag == TAG_STENCIL) ||
+                                                                   (tag == TAG_TEXEL0));
         if (is_data) {
             if (r->command & RENDER_SYNC_BITMASK) {
                 const uint32_t rmode = p2->gp[TAG_RASTERIZER_MODE];
@@ -2630,9 +4449,31 @@ p2_gp_command(p2_t *p2, uint32_t tag, uint32_t val)
         r->active = 0;
     }
 
+    if ((tag >= TAG_V0_FIXED) && (tag < TAG_DELTA_MODE)) {
+        p2_delta_vertex(p2, tag, val);
+        return;
+    }
+
     switch (tag) {
         case TAG_RENDER:
             p2_raster_start(p2, val);
+            break;
+
+        case TAG_DRAW_TRIANGLE:
+            p2->delta_cmd = val;
+            p2_delta_triangle(p2, val);
+            break;
+        case TAG_REPEAT_TRIANGLE:
+            p2_delta_triangle(p2, p2->delta_cmd);
+            break;
+        case TAG_DRAW_LINE01:
+        case TAG_DRAW_LINE10:
+            p2->delta_cmd                = val;
+            p2->delta_line10             = (tag == TAG_DRAW_LINE10);
+            p2_delta_line(p2, val, (tag == TAG_DRAW_LINE10), (tag != TAG_DRAW_LINE10));
+            break;
+        case TAG_REPEAT_LINE:
+            p2_delta_line(p2, p2->delta_cmd, p2->delta_line10, !p2->delta_line10);
             break;
 
         case TAG_CONTINUE_NEW_LINE:
@@ -2673,6 +4514,46 @@ p2_gp_command(p2_t *p2, uint32_t tag, uint32_t val)
             p2->gp[TAG_FB_BLOCK_COLOR_L] = p2->gp[TAG_FB_BLOCK_COLOR_U] = val;
             break;
 
+        case TAG_TEXTURE_ID:
+        case TAG_TEXEL_LUT_ID: {
+            /* Indirect handles: load TextureBaseAddress / TexelLUTAddress
+               from the dword at this address (32-bit units; bit 30 host
+               memory). Bit 31 of the loaded value marks it invalid: the
+               chip would halt for the host to page the data in. */
+            const uint32_t a = (val & 0xffffff) * 4;
+            const uint32_t v = (val & (1 << 30)) ? mem_readl_phys(a) : p2_fb_read(p2, a, 4);
+
+            if (v & (1u << 31)) {
+                /* Not resident: halt with the texture invalid interrupt
+                   until the host loads it (bypass DMA RestartGP or
+                   ByDMAComplete), then load the handle again. */
+                p2->tex_invalid     = 1;
+                p2->tex_invalid_tag = tag;
+                p2->tex_invalid_val = val;
+                p2_raise_int(p2, INT_TEX_INVALID);
+                break;
+            }
+            p2->gp[(tag == TAG_TEXTURE_ID) ? TAG_TEXTURE_BASE : TAG_TEXEL_LUT_ADDRESS] = v;
+            break;
+        }
+        case TAG_TEXEL_LUT_TRANSFER: {
+            /* Load Count entries from TexelLUTAddress (32-bit units, bit 30
+               host memory) into the LUT from Index on. */
+            const uint32_t la    = p2->gp[TAG_TEXEL_LUT_ADDRESS];
+            const uint32_t count = (val >> 8) & 0x1ff;
+
+            for (uint32_t i = 0; i < count; i++) {
+                const uint32_t a   = ((la & 0xffffff) + i) * 4;
+                const uint32_t e   = (la & (1 << 30)) ? mem_readl_phys(a) : p2_fb_read(p2, a, 4);
+                const uint32_t idx = (val + i) & 0xff;
+
+                p2->texel_lut[idx] = e;
+                if (idx < 16)
+                    p2->gp[TAG_TEXEL_LUT0 + idx] = e;
+            }
+            break;
+        }
+
         case TAG_TEXEL_LUT_DATA:
             p2->texel_lut[p2->gp[TAG_TEXEL_LUT_INDEX] & 0xff] = val;
             if ((p2->gp[TAG_TEXEL_LUT_INDEX] & 0xff) < 16)
@@ -2681,7 +4562,11 @@ p2_gp_command(p2_t *p2, uint32_t tag, uint32_t val)
             break;
 
         case TAG_TEXTURE_DL_OFFSET:
+            if (p2->mode_log && p2->dl_words)
+                pclog("P2: texture download at %06X: %u words\n", p2->dl_start, p2->dl_words);
             p2->gp[TAG_TEXTURE_DL_OFFSET] = val & 0x3fffff;
+            p2->dl_start                  = val & 0x3fffff;
+            p2->dl_words                  = 0;
             break;
         case TAG_TEXTURE_DATA:
             /* Raw texture download (cached glyph masks, textures): a dword
@@ -2689,6 +4574,7 @@ p2_gp_command(p2_t *p2, uint32_t tag, uint32_t val)
                offset steps. */
             p2_fb_write(p2, (int64_t) (p2->gp[TAG_TEXTURE_DL_OFFSET] & 0x3fffff) * 4, 4, val, p2->gp[TAG_FB_HW_WRITE_MASK]);
             p2->gp[TAG_TEXTURE_DL_OFFSET] = (p2->gp[TAG_TEXTURE_DL_OFFSET] + 1) & 0x3fffff;
+            p2->dl_words++;
             break;
 
         default:
@@ -2912,6 +4798,36 @@ p2_debug_hook(const char *args)
         return;
     }
 
+    if (!strncmp(args, "tags", 4)) {
+        /* Tags written since the last "tags", with their current values. */
+        for (int i = 0; i < GP_TAGS; i++) {
+            if (p2->tag_count[i])
+                pclog("P2: tag %03X n %8u = %08X\n", i, p2->tag_count[i], p2->gp[i]);
+        }
+        memset(p2->tag_count, 0, sizeof(p2->tag_count));
+        return;
+    }
+
+    if (!strncmp(args, "dump ", 5)) {
+        /* The whole framebuffer memory to a file (texture layouts etc.). */
+        FILE *f = plat_fopen(args + 5, "wb");
+
+        if (f) {
+            fwrite(svga->vram, 1, p2->vram_size, f);
+            fclose(f);
+        }
+        pclog("P2: VRAM dump to %s %s\n", args + 5, f ? "done" : "failed");
+        return;
+    }
+
+    if (!strncmp(args, "modes", 5)) {
+        /* Start (again) logging every new combination of 3D unit modes. */
+        p2->mode_log   = 1;
+        p2->modes_seen = 0;
+        pclog("P2: logging 3D modes\n");
+        return;
+    }
+
     if (!strncmp(args, "log ", 4)) {
         p2_do_log = atoi(args + 4);
         pclog("P2: log %i\n", p2_do_log);
@@ -2964,6 +4880,8 @@ p2_reset_state(p2_t *p2)
     p2->flash_cycle   = 0;
     p2->flash_id_mode = 0;
     p2->dma_count     = 0;
+    p2->agp_tex_base  = 0;
+    memset(p2->bydma, 0, sizeof(p2->bydma));
     p2->out_dma_count = 0;
     p2->bypass_mask   = 0xffffffff;
     p2->fb_write_mask = 0xffffffff;
