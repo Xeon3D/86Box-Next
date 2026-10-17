@@ -2439,9 +2439,14 @@ p2_block_color(p2_t *p2, int x, int y)
     uint64_t       pat   = p2->gp[TAG_FB_BLOCK_COLOR_L] | ((uint64_t) p2->gp[TAG_FB_BLOCK_COLOR_U] << 32);
 
     if ((lutm & 3) == 3) {
-        /* LUT DirectIndex block fills: Y's low 3 bits pick two consecutive
-           entries for the lower and upper halves of the block colour. */
-        const uint32_t i = ((y & 7) * 2 + ((lutm >> 2) & 0xff)) & 0xff;
+        /* LUT DirectIndex block fills: Y's low 3 bits pick the pattern row,
+           8 >> PixelsPerEntry entries long, and two consecutive entries from
+           it make the lower and upper halves of the block colour. A 64-bit
+           block holds half a row at 16 bpp, so the 3Dlabs drivers fill a
+           colour brush in two passes (LUTOffset 0 and 2, the second 4 pixels
+           on, through a reused bit mask); with a fixed two-entry row only
+           8 bpp brushes came out right. */
+        const uint32_t i = ((y & 7) * (8 >> ((lutm >> 10) & 3)) + ((lutm >> 2) & 0xff)) & 0xff;
 
         const uint32_t j = (i + 1) & 0xff;
 
@@ -2595,14 +2600,19 @@ p2_next_fragment(p2_t *p2)
         r->payload_left = 0;
 }
 
-/* A block fill's mask from texture memory: one word per 32 pixels. */
+/* A block fill's mask from texture memory: one texel per texel-size pixels
+   (TextureMapFormat TexelSize 8, 16, 24 or 32 bits). The 3Dlabs drivers
+   cache glyphs with the smallest size that holds a row; 17-24 pixel wide
+   glyphs use 24-bit texels, which were read as bytes (8 columns of each). */
 static void
 p2_load_texture_mask(p2_t *p2)
 {
-    p2_raster_t   *r      = &p2->raster;
-    const int      tbytes = 1 << ((p2->gp[TAG_TEXTURE_MAP_FORMAT] >> 19) & 3);
-    const int64_t  blocks = (r->columns + 31) / 32;
-    const int64_t  block  = (int64_t) r->row * blocks + r->col / 32;
+    static const int texel_bytes[8] = { 1, 2, 4, 1, 3, 4, 4, 4 };
+    p2_raster_t     *r      = &p2->raster;
+    const int        tbytes = texel_bytes[(p2->gp[TAG_TEXTURE_MAP_FORMAT] >> 19) & 7];
+    const int        bits   = tbytes * 8;
+    const int64_t    blocks = (r->columns + bits - 1) / bits;
+    const int64_t    block  = (int64_t) r->row * blocks + r->col / bits;
     const int64_t  s      = (int64_t) p2_sext(p2->gp[TAG_S_START], 32) / 0x100000 +
                       block * ((int64_t) p2_sext(p2->gp[TAG_DS_DX], 32) / 0x100000);
     const int64_t  width  = (int64_t) 1 << ((p2->gp[TAG_TEXTURE_READ_MODE] >> 9) & 15);
@@ -2616,7 +2626,7 @@ p2_load_texture_mask(p2_t *p2)
         mask = ((mask & 0x0f0f0f0f) << 4) | ((mask >> 4) & 0x0f0f0f0f);
     }
     r->payload      = mask;
-    r->payload_left = MIN(32, r->columns - r->col);
+    r->payload_left = MIN((uint32_t) bits, r->columns - r->col);
 }
 
 static int64_t
