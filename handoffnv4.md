@@ -1063,5 +1063,6 @@ them with `dev 3d` before optimising.
   every rig except the branch-owned ones (AVM-ISDN-RIG, NVIDIA-RIG*).
 - 2026-10-17: CARDTEST bugs fixed (538355dac transparent hatch, 778678c40
   trimesh after a triangle, 6541e112c lost trap -> ICD textures, b675e7336
-  bilinear texel origin). See "Done (2026-10-17)" at the top. Not merged
-  into master, not staged.
+  bilinear texel origin). See "Done (2026-10-17)" at the top. Pushed;
+  merged into master (c7c433c97, pushed), build 178 staged in every Latest
+  rig (not AVM-ISDN-RIG) and the NewCardRigs (not the alliance ones).
