@@ -1066,3 +1066,15 @@ them with `dev 3d` before optimising.
   bilinear texel origin). See "Done (2026-10-17)" at the top. Pushed;
   merged into master (c7c433c97, pushed), build 178 staged in every Latest
   rig (not AVM-ISDN-RIG) and the NewCardRigs (not the alliance ones).
+- 2026-10-17 (afternoon): AUTOGUI's TNT2 hang in 3DMark 2000's default run
+  (Game 1 helicopter, small centred viewport; emulation thread stopped,
+  debug command file not consumed) **does not reproduce on build 178**.
+  It hit work-autogui running work-tnt2's old exe (2026-10-15 00:09, before
+  the engine-time rework 05d35d186 and today's fixes). Rerun on
+  `work-tnt2h` (work-tnt2's cfg, ERAZOR III, Celeron 233, with work-tnt's
+  disk, which has DX7 + 3DMark 2000; Windows re-found the TNT2 and asked
+  for one restart): all 22 tests ran, **1036 3DMarks** at 1024x768x16
+  (TNT 1045). AUTOGUI's own rerun on build 178 also got past it. No code
+  change. work-tnt2's disk has no 3DMark 2000; use work-tnt2h for TNT2
+  3DMark 2000 runs (desktop icon: `type 3`, Enter; then Tab,
+  Enter = Run Default Benchmark).
