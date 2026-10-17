@@ -582,6 +582,8 @@ p2_dac_write(p2_t *p2, int reg, uint8_t val)
 {
     svga_t *svga = &p2->svga;
 
+    if (((reg & 0x0f) >= 4) || ((reg & 0x0f) == 0))
+        p2_log("P2: dac write %X = %02X (index %02X)\n", reg & 0x0f, val, p2->dac_index);
     switch (reg & 0x0f) {
         case 0x00:
             p2->dac_index = val;
@@ -1616,7 +1618,13 @@ p2_ctrl_write_int(p2_t *p2, uint32_t addr, uint32_t val)
             return;
 
         case 0x4000:
-            p2_dac_write(p2, (addr >> 3) & 0x0f, val & 0xff);
+            /* The RAMDAC's registers are byte 0 of each 8-byte slot; a write
+               to the rest of the slot reaches nothing. The ELSA Win9x driver
+               writes a cursor position register as two words (the value at
+               +0, zero at +2), and the zero wiped the position: the pointer
+               sat off screen at 0,0. */
+            if (!(addr & 7))
+                p2_dac_write(p2, (addr >> 3) & 0x0f, val & 0xff);
             return;
 
         case 0x5000:
@@ -1768,7 +1776,7 @@ p2_ctrl_read_int(p2_t *p2, uint32_t addr)
             return 0;
 
         case 0x4000:
-            return p2_dac_read(p2, (addr >> 3) & 0x0f);
+            return (addr & 7) ? 0 : p2_dac_read(p2, (addr >> 3) & 0x0f);
 
         case 0x5000:
             if (addr == P2_VS_SERIAL_BUS)
@@ -1944,9 +1952,10 @@ p2_mmio_writeb(uint32_t addr, uint8_t val, void *priv)
     addr &= 0xffff;
     if ((addr & 0xffe0) == 0x63c0)
         p2_out(0x3c0 + (addr & 0x1f), val, p2);
-    else if ((addr & 0xf000) == 0x4000)
-        p2_dac_write(p2, (addr >> 3) & 0x0f, val);
-    else
+    else if ((addr & 0xf000) == 0x4000) {
+        if (!(addr & 7))
+            p2_dac_write(p2, (addr >> 3) & 0x0f, val);
+    } else
         p2_ctrl_write(p2, addr, val);
 }
 
@@ -1959,6 +1968,9 @@ p2_mmio_writew(uint32_t addr, uint16_t val, void *priv)
     if ((addr & 0xffe0) == 0x63c0) {
         p2_out(0x3c0 + (addr & 0x1f), val & 0xff, p2);
         p2_out(0x3c1 + (addr & 0x1f), val >> 8, p2);
+    } else if (((addr & 0xf000) == 0x4000) && (addr & 7)) {
+        /* The upper half of a RAMDAC slot holds nothing (the control
+           space handler would take it as a write of the whole register). */
     } else
         p2_ctrl_write(p2, addr, val);
 }
@@ -4929,6 +4941,19 @@ p2_debug_hook(const char *args)
     for (int i = 0; i < 0x50; i++)
         n += sprintf(line + n, "%02X", p2->dac_regs[i]);
     pclog("P2: dac %s\n", line);
+    {
+        int ones = 0;
+        int set  = 0;
+
+        for (int i = 0; i < 1024; i++) {
+            set += !!p2->cursor_ram[i];
+            ones += (p2->cursor_ram[i] == 0xff);
+        }
+        pclog("P2: cursor ctl %02X x %u y %u ena %i size %i hw x %i y %i, RAM bytes set %i (FF %i), colours %06X %06X %06X\n",
+              p2->dac_regs[TVP_CURSOR_CONTROL], p2->cursor_x, p2->cursor_y, svga->dac_hwcursor.ena, svga->dac_hwcursor.cur_xsize,
+              svga->dac_hwcursor.x, svga->dac_hwcursor.y, set, ones, p2->cursor_pal[0] & 0xffffff, p2->cursor_pal[1] & 0xffffff,
+              p2->cursor_pal[2] & 0xffffff);
+    }
     pclog("P2: pal0 %02X %02X %02X pal7 %02X %02X %02X\n", svga->vgapal[0].r, svga->vgapal[0].g, svga->vgapal[0].b,
           svga->vgapal[7].r, svga->vgapal[7].g, svga->vgapal[7].b);
     pclog("P2: filter %08X out %i intf %08X inte %08X fifo hdr %u tag %X active %i cmd %08X left %u\n",
