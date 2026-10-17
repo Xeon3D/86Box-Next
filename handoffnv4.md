@@ -1,7 +1,39 @@
 # Handoff: NVIDIA RIVA TNT / TNT2 (NV4/NV5) emulation
 
 Living document: whoever works on the TNT updates it as they go (status, the
-log at the bottom). Last updated: 2026-10-15.
+log at the bottom). Last updated: 2026-10-17.
+
+**Done (2026-10-17): CARDTEST findings** (the graphics test CD in
+`F:\Claude\86Box-Next\cardtest`, read its NOTES.md; runs in
+`cardtest/runs/tnt-w98`, last full run 20261017-140326: GDICHK 12 PASS /
+1 WARN / 1 FAIL, DDCHK 10 PASS, D3DCHK 16 PASS / 1 WARN, GLCHK 16 / 17).
+work-tnt mounts a private copy of the ISO (`work-tnt\cd1.iso`, never
+`cardtest/out/*.ISO`: other sessions rebuild it); VMs may run in parallel.
+- GDI BRUSH (transparent hatch filled black), fixed 538355dac: a mono
+  pattern color with zero alpha leaves the pixel alone (the display
+  driver sets color 0 to 0 for TRANSPARENT; 8 bpp: alpha in bits 15:8).
+- GDI SHAPES (convex quads filled one triangle), fixed 778678c40: a whole
+  triangle seeds the TRIMESH. Left: 0.3% edge pixels -- the quads now match
+  a pixel-center, all-edges triangle rasterizer exactly, GDI's own scan
+  conversion differs by a few edge pixels (no triangle rule matches it), and
+  the chord's closing pen line is drawn full length where GDI's fill covers
+  part of it. Not chased: the real TNT's edge rule is unknown.
+- GL (all colours wrong, TNT only), fixed 6541e112c: PGRAPH takes no method
+  while a trap interrupt is pending. The RM re-enabled FIFO access from its
+  PFIFO path before reading the trap of the ICD's 0x77 -> swizzled surface
+  (0x198); the next method's trap overwrote TRAPPED_ADDR/DATA, the 0x77
+  never got SWIZZLE/PATCH_STATUS, and texture uploads drew into the 2D
+  surface = the ICD's 4x4 white texture. The TNT ICD stores GL_RGBA
+  textures as A4R4G4B4 (its own choice).
+- Bilinear half-texel shift, fixed b675e7336: ORIGIN_FOH CORNER steps back
+  half a texel (it was inverted). Fixed GLCHK TEXLIN and D3DCHK TEXBILIN.
+- GLCHK PERSP still "fails": the oracle is wrong -- GLCHK sets no
+  GL_PERSPECTIVE_CORRECTION_HINT, so Microsoft's generic GL maps the floor
+  affinely (chevrons along the quad's diagonal); the TNT is perspective
+  correct. D3DCHK MIPMAP WARN (4%) not looked at.
+- Debug method used: temporary write watch on a VRAM range at every writer
+  (2D put, blit rows, DMA, LFB, 3D, GPU copy-back) + `dev trace N novtx` +
+  `dev regs N` (shows what the RM writes while servicing a trap).
 
 **In progress (2026-10-14):**
 - B5 done: 3DMark 2000 1.1 full default run on the TNT (work-tnt,
@@ -1027,3 +1059,9 @@ them with `dev 3d` before optimising.
   debug line (PS/2 reports without capture once used; a button change
   alone sends no packet: pair it with a 1-pixel move, `mouse 1 0 1`
   then `mouse -1 0 0`; moves of 4 or less avoid Win98's acceleration).
+- 2026-10-16: tnt merged into master (24922df2e, not pushed) and staged in
+  every rig except the branch-owned ones (AVM-ISDN-RIG, NVIDIA-RIG*).
+- 2026-10-17: CARDTEST bugs fixed (538355dac transparent hatch, 778678c40
+  trimesh after a triangle, 6541e112c lost trap -> ICD textures, b675e7336
+  bilinear texel origin). See "Done (2026-10-17)" at the top. Not merged
+  into master, not staged.

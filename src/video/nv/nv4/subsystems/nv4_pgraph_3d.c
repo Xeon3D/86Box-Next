@@ -170,7 +170,12 @@ nv4_3d_tex_setup(nv4_t *nv4, nv4_3d_tex_t *t, uint32_t fmt, uint32_t filt, uint3
     t->size     = lo;
     t->wrap_u   = (fmt >> 24) & 7;
     t->wrap_v   = (fmt >> 28) & 7;
-    t->center   = ((fmt >> 6) & 3) != 2;
+    /* ORIGIN_FOH: CORNER (2) puts a texel's origin at its corner, so
+       its center is at +0.5 and bilinear filtering steps back half a
+       texel; NVIDIA's D3D driver (by default) and OpenGL ICD both use
+       CORNER and expect the APIs' texel centers. CENTER (1) samples
+       from the texel origin as is. */
+    t->center   = ((fmt >> 6) & 3) != 1;
     t->ckey     = !dx6 && ((fmt >> 2) & 3) == 1;
     t->min      = (filt >> 24) & 7;
     t->mag      = (filt >> 28) & 7;
