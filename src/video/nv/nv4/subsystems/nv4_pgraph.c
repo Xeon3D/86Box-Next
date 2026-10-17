@@ -312,6 +312,13 @@ nv4_pgraph_method(nv4_t *nv4, int chid, int subc, uint32_t mthd, uint32_t data)
 
     if (!(GR(NV4_PGRAPH_FIFO) & 1))
         return NV4_MTHD_STALL;
+    /* Nor while a trapped method waits for the driver: the TNT's resource
+       manager turns FIFO access back on from other interrupt paths (its
+       PFIFO handler) before it has read the trap, and the next method
+       would overwrite TRAPPED_ADDR/DATA. The OpenGL ICD's swizzled-surface
+       context method for its texture uploads was lost that way. */
+    if (GR(NV4_PGRAPH_INTR) & (NV4_PGRAPH_INTR_NOTIFY | NV4_PGRAPH_INTR_BUFFER_NOTIFY | NV4_PGRAPH_INTR_MISSING_HW))
+        return NV4_MTHD_STALL;
 
     GR(NV4_PGRAPH_TRAPPED_ADDR) = mthd | (subc << 13) | ((uint32_t) chid << 24);
     GR(NV4_PGRAPH_TRAPPED_DATA) = data;
