@@ -3451,6 +3451,10 @@ p2_fragment_3d(p2_t *p2, int x, int y)
         const int res = p2_texture_3d(p2, P2_AT(r->tex[0], r->dtex_dx[0]), P2_AT(r->tex[1], r->dtex_dx[1]),
                                       P2_AT(r->tex[2], r->dtex_dx[2]), t);
 
+        if ((p2_do_log >= 3) && (r->row < 2) && (r->col < 3))
+            pclog("P2: frag3d %i,%i s %llX t %llX q %llX res %i texel %02X%02X%02X%02X f %02X%02X%02X%02X\n", x, y,
+                  (unsigned long long) P2_AT(r->tex[0], r->dtex_dx[0]), (unsigned long long) P2_AT(r->tex[1], r->dtex_dx[1]),
+                  (unsigned long long) P2_AT(r->tex[2], r->dtex_dx[2]), res, t[3], t[2], t[1], t[0], f[3], f[2], f[1], f[0]);
         if (!res)
             return;
         if ((res == 1) && (p2->gp[TAG_TEXTURE_COLOR_MODE] & 1))
@@ -3601,6 +3605,15 @@ p2_draw_step(p2_t *p2)
     if (r->prim == PRIM_RECT) {
         x = r->origin_x + ((cmd & RENDER_X_POSITIVE) ? (int) r->col : (int) (r->columns - 1 - r->col));
         y = r->origin_y + ((cmd & RENDER_Y_POSITIVE) ? (int) r->row : (int) (r->rows - 1 - r->row));
+    } else if (r->prim == PRIM_LINE) {
+        /* Lines take the pixel whose centre the DDA has passed: the integer
+           part of the position less a half. Both the 3Dlabs and ELSA Win9x
+           drivers load StartXDom/StartY as X + 1 - 1/65536 with no bias,
+           which this makes exactly GDI's GIQ lines in every octant (plain
+           truncation drew every line pixel whose fraction is below .5 one
+           step too far: CARDTEST GDICHK LINES, polygon outlines, clipping). */
+        y = (int) p2_fixed_int(r->y - 0x8000);
+        x = (int) p2_fixed_int(r->xdom - 0x8000);
     } else {
         y = (int) p2_fixed_int(r->y);
         x = (int) p2_fixed_int(r->xdom);
@@ -3611,6 +3624,8 @@ p2_draw_step(p2_t *p2)
     }
     r->frag_x = x;
     r->frag_y = y;
+    if ((p2_do_log >= 4) && (r->prim != PRIM_RECT))
+        pclog("P2: frag %i,%i row %u col %u\n", x, y, r->row, r->col);
 
     if (p2_lb_upload_cmd(p2, cmd)) {
         /* Localbuffer reads to the output FIFO (LBReadMode DataType: depth or
@@ -3837,12 +3852,16 @@ p2_raster_start(p2_t *p2, uint32_t command)
     r->command  = command;
     r->prim     = command & RENDER_PRIM_MASK;
     r->bpp      = p2_fb_bpp(p2);
-    if (p2->gp[TAG_FB_WRITE_CONFIG] & (1 << 18)) {
+    if ((p2->gp[TAG_FB_WRITE_CONFIG] & (1 << 18)) && (p2->gp[TAG_TEXTURE_MAP_FORMAT] & 0x1ff)) {
         /* PatchEnable: a texture download through the framebuffer unit
            (the ICD's glTexImage) writes texels of the texture map's size,
            whatever FBReadPixel says (CI8 indices sent as 32-bit colours to
            a byte address). The patch permutation itself is not modelled:
-           downloads and texture reads both stay linear. */
+           downloads and texture reads both stay linear. The 2D/D3D drivers'
+           Blt loads leave TextureMapFormat at 0 (no partial products: no
+           texture) and give the size in FBReadPixel only; taking 8-bit
+           texels from it wrote 16-bit textures as bytes at half their
+           address, and those textures sampled black (CARDTEST D3DCHK). */
         static const int texel_bytes[8] = { 1, 2, 4, 1, 3, 4, 4, 4 };
 
         r->bpp = texel_bytes[(p2->gp[TAG_TEXTURE_MAP_FORMAT] >> 19) & 7];
@@ -3952,12 +3971,19 @@ p2_raster_start(p2_t *p2, uint32_t command)
            p2->gp[TAG_PACKED_DATA_LIMITS], p2->gp[TAG_RASTERIZER_MODE], p2->gp[TAG_SCISSOR_MODE], p2->gp[TAG_SCISSOR_MIN],
            p2->gp[TAG_SCISSOR_MAX], p2->gp[TAG_FB_WRITE_DATA], p2->gp[TAG_TEXEL0], p2->gp[TAG_FB_WRITE_MODE],
            p2->gp[TAG_FB_SOURCE_DELTA]);
+    if (p2->gp[TAG_FB_WRITE_CONFIG] & (1 << 18))
+        p2_log("P2: render patched: tmf %08X bpp %i\n", p2->gp[TAG_TEXTURE_MAP_FORMAT], r->bpp);
     if (command & RENDER_TEXTURE)
         p2_log("P2: render tex base %08X tmf %08X tdf %08X trm %08X tam %08X tcm %08X lutm %08X lutidx %X s %08X %08X %08X t %08X %08X %08X\n",
                p2->gp[TAG_TEXTURE_BASE], p2->gp[TAG_TEXTURE_MAP_FORMAT], p2->gp[TAG_TEXTURE_DATA_FORMAT],
                p2->gp[TAG_TEXTURE_READ_MODE], p2->gp[TAG_TEXTURE_ADDR_MODE], p2->gp[TAG_TEXTURE_COLOR_MODE],
                p2->gp[TAG_TEXEL_LUT_MODE], p2->gp[TAG_TEXEL_LUT_INDEX], p2->gp[TAG_S_START], p2->gp[TAG_S_START + 1],
                p2->gp[TAG_S_START + 2], p2->gp[TAG_S_START + 3], p2->gp[TAG_S_START + 4], p2->gp[TAG_S_START + 5]);
+    if (command & RENDER_TEXTURE)
+        p2_log("P2: render tex q %08X %08X %08X rgb %08X %08X %08X a %08X ks %08X kd %08X\n",
+               p2->gp[TAG_Q_START], p2->gp[TAG_Q_START + 1], p2->gp[TAG_Q_START + 2], p2->gp[TAG_R_START],
+               p2->gp[TAG_R_START + 3], p2->gp[TAG_R_START + 6], p2->gp[TAG_A_START], p2->gp[TAG_KS_START],
+               p2->gp[TAG_KD_START]);
 
     r->active = r->rows && (r->columns || (r->prim == PRIM_TRAP));
     p2_raster_run(p2);
