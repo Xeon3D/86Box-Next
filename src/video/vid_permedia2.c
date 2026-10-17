@@ -199,6 +199,9 @@ typedef struct p2_raster_t {
     int64_t  dk_dx[3];
     int64_t  dk_dy[3];
     int      out_wait;   /* An upload waiting for output FIFO space. */
+    uint32_t snap_row1;  /* Packed copies: row + 1 of the span's source snapshot. */
+    int64_t  snap_lo;    /* Its first source pixel and length. */
+    int64_t  snap_n;
     int      rel_offset; /* Last: kept from one primitive to the next. */
 } p2_raster_t;
 
@@ -301,6 +304,8 @@ typedef struct p2_t {
     int       hold_count;
     int       in_resume;
     int       hold_overflow;
+    uint8_t  *snap;      /* Packed copies: the current span's source. */
+    size_t    snap_cap;
 } p2_t;
 
 static video_timings_t timing_p2_pci = { .type = VIDEO_PCI, .write_b = 2, .write_w = 2, .write_l = 1, .read_b = 10, .read_w = 10, .read_l = 10 };
@@ -3783,7 +3788,38 @@ p2_draw_step(p2_t *p2)
                             (int64_t) y * p2_pitch(rm) * ((rm & FBRM_ORIGIN_BOT) ? -1 : 1) +
                             p2_sext(p2->gp[TAG_FB_SOURCE_OFFSET], 24) - ((rm & FBRM_PACKED) ? r->rel_offset : 0);
 
-        color = p2_fb_read(p2, src * bpp, bpp);
+        if (rm & FBRM_PACKED) {
+            /* Packed copies move whole dwords: the chip reads each source
+               dword before it writes the destination dword, so a span sees
+               its source as it was when the span began. The 3Dlabs drivers
+               scroll right by a pixel at 16 bpp as a left-to-right packed copy
+               with RelativeOffset 1; read pixel by pixel, the first column
+               smeared across the row (CARDTEST GDICHK SCROLL, DDCHK OVERLAP). */
+            if (r->snap_row1 != r->row + 1) {
+                const int     dir   = (r->prim == PRIM_RECT) ? ((cmd & RENDER_X_POSITIVE) ? 1 : -1)
+                                                             : ((r->xsub >= r->xdom) ? 1 : -1);
+                const int64_t first = src - (int64_t) r->col * dir;
+                const int64_t last  = first + (int64_t) (r->columns ? r->columns - 1 : 0) * dir;
+                const int64_t n     = ((first > last) ? (first - last) : (last - first)) + 1;
+
+                if ((size_t) (n * bpp) > p2->snap_cap) {
+                    p2->snap_cap = (size_t) (n * bpp) + 1024;
+                    p2->snap     = realloc(p2->snap, p2->snap_cap);
+                }
+                r->snap_lo = MIN(first, last);
+                r->snap_n  = n;
+                for (int64_t i = 0; i < n * bpp; i++)
+                    p2->snap[i] = (uint8_t) p2_fb_read(p2, r->snap_lo * bpp + i, 1);
+                r->snap_row1 = r->row + 1;
+            }
+            if ((src >= r->snap_lo) && (src < r->snap_lo + r->snap_n)) {
+                color = 0;
+                for (int i = 0; i < bpp; i++)
+                    color |= (uint32_t) p2->snap[(src - r->snap_lo) * bpp + i] << (i << 3);
+            } else
+                color = p2_fb_read(p2, src * bpp, bpp);
+        } else
+            color = p2_fb_read(p2, src * bpp, bpp);
         raw   = 1;
     } else if (!(cmd & RENDER_FAST_FILL) && (rm & FBRM_PACKED) && !r->shade && !(p2->gp[TAG_COLOR_DDA_MODE] & 1)) {
         /* Packed data with neither host data nor a source read is the
@@ -5161,6 +5197,7 @@ p2_close(void *priv)
     i2c_gpio_close(p2->i2c_vs);
     free(p2->hold_tag);
     free(p2->hold_val);
+    free(p2->snap);
     free(p2);
 }
 
