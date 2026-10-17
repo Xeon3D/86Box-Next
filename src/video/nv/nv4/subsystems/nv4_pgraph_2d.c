@@ -445,6 +445,7 @@ typedef struct {
     int        pat_color;
     uint32_t   pat_mono[2];
     uint32_t   pat_c[2];
+    int        pat_t[2]; /* a mono pattern color with zero alpha: not drawn */
     uint32_t   pat_ram[64];
     uint32_t   beta;
     uint32_t   beta4;
@@ -527,6 +528,19 @@ nv4_draw_begin(nv4_t *nv4, nv4_draw_t *d, int oclip, int use_uclip)
         d->pat_mono[1] = GR(NV4_PGRAPH_PATTERN + 4);
         d->pat_c[0]    = nv4_pack(nv4_color(GR(NV4_PGRAPH_PATT_COLOR0), pfmt), d->dst.fmt);
         d->pat_c[1]    = nv4_pack(nv4_color(GR(NV4_PGRAPH_PATT_COLOR1), pfmt), d->dst.fmt);
+        /* A mono pattern color whose alpha is zero leaves its pixels
+           alone: the display driver's transparent hatch brushes set
+           color 0 to 0 and the opaque ones give it full alpha. Into an
+           8-bit surface the alpha is bits 15:8 (the driver ORs 0xff00
+           into an index there). */
+        for (int i = 0; i < 2; i++) {
+            uint32_t c = GR(NV4_PGRAPH_PATT_COLOR0 + i * 4);
+
+            if (d->dst.fmt == 1)
+                d->pat_t[i] = !(c & 0xff00);
+            else
+                d->pat_t[i] = !(nv4_color(c, pfmt).argb >> 24);
+        }
         if (d->pat_color) {
             for (int i = 0; i < 64; i++) {
                 uint32_t c = GR(NV4_PGRAPH_PATT_COLORRAM + i * 4) & 0xffffff;
@@ -625,10 +639,12 @@ nv4_run_put(nv4_draw_t *d, int32_t x, int32_t y, uint32_t s)
     nv4->run2d.x1    = x + 1;
 }
 
+/* The pattern at x,y; *skip is set when a transparent mono color
+   leaves the pixel alone. */
 static uint32_t
-nv4_pattern(const nv4_draw_t *d, int x, int y)
+nv4_pattern(const nv4_draw_t *d, int x, int y, int *skip)
 {
-    int i;
+    int i, b;
 
     switch (d->pat_shape) {
         case 1:
@@ -643,7 +659,9 @@ nv4_pattern(const nv4_draw_t *d, int x, int y)
     }
     if (d->pat_color)
         return d->pat_ram[i];
-    return d->pat_c[(d->pat_mono[i >> 5] >> (i & 31)) & 1];
+    b = (d->pat_mono[i >> 5] >> (i & 31)) & 1;
+    *skip = d->pat_t[b];
+    return d->pat_c[b];
 }
 
 /* One pixel of source <sp> (whose value packed for the destination is
@@ -655,12 +673,20 @@ nv4_put(nv4_draw_t *d, int32_t x, int32_t y, nv4_px_t sp, uint32_t s)
     uint32_t rel;
     uint32_t a;
     uint32_t dv = 0;
+    uint32_t pv = 0;
     uint32_t out;
 
     if ((x < d->cx0) || (x >= d->cx1) || (y < d->cy0) || (y >= d->cy1))
         return;
     if (d->chroma && ((s & d->cmask) == d->chroma_val))
         return;
+    if (d->rop_p) {
+        int skip = 0;
+
+        pv = nv4_pattern(d, x, y, &skip);
+        if (skip)
+            return;
+    }
     nv4->eng_bytes += d->dst.bpp * (d->rop_d ? 2 : 1);
     if (d->defer) {
         /* the 3D batch keeps a row's pixels on its row's bytes */
@@ -687,7 +713,7 @@ nv4_put(nv4_draw_t *d, int32_t x, int32_t y, nv4_px_t sp, uint32_t s)
 
     switch (d->op) {
         case 1: /* ROP_AND */
-            out = nv4_rop3(d->rop, d->rop_p ? nv4_pattern(d, x, y) : 0, s, dv);
+            out = nv4_rop3(d->rop, pv, s, dv);
             break;
         case 2: /* BLEND_AND */
             {
