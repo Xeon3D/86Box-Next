@@ -199,6 +199,10 @@ typedef struct p2_raster_t {
     int64_t  dk_dx[3];
     int64_t  dk_dy[3];
     int      out_wait;   /* An upload waiting for output FIFO space. */
+    uint32_t mask_skip;  /* Block fills: rows the scissor kept out of the mask stream. */
+    uint32_t snap_row1;  /* Packed copies: row + 1 of the span's source snapshot. */
+    int64_t  snap_lo;    /* Its first source pixel and length. */
+    int64_t  snap_n;
     int      rel_offset; /* Last: kept from one primitive to the next. */
 } p2_raster_t;
 
@@ -301,6 +305,9 @@ typedef struct p2_t {
     int       hold_count;
     int       in_resume;
     int       hold_overflow;
+    uint8_t  *snap;      /* Packed copies: the current span's source. */
+    size_t    snap_cap;
+    uint32_t  lfb_writes; /* Debug ("dev p2 tags"): aperture writes since the last call. */
 } p2_t;
 
 static video_timings_t timing_p2_pci = { .type = VIDEO_PCI, .write_b = 2, .write_w = 2, .write_l = 1, .read_b = 10, .read_w = 10, .read_l = 10 };
@@ -1120,6 +1127,7 @@ p2_lfb_writeb(uint32_t addr, uint8_t val, void *priv)
     const uint8_t  mask = p2->bypass_mask >> ((addr & 3) << 3);
 
     addr &= p2->vram_mask;
+    p2->lfb_writes++;
     p2->svga.vram[addr] = (p2->svga.vram[addr] & ~mask) | (val & mask);
     p2_vram_changed(p2, addr);
 }
@@ -1137,6 +1145,7 @@ p2_lfb_writew(uint32_t addr, uint16_t val, void *priv)
         return;
     }
     addr &= p2->vram_mask;
+    p2->lfb_writes++;
     v  = (uint16_t *) &p2->svga.vram[addr];
     *v = (*v & ~mask) | (val & mask);
     p2_vram_changed(p2, addr);
@@ -1154,6 +1163,7 @@ p2_lfb_writel(uint32_t addr, uint32_t val, void *priv)
         return;
     }
     addr &= p2->vram_mask;
+    p2->lfb_writes++;
     v  = (uint32_t *) &p2->svga.vram[addr];
     *v = (*v & ~p2->bypass_mask) | (val & p2->bypass_mask);
     p2_vram_changed(p2, addr);
@@ -1693,6 +1703,9 @@ p2_ctrl_write_int(p2_t *p2, uint32_t addr, uint32_t val)
         case P2_BYDMA_CONTROL:
             p2->bydma[(addr - P2_BYDMA_ADDRESS) >> 3] = val;
             p2->bydma_x = p2->bydma_y = 0;
+            p2_log("P2: bypass ctl %08X src %08X stride %08X mem %08X size %08X mask %08X\n", val, p2->bydma[0],
+                   p2->bydma[(P2_BYDMA_STRIDE - P2_BYDMA_ADDRESS) >> 3], p2->bydma[(P2_BYDMA_MEMADDR - P2_BYDMA_ADDRESS) >> 3],
+                   p2->bydma[(P2_BYDMA_SIZE - P2_BYDMA_ADDRESS) >> 3], p2->bydma[(P2_BYDMA_BYTEMASK - P2_BYDMA_ADDRESS) >> 3]);
             if ((val & 3) == 1)
                 p2_bypass_dma(p2);
             break;
@@ -2434,9 +2447,14 @@ p2_block_color(p2_t *p2, int x, int y)
     uint64_t       pat   = p2->gp[TAG_FB_BLOCK_COLOR_L] | ((uint64_t) p2->gp[TAG_FB_BLOCK_COLOR_U] << 32);
 
     if ((lutm & 3) == 3) {
-        /* LUT DirectIndex block fills: Y's low 3 bits pick two consecutive
-           entries for the lower and upper halves of the block colour. */
-        const uint32_t i = ((y & 7) * 2 + ((lutm >> 2) & 0xff)) & 0xff;
+        /* LUT DirectIndex block fills: Y's low 3 bits pick the pattern row,
+           8 >> PixelsPerEntry entries long, and two consecutive entries from
+           it make the lower and upper halves of the block colour. A 64-bit
+           block holds half a row at 16 bpp, so the 3Dlabs drivers fill a
+           colour brush in two passes (LUTOffset 0 and 2, the second 4 pixels
+           on, through a reused bit mask); with a fixed two-entry row only
+           8 bpp brushes came out right. */
+        const uint32_t i = ((y & 7) * (8 >> ((lutm >> 10) & 3)) + ((lutm >> 2) & 0xff)) & 0xff;
 
         const uint32_t j = (i + 1) & 0xff;
 
@@ -2590,14 +2608,19 @@ p2_next_fragment(p2_t *p2)
         r->payload_left = 0;
 }
 
-/* A block fill's mask from texture memory: one word per 32 pixels. */
+/* A block fill's mask from texture memory: one texel per texel-size pixels
+   (TextureMapFormat TexelSize 8, 16, 24 or 32 bits). The 3Dlabs drivers
+   cache glyphs with the smallest size that holds a row; 17-24 pixel wide
+   glyphs use 24-bit texels, which were read as bytes (8 columns of each). */
 static void
 p2_load_texture_mask(p2_t *p2)
 {
-    p2_raster_t   *r      = &p2->raster;
-    const int      tbytes = 1 << ((p2->gp[TAG_TEXTURE_MAP_FORMAT] >> 19) & 3);
-    const int64_t  blocks = (r->columns + 31) / 32;
-    const int64_t  block  = (int64_t) r->row * blocks + r->col / 32;
+    static const int texel_bytes[8] = { 1, 2, 4, 1, 3, 4, 4, 4 };
+    p2_raster_t     *r      = &p2->raster;
+    const int        tbytes = texel_bytes[(p2->gp[TAG_TEXTURE_MAP_FORMAT] >> 19) & 7];
+    const int        bits   = tbytes * 8;
+    const int64_t    blocks = (r->columns + bits - 1) / bits;
+    const int64_t    block  = (int64_t) (r->row - r->mask_skip) * blocks + r->col / bits;
     const int64_t  s      = (int64_t) p2_sext(p2->gp[TAG_S_START], 32) / 0x100000 +
                       block * ((int64_t) p2_sext(p2->gp[TAG_DS_DX], 32) / 0x100000);
     const int64_t  width  = (int64_t) 1 << ((p2->gp[TAG_TEXTURE_READ_MODE] >> 9) & 15);
@@ -2611,7 +2634,7 @@ p2_load_texture_mask(p2_t *p2)
         mask = ((mask & 0x0f0f0f0f) << 4) | ((mask >> 4) & 0x0f0f0f0f);
     }
     r->payload      = mask;
-    r->payload_left = MIN(32, r->columns - r->col);
+    r->payload_left = MIN((uint32_t) bits, r->columns - r->col);
 }
 
 static int64_t
@@ -3592,6 +3615,21 @@ p2_draw_step(p2_t *p2)
         p2_next_fragment(p2);
         return 1;
     }
+    if (r->texture_block && !r->col && (r->prim == PRIM_RECT) && (p2->gp[TAG_SCISSOR_MODE] & 1)) {
+        /* Rows above or below the user scissor are not rasterized and take
+           no texels from the mask stream: the 3Dlabs Win9x driver draws a
+           cached glyph whole and leaves the cut to the scissor, so a glyph
+           cut at the top showed its first rows in place of the visible ones
+           (CARDTEST GDICHK TEXT's clipped run, CLIP's text). */
+        const int ry = r->origin_y + ((cmd & RENDER_Y_POSITIVE) ? (int) r->row : (int) (r->rows - 1 - r->row));
+
+        if ((ry < p2_sext(p2->gp[TAG_SCISSOR_MIN] >> 16, 16)) || (ry >= p2_sext(p2->gp[TAG_SCISSOR_MAX] >> 16, 16))) {
+            r->mask_skip++;
+            r->col = r->columns - 1;
+            p2_next_fragment(p2);
+            return 1;
+        }
+    }
     if (r->texture_block && !r->payload_left)
         p2_load_texture_mask(p2);
     if (mask && !host && (cmd & RENDER_REUSE_BITMASK) && !r->payload_left) {
@@ -3605,16 +3643,14 @@ p2_draw_step(p2_t *p2)
     if (r->prim == PRIM_RECT) {
         x = r->origin_x + ((cmd & RENDER_X_POSITIVE) ? (int) r->col : (int) (r->columns - 1 - r->col));
         y = r->origin_y + ((cmd & RENDER_Y_POSITIVE) ? (int) r->row : (int) (r->rows - 1 - r->row));
-    } else if (r->prim == PRIM_LINE) {
-        /* Lines take the pixel whose centre the DDA has passed: the integer
-           part of the position less a half. Both the 3Dlabs and ELSA Win9x
-           drivers load StartXDom/StartY as X + 1 - 1/65536 with no bias,
-           which this makes exactly GDI's GIQ lines in every octant (plain
-           truncation drew every line pixel whose fraction is below .5 one
-           step too far: CARDTEST GDICHK LINES, polygon outlines, clipping). */
-        y = (int) p2_fixed_int(r->y - 0x8000);
-        x = (int) p2_fixed_int(r->xdom - 0x8000);
     } else {
+        /* Lines too take the integer part of the DDA (the manual, ES40).
+           NT4's ELSA driver starts them at X + 1/2 - 1/65536 and so draws
+           GDI's GIQ lines exactly; the Win9x drivers (3Dlabs and ELSA, one
+           code base) start at X + 1 - 1/65536, which puts every minor-axis
+           pixel with a fraction below one half a step too far -- on the real
+           chip as well, as no one rule can serve both (CARDTEST GDICHK LINES
+           on Win98). */
         y = (int) p2_fixed_int(r->y);
         x = (int) p2_fixed_int(r->xdom);
         if (p2_packed_trap(p2, cmd))
@@ -3783,7 +3819,38 @@ p2_draw_step(p2_t *p2)
                             (int64_t) y * p2_pitch(rm) * ((rm & FBRM_ORIGIN_BOT) ? -1 : 1) +
                             p2_sext(p2->gp[TAG_FB_SOURCE_OFFSET], 24) - ((rm & FBRM_PACKED) ? r->rel_offset : 0);
 
-        color = p2_fb_read(p2, src * bpp, bpp);
+        if (rm & FBRM_PACKED) {
+            /* Packed copies move whole dwords: the chip reads each source
+               dword before it writes the destination dword, so a span sees
+               its source as it was when the span began. The 3Dlabs drivers
+               scroll right by a pixel at 16 bpp as a left-to-right packed copy
+               with RelativeOffset 1; read pixel by pixel, the first column
+               smeared across the row (CARDTEST GDICHK SCROLL, DDCHK OVERLAP). */
+            if (r->snap_row1 != r->row + 1) {
+                const int     dir   = (r->prim == PRIM_RECT) ? ((cmd & RENDER_X_POSITIVE) ? 1 : -1)
+                                                             : ((r->xsub >= r->xdom) ? 1 : -1);
+                const int64_t first = src - (int64_t) r->col * dir;
+                const int64_t last  = first + (int64_t) (r->columns ? r->columns - 1 : 0) * dir;
+                const int64_t n     = ((first > last) ? (first - last) : (last - first)) + 1;
+
+                if ((size_t) (n * bpp) > p2->snap_cap) {
+                    p2->snap_cap = (size_t) (n * bpp) + 1024;
+                    p2->snap     = realloc(p2->snap, p2->snap_cap);
+                }
+                r->snap_lo = MIN(first, last);
+                r->snap_n  = n;
+                for (int64_t i = 0; i < n * bpp; i++)
+                    p2->snap[i] = (uint8_t) p2_fb_read(p2, r->snap_lo * bpp + i, 1);
+                r->snap_row1 = r->row + 1;
+            }
+            if ((src >= r->snap_lo) && (src < r->snap_lo + r->snap_n)) {
+                color = 0;
+                for (int i = 0; i < bpp; i++)
+                    color |= (uint32_t) p2->snap[(src - r->snap_lo) * bpp + i] << (i << 3);
+            } else
+                color = p2_fb_read(p2, src * bpp, bpp);
+        } else
+            color = p2_fb_read(p2, src * bpp, bpp);
         raw   = 1;
     } else if (!(cmd & RENDER_FAST_FILL) && (rm & FBRM_PACKED) && !r->shade && !(p2->gp[TAG_COLOR_DDA_MODE] & 1)) {
         /* Packed data with neither host data nor a source read is the
@@ -3973,6 +4040,11 @@ p2_raster_start(p2_t *p2, uint32_t command)
            p2->gp[TAG_FB_SOURCE_DELTA]);
     if (p2->gp[TAG_FB_WRITE_CONFIG] & (1 << 18))
         p2_log("P2: render patched: tmf %08X bpp %i\n", p2->gp[TAG_TEXTURE_MAP_FORMAT], r->bpp);
+    if (command & RENDER_AREA_STIPPLE)
+        p2_log("P2: render stipple mode %08X pat %02X %02X %02X %02X %02X %02X %02X %02X\n", p2->gp[TAG_AREA_STIPPLE_MODE],
+               p2->gp[TAG_AREA_STIPPLE_PAT] & 0xff, p2->gp[TAG_AREA_STIPPLE_PAT + 1] & 0xff, p2->gp[TAG_AREA_STIPPLE_PAT + 2] & 0xff,
+               p2->gp[TAG_AREA_STIPPLE_PAT + 3] & 0xff, p2->gp[TAG_AREA_STIPPLE_PAT + 4] & 0xff, p2->gp[TAG_AREA_STIPPLE_PAT + 5] & 0xff,
+               p2->gp[TAG_AREA_STIPPLE_PAT + 6] & 0xff, p2->gp[TAG_AREA_STIPPLE_PAT + 7] & 0xff);
     if (command & RENDER_TEXTURE)
         p2_log("P2: render tex base %08X tmf %08X tdf %08X trm %08X tam %08X tcm %08X lutm %08X lutidx %X s %08X %08X %08X t %08X %08X %08X\n",
                p2->gp[TAG_TEXTURE_BASE], p2->gp[TAG_TEXTURE_MAP_FORMAT], p2->gp[TAG_TEXTURE_DATA_FORMAT],
@@ -3994,8 +4066,11 @@ p2_raster_continue(p2_t *p2, uint32_t tag, uint32_t count)
 {
     p2_raster_t *r = &p2->raster;
 
-    /* The finished primitive's DDAs take one more step, then reload as asked. */
-    if (r->prim != PRIM_RECT) {
+    /* The finished primitive's DDAs take one more step, then reload as asked.
+       A primitive with no rows (NT4's ELSA driver starts each span run of a
+       filled ellipse as a Count 0 trapezoid, then continues) owes no step:
+       taking one dropped a scanline at every join (CARDTEST GDICHK SHAPES). */
+    if ((r->prim != PRIM_RECT) && r->rows) {
         r->xdom += r->dxdom;
         r->xsub += r->dxsub;
         r->y += r->dy;
@@ -4805,6 +4880,8 @@ p2_debug_hook(const char *args)
                 pclog("P2: tag %03X n %8u = %08X\n", i, p2->tag_count[i], p2->gp[i]);
         }
         memset(p2->tag_count, 0, sizeof(p2->tag_count));
+        pclog("P2: aperture writes %u\n", p2->lfb_writes);
+        p2->lfb_writes = 0;
         return;
     }
 
@@ -5161,6 +5238,7 @@ p2_close(void *priv)
     i2c_gpio_close(p2->i2c_vs);
     free(p2->hold_tag);
     free(p2->hold_val);
+    free(p2->snap);
     free(p2);
 }
 
