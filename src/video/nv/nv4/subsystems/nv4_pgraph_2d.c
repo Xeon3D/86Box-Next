@@ -1916,6 +1916,20 @@ nv4_class_lin(nv4_t *nv4, nv4_gr_chan_t *ch, int cls, uint32_t mthd, uint32_t da
     }
 }
 
+/* A whole triangle: a mesh vertex after it closes the next triangle
+   with its last two points (the display driver fans a convex polygon
+   out as a triangle, then mesh vertices). */
+static void
+nv4_tri_whole(nv4_t *nv4, nv4_gr_chan_t *ch)
+{
+    nv4_triangle(nv4, ch->vx, ch->vy, ch->color);
+    ch->vx[0] = ch->vx[1];
+    ch->vy[0] = ch->vy[1];
+    ch->vx[1] = ch->vx[2];
+    ch->vy[1] = ch->vy[2];
+    ch->nvtx  = 2;
+}
+
 static void
 nv4_tri_vertex(nv4_t *nv4, nv4_gr_chan_t *ch, int32_t x, int32_t y)
 {
@@ -1947,8 +1961,9 @@ nv4_class_tri(nv4_t *nv4, nv4_gr_chan_t *ch, int cls, uint32_t mthd, uint32_t da
         ch->vx[k] = (int16_t) data;
         ch->vy[k] = (int16_t) (data >> 16);
         if (k == 2)
-            nv4_triangle(nv4, ch->vx, ch->vy, ch->color);
-        ch->nvtx = 0;
+            nv4_tri_whole(nv4, ch);
+        else
+            ch->nvtx = 0;
         return NV4_GR_OK;
     }
     if ((mthd >= 0x320) && (mthd < 0x338)) {
@@ -1958,8 +1973,10 @@ nv4_class_tri(nv4_t *nv4, nv4_gr_chan_t *ch, int cls, uint32_t mthd, uint32_t da
             ch->vx[k] = (int32_t) data;
         else {
             ch->vy[k] = (int32_t) data;
-            if (k == 2)
-                nv4_triangle(nv4, ch->vx, ch->vy, ch->color);
+            if (k == 2) {
+                nv4_tri_whole(nv4, ch);
+                return NV4_GR_OK;
+            }
         }
         ch->nvtx = 0;
         return NV4_GR_OK;
@@ -1985,7 +2002,7 @@ nv4_class_tri(nv4_t *nv4, nv4_gr_chan_t *ch, int cls, uint32_t mthd, uint32_t da
             ch->vx[k - 1] = (int16_t) data;
             ch->vy[k - 1] = (int16_t) (data >> 16);
             if (k == 3)
-                nv4_triangle(nv4, ch->vx, ch->vy, ch->color);
+                nv4_tri_whole(nv4, ch);
         }
         return NV4_GR_OK;
     }
