@@ -1089,12 +1089,17 @@ p2_lfb_readb(uint32_t addr, void *priv)
     return p2->svga.vram[addr & p2->vram_mask];
 }
 
+/* Unaligned words and dwords (the DIB engine reads 16 bpp sources at odd
+   pixels as dwords) reach the card as aligned PCI cycles with byte enables:
+   the bytes at the address asked for, each through its own byte lane. */
 static uint16_t
 p2_lfb_readw(uint32_t addr, void *priv)
 {
     const p2_t *p2 = (p2_t *) priv;
 
-    return *(uint16_t *) &p2->svga.vram[addr & p2->vram_mask & ~1];
+    if (addr & 1)
+        return p2_lfb_readb(addr, priv) | (p2_lfb_readb(addr + 1, priv) << 8);
+    return *(uint16_t *) &p2->svga.vram[addr & p2->vram_mask];
 }
 
 static uint32_t
@@ -1102,7 +1107,9 @@ p2_lfb_readl(uint32_t addr, void *priv)
 {
     const p2_t *p2 = (p2_t *) priv;
 
-    return *(uint32_t *) &p2->svga.vram[addr & p2->vram_mask & ~3];
+    if (addr & 3)
+        return p2_lfb_readw(addr, priv) | ((uint32_t) p2_lfb_readw(addr + 2, priv) << 16);
+    return *(uint32_t *) &p2->svga.vram[addr & p2->vram_mask];
 }
 
 
@@ -1124,7 +1131,12 @@ p2_lfb_writew(uint32_t addr, uint16_t val, void *priv)
     const uint16_t mask = p2->bypass_mask >> ((addr & 2) << 3);
     uint16_t      *v;
 
-    addr &= p2->vram_mask & ~1;
+    if (addr & 1) {
+        p2_lfb_writeb(addr, val, priv);
+        p2_lfb_writeb(addr + 1, val >> 8, priv);
+        return;
+    }
+    addr &= p2->vram_mask;
     v  = (uint16_t *) &p2->svga.vram[addr];
     *v = (*v & ~mask) | (val & mask);
     p2_vram_changed(p2, addr);
@@ -1136,7 +1148,12 @@ p2_lfb_writel(uint32_t addr, uint32_t val, void *priv)
     p2_t     *p2 = (p2_t *) priv;
     uint32_t *v;
 
-    addr &= p2->vram_mask & ~3;
+    if (addr & 3) {
+        p2_lfb_writew(addr, val, priv);
+        p2_lfb_writew(addr + 2, val >> 16, priv);
+        return;
+    }
+    addr &= p2->vram_mask;
     v  = (uint32_t *) &p2->svga.vram[addr];
     *v = (*v & ~p2->bypass_mask) | (val & p2->bypass_mask);
     p2_vram_changed(p2, addr);
@@ -2761,6 +2778,23 @@ p2_texture_color(p2_t *p2, int *raw)
     uint32_t       aa = 0xff;
 
     *raw = 0;
+    if ((lutm & 3) == 3) {
+        /* LUT DirectIndex (PRM 5.8.6): an 8x8 pattern by the fragment's
+           position, no texture read. The 2D drivers load a colour brush as
+           framebuffer pixels, PixelsPerEntry of them in an entry (16 bpp:
+           two), and fill packed rectangles with it; each pixel takes its
+           part of the entry. */
+        const int ppe = (lutm >> 10) & 3;
+        const int sub = r->frag_x & ((1 << ppe) - 1);
+
+        v = (uint32_t) (((r->frag_y & 7) * (8 >> ppe)) + ((r->frag_x & 7) >> ppe));
+        v = (v + ((lutm >> 2) & 0xff)) & 0xff;
+        v = (v < 16) ? p2->gp[TAG_TEXEL_LUT0 + v] : p2->texel_lut[v];
+        if (ppe)
+            v >>= sub * (32 >> ppe);
+        *raw = 1;
+        return v;
+    }
     switch ((tmf >> 19) & 7) {
         case 1:
             v = p2_fb_read(p2, tex * 2, 2);
@@ -3575,6 +3609,8 @@ p2_draw_step(p2_t *p2)
         if (r->prim == PRIM_TRAP)
             x += (r->xsub >= r->xdom) ? (int) r->col : -(int) r->col - 1;
     }
+    r->frag_x = x;
+    r->frag_y = y;
 
     if (p2_lb_upload_cmd(p2, cmd)) {
         /* Localbuffer reads to the output FIFO (LBReadMode DataType: depth or
@@ -3916,6 +3952,12 @@ p2_raster_start(p2_t *p2, uint32_t command)
            p2->gp[TAG_PACKED_DATA_LIMITS], p2->gp[TAG_RASTERIZER_MODE], p2->gp[TAG_SCISSOR_MODE], p2->gp[TAG_SCISSOR_MIN],
            p2->gp[TAG_SCISSOR_MAX], p2->gp[TAG_FB_WRITE_DATA], p2->gp[TAG_TEXEL0], p2->gp[TAG_FB_WRITE_MODE],
            p2->gp[TAG_FB_SOURCE_DELTA]);
+    if (command & RENDER_TEXTURE)
+        p2_log("P2: render tex base %08X tmf %08X tdf %08X trm %08X tam %08X tcm %08X lutm %08X lutidx %X s %08X %08X %08X t %08X %08X %08X\n",
+               p2->gp[TAG_TEXTURE_BASE], p2->gp[TAG_TEXTURE_MAP_FORMAT], p2->gp[TAG_TEXTURE_DATA_FORMAT],
+               p2->gp[TAG_TEXTURE_READ_MODE], p2->gp[TAG_TEXTURE_ADDR_MODE], p2->gp[TAG_TEXTURE_COLOR_MODE],
+               p2->gp[TAG_TEXEL_LUT_MODE], p2->gp[TAG_TEXEL_LUT_INDEX], p2->gp[TAG_S_START], p2->gp[TAG_S_START + 1],
+               p2->gp[TAG_S_START + 2], p2->gp[TAG_S_START + 3], p2->gp[TAG_S_START + 4], p2->gp[TAG_S_START + 5]);
 
     r->active = r->rows && (r->columns || (r->prim == PRIM_TRAP));
     p2_raster_run(p2);
