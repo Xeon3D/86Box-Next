@@ -14,6 +14,10 @@
  *                 cpu              CS:EIP, registers and the code bytes there
  *                 peek addr        the physical address and 16 bytes at a linear address
  *                 peekp addr [n]   n (16) bytes at a physical address, 16 a line
+ *                 findp hexbytes   the physical addresses (first 32) where RAM holds the bytes
+ *                 sel selector     the base and limit of a protected-mode selector (GDT/LDT)
+ *                 bpp addr [n]     as bp, at a physical address (code whose linear address
+ *                                  is not known, e.g. a Windows 9x 16-bit driver segment)
  *                 bp addr [n]      log registers and stack the next n (default 8) times the
  *                                  CPU executes linear addr; "bp clear" drops them all
  *                 wp addr          log each instruction that changes the dword at linear addr
@@ -163,6 +167,7 @@ debug_cmd_cpu(void)
 int             debug_cmd_bp_count;
 static uint32_t debug_cmd_bp_addr[DEBUG_CMD_BPS];
 static uint32_t debug_cmd_bp_left[DEBUG_CMD_BPS];
+static uint8_t  debug_cmd_bp_phys[DEBUG_CMD_BPS];
 extern int      cpu_force_interpreter;
 
 static uint32_t
@@ -194,13 +199,21 @@ debug_cmd_bp_check(uint32_t lin)
         debug_cmd_wp_lastpc = lin;
     }
     for (int i = 0; i < debug_cmd_bp_count; i++) {
-        if ((debug_cmd_bp_addr[i] != lin) || !debug_cmd_bp_left[i])
+        if (!debug_cmd_bp_left[i])
+            continue;
+        if (debug_cmd_bp_phys[i]) {
+            /* Translate only when the page offset already matches. */
+            if ((debug_cmd_bp_addr[i] ^ lin) & 0xfff)
+                continue;
+            if (((cr0 >> 31) ? mmutranslate_noabrt(lin, 0) : (uint64_t) lin) != debug_cmd_bp_addr[i])
+                continue;
+        } else if (debug_cmd_bp_addr[i] != lin)
             continue;
         debug_cmd_bp_left[i]--;
         uint32_t sp = ss + ESP;
-        always_log("debug_cmd: bp %08x eax %08x ebx %08x ecx %08x edx %08x esi %08x edi %08x ebp %08x esp %08x | "
+        always_log("debug_cmd: bp %08x cs %04x eax %08x ebx %08x ecx %08x edx %08x esi %08x edi %08x ebp %08x esp %08x | "
                    "ds %08x es %08x | stack %08x %08x %08x %08x %08x %08x %08x %08x\n",
-                   lin, EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP, ds, es, debug_cmd_lin_read32(sp), debug_cmd_lin_read32(sp + 4),
+                   lin, CS, EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP, ds, es, debug_cmd_lin_read32(sp), debug_cmd_lin_read32(sp + 4),
                    debug_cmd_lin_read32(sp + 8), debug_cmd_lin_read32(sp + 12), debug_cmd_lin_read32(sp + 16),
                    debug_cmd_lin_read32(sp + 20), debug_cmd_lin_read32(sp + 24), debug_cmd_lin_read32(sp + 28));
     }
@@ -229,6 +242,7 @@ debug_cmd_wp(char *arg)
     if (debug_cmd_bp_count == 0) {
         debug_cmd_bp_addr[0] = 0xffffffff;
         debug_cmd_bp_left[0] = 0;
+        debug_cmd_bp_phys[0] = 0;
         debug_cmd_bp_count   = 1;
     }
     cpu_force_interpreter = 1;
@@ -236,7 +250,7 @@ debug_cmd_wp(char *arg)
 }
 
 static void
-debug_cmd_bp(char *arg)
+debug_cmd_bp(char *arg, int phys)
 {
     if (!strncmp(arg, "clear", 5)) {
         debug_cmd_bp_count    = 0;
@@ -252,9 +266,10 @@ debug_cmd_bp(char *arg)
 
     debug_cmd_bp_addr[debug_cmd_bp_count] = addr;
     debug_cmd_bp_left[debug_cmd_bp_count] = n ? n : 8;
+    debug_cmd_bp_phys[debug_cmd_bp_count] = phys;
     debug_cmd_bp_count++;
     cpu_force_interpreter = 1;
-    always_log("debug_cmd: bp %08x x%u\n", addr, n ? n : 8);
+    always_log("debug_cmd: bp%s %08x x%u\n", phys ? "p" : "", addr, n ? n : 8);
 }
 
 /* A linear address (paging-translated without faulting) and the 16 bytes there. */
@@ -289,6 +304,57 @@ debug_cmd_peekp(const char *arg)
             snprintf(bytes + 3 * i, 4, " %02x", mem_readb_phys(phys + o + i));
         always_log("debug_cmd: peekp %08x:%s\n", phys + o, bytes);
     }
+}
+
+/* Search system RAM for a byte string ("findp 8cd890455589e5"). */
+static void
+debug_cmd_findp(const char *arg)
+{
+    uint8_t  pat[64];
+    int      n     = 0;
+    int      found = 0;
+    uint32_t size  = mem_size << 10;
+
+    while (arg[0] && arg[1] && (n < (int) sizeof(pat))) {
+        char hex[3] = { arg[0], arg[1], 0 };
+
+        pat[n++] = (uint8_t) strtoul(hex, NULL, 16);
+        arg += 2;
+        while (*arg == ' ')
+            arg++;
+    }
+    if (!n || !ram)
+        return;
+    for (uint32_t a = 0; (a + n <= size) && (found < 32); a++) {
+        if ((ram[a] == pat[0]) && !memcmp(ram + a, pat, n)) {
+            always_log("debug_cmd: findp %08x\n", a);
+            found++;
+        }
+    }
+    always_log("debug_cmd: findp done, %d found\n", found);
+}
+
+/* A selector's descriptor, from the GDT or the current LDT. */
+static void
+debug_cmd_sel(const char *arg)
+{
+    const uint16_t sel   = (uint16_t) strtoul(arg, NULL, 16);
+    const x86seg  *table = (sel & 4) ? &ldt : &gdt;
+    uint32_t       lo;
+    uint32_t       hi;
+    uint32_t       limit;
+
+    if ((sel & ~7) > table->limit) {
+        always_log("debug_cmd: sel %04x: beyond the %s limit\n", sel, (sel & 4) ? "LDT" : "GDT");
+        return;
+    }
+    lo    = debug_cmd_lin_read32(table->base + (sel & ~7));
+    hi    = debug_cmd_lin_read32(table->base + (sel & ~7) + 4);
+    limit = (lo & 0xffff) | (hi & 0xf0000);
+    if (hi & 0x800000)
+        limit = (limit << 12) | 0xfff;
+    always_log("debug_cmd: sel %04x: base %08x limit %08x access %02x\n", sel,
+               (lo >> 16) | ((hi & 0xff) << 16) | (hi & 0xff000000), limit, (hi >> 8) & 0xff);
 }
 
 int debug_cmd_speed_log;
@@ -440,11 +506,17 @@ debug_cmd_run(char *line)
     else if (!strcmp(line, "wp"))
         debug_cmd_wp(arg);
     else if (!strcmp(line, "bp"))
-        debug_cmd_bp(arg);
+        debug_cmd_bp(arg, 0);
+    else if (!strcmp(line, "bpp"))
+        debug_cmd_bp(arg, 1);
     else if (!strcmp(line, "peek"))
         debug_cmd_peek(arg);
     else if (!strcmp(line, "peekp"))
         debug_cmd_peekp(arg);
+    else if (!strcmp(line, "sel"))
+        debug_cmd_sel(arg);
+    else if (!strcmp(line, "findp"))
+        debug_cmd_findp(arg);
     else if (!strcmp(line, "map"))
         debug_cmd_map(arg);
     else if (!strcmp(line, "speedlog")) {

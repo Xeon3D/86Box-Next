@@ -78,6 +78,7 @@ typedef struct pm_t {
 
     mem_mapping_t lfb_mapping; /* PCI BAR 0 */
     mem_mapping_t xr_mapping;  /* extended registers in the A0000h window */
+    mem_mapping_t port_mapping; /* the blit port at B8000h (SR1B bits 5:3 = 3) */
 
     int      chip;
     void    *ramdac;
@@ -138,6 +139,7 @@ pm_log(const char *fmt, ...)
 }
 
 static void pm_recalc_mappings(pm_t *pm);
+static int  pm_ext_bpp(pm_t *pm);
 
 /* ------------------------------------------------------------------------- */
 /* Extended registers                                                        */
@@ -673,8 +675,14 @@ pm_blt_start(pm_t *pm)
             break;
 
         case BLT_OP_MS:
-            /* Rows come through the blit port, each padded to a dword. */
-            if (ctrl & BLT_SRC_MONO) {
+            /* Rows come through the blit port, each padded to a dword --
+               or, with a contiguous mono source, to a byte (the AT3D
+               driver's glyphs: (w + 7) / 8 * h bytes, the whole padded to a
+               dword). */
+            if ((ctrl & BLT_SRC_MONO) && (ctrl & BLT_SRC_CONTIG)) {
+                pm->blt.host_skip      = pm->xr[0x50] & 7;
+                pm->blt.host_row_bytes = (pm->blt.host_skip + pm->blt.w + 7) >> 3;
+            } else if (ctrl & BLT_SRC_MONO) {
                 pm->blt.host_skip      = pm->xr[0x50] & 0x1f;
                 pm->blt.host_row_bytes = ((pm->blt.host_skip + pm->blt.w + 31) >> 5) << 2;
             } else {
@@ -731,6 +739,54 @@ pm_blt_port_read(pm_t *pm)
     if (pm->blt.rd_pos < pm->blt.rd_len)
         return pm->blt.rd_buf[pm->blt.rd_pos++];
     return 0xff;
+}
+
+static void pm_xr_access_done(pm_t *pm);
+
+/* The blit port in the B8000h window (SR1B bits 5:3 = 3, the AT3D driver's
+   choice; 4 puts it at the end of the aperture). Any address there is the
+   port. */
+static uint8_t
+pm_port_readb(UNUSED(uint32_t addr), void *priv)
+{
+    return pm_blt_port_read((pm_t *) priv);
+}
+
+static uint16_t
+pm_port_readw(UNUSED(uint32_t addr), void *priv)
+{
+    pm_t *pm = (pm_t *) priv;
+
+    return pm_blt_port_read(pm) | (pm_blt_port_read(pm) << 8);
+}
+
+static uint32_t
+pm_port_readl(UNUSED(uint32_t addr), void *priv)
+{
+    pm_t *pm = (pm_t *) priv;
+
+    return pm_port_readw(addr, pm) | (pm_port_readw(addr, pm) << 16);
+}
+
+static void
+pm_port_writeb(UNUSED(uint32_t addr), uint8_t val, void *priv)
+{
+    pm_blt_port_write((pm_t *) priv, val, 1);
+    pm_xr_access_done((pm_t *) priv);
+}
+
+static void
+pm_port_writew(UNUSED(uint32_t addr), uint16_t val, void *priv)
+{
+    pm_blt_port_write((pm_t *) priv, val, 2);
+    pm_xr_access_done((pm_t *) priv);
+}
+
+static void
+pm_port_writel(UNUSED(uint32_t addr), uint32_t val, void *priv)
+{
+    pm_blt_port_write((pm_t *) priv, val, 4);
+    pm_xr_access_done((pm_t *) priv);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -970,6 +1026,12 @@ pm_xr_read(pm_t *pm, uint32_t addr)
                1142h here before it accepts the card). */
             ret = pm->pci_regs[addr & 3];
             break;
+        case 0x1f3:
+            /* Bit 30 of XR1F0: no Voodoo Rush on the board. Alliance's AT3D
+               driver checks it (after XRDB = 4) and otherwise hands
+               DirectDraw the Rush's VG96DD32.DLL, which fails to load. */
+            ret = pm->xr[addr] | ((pm->chip >= PM_AT3D) ? 0x40 : 0x00);
+            break;
         case 0x1f4 ... 0x1f7:
             /* The AT3D's SST status (Voodoo Rush): idle. */
             ret = 0x00;
@@ -1003,7 +1065,7 @@ pm_xr_write(pm_t *pm, uint32_t addr, uint8_t val)
        design (XR200 on) and XR40 bit 16 (24 bpp). The drivers write them
        to tell the generations apart (STB's Detect_Overlay_Hardware_Version
        and Detect_2D_Hardware_Version). */
-    if ((addr >= 0x200) && (addr < 0x2c0))
+    if ((addr >= 0x200) && (addr < 0x2c0) && (pm->chip < PM_AT3D))
         return;
     if ((addr == 0x42) && (pm->chip < PM_AT3D))
         val &= ~0x01;
@@ -1356,6 +1418,7 @@ pm_recalc_mappings(pm_t *pm)
         mem_mapping_disable(&svga->mapping);
         mem_mapping_disable(&pm->lfb_mapping);
         mem_mapping_disable(&pm->xr_mapping);
+        mem_mapping_disable(&pm->port_mapping);
         return;
     }
 
@@ -1389,6 +1452,11 @@ pm_recalc_mappings(pm_t *pm)
         mem_mapping_set_addr(&pm->xr_mapping, 0xa0000, 0x10000);
     else
         mem_mapping_disable(&pm->xr_mapping);
+
+    if ((pm->sr[0x1b - 8] & 0x38) == 0x18)
+        mem_mapping_set_addr(&pm->port_mapping, 0xb8000, 0x8000);
+    else
+        mem_mapping_disable(&pm->port_mapping);
 
     pm->lfb_base = (pm->pci_regs[0x13] << 24) | (pm->pci_regs[0x12] << 16);
     pm->lfb_base &= ~(pm->lfb_size - 1);
@@ -1509,8 +1577,14 @@ pm_out(uint16_t addr, uint8_t val, void *priv)
             if (old != val) {
                 if ((svga->crtcreg < 0x0e) || (svga->crtcreg > 0x10)) {
                     if ((svga->crtcreg == 0x0c) || (svga->crtcreg == 0x0d)) {
-                        svga->fullchange    = 3;
-                        svga->memaddr_latch = ((svga->crtc[0xc] << 8) | svga->crtc[0xd]) + ((svga->crtc[8] & 0x60) >> 5);
+                        svga->fullchange = 3;
+                        /* Extended modes: CR1C bits 3:0 above, as in
+                           pm_recalctimings (a DirectDraw flip writes all
+                           three). In dwords: the core makes it bytes. */
+                        if (pm_ext_bpp(pm))
+                            svga->memaddr_latch = (((pm->cr[0x1c] & 0x0f) << 16) | (svga->crtc[0x0c] << 8) | svga->crtc[0x0d]);
+                        else
+                            svga->memaddr_latch = ((svga->crtc[0xc] << 8) | svga->crtc[0xd]) + ((svga->crtc[8] & 0x60) >> 5);
                     } else {
                         svga->fullchange = svga->monitor->mon_changeframecount;
                         svga_recalctimings(svga);
@@ -1688,7 +1762,7 @@ pm_recalctimings(svga_t *svga)
        hold in the AT3D's 1600x1200 modes; show extended modes with plain
        borders. */
     svga->hoverride      = 1;
-    svga->memaddr_latch  = (((pm->cr[0x1c] & 0x0f) << 16) | (svga->crtc[0x0c] << 8) | svga->crtc[0x0d]) << 2;
+    svga->memaddr_latch  = (((pm->cr[0x1c] & 0x0f) << 16) | (svga->crtc[0x0c] << 8) | svga->crtc[0x0d]); /* dwords: the core shifts it */
     svga->rowoffset      = svga->crtc[0x13] | ((pm->cr[0x1c] & 0xf0) << 4);
     svga->lowres         = 0;
 
@@ -1964,8 +2038,13 @@ pm_init(const device_t *info)
                     pm_xr_readb, pm_xr_readw, pm_xr_readl,
                     pm_xr_writeb, pm_xr_writew, pm_xr_writel,
                     NULL, MEM_MAPPING_EXTERNAL, pm);
+    mem_mapping_add(&pm->port_mapping, 0, 0,
+                    pm_port_readb, pm_port_readw, pm_port_readl,
+                    pm_port_writeb, pm_port_writew, pm_port_writel,
+                    NULL, MEM_MAPPING_EXTERNAL, pm);
     mem_mapping_disable(&pm->lfb_mapping);
     mem_mapping_disable(&pm->xr_mapping);
+    mem_mapping_disable(&pm->port_mapping);
 
     pm->i2c = i2c_gpio_init("ddc_alliance_promotion");
     pm->ddc = ddc_init(i2c_gpio_get_bus(pm->i2c));
