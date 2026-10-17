@@ -577,6 +577,40 @@ s3_virge_serialport_ddc_read(virge_t *virge, uint8_t reg)
     return temp;
 }
 
+/* ViRGE/MX CRTC registers that Controller 1 and Controller 2 each have (some only in
+   part; whole registers here): CR0-CR9, CRC, CRD, CR10-CR13 (CR12 per SR26's read
+   select), CR15-CR17, CR33, CR35, CR3B, CR3C, CR42,
+   CR51, CR5D, CR5E, CR63, CR65, CR67, CR69, CR71, CR90, CR91. */
+static int
+s3_virge_mx_paired(uint8_t reg)
+{
+    switch (reg) {
+        case 0x00 ... 0x09:
+        case 0x0c:
+        case 0x0d:
+        case 0x10 ... 0x13:
+        case 0x15 ... 0x17:
+        case 0x33:
+        case 0x35:
+        case 0x3b:
+        case 0x3c:
+        case 0x42:
+        case 0x51:
+        case 0x5d:
+        case 0x5e:
+        case 0x63:
+        case 0x65:
+        case 0x67:
+        case 0x69:
+        case 0x71:
+        case 0x90:
+        case 0x91:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 static void
 s3_virge_out(uint16_t addr, uint8_t val, void *priv)
 {
@@ -615,15 +649,17 @@ s3_virge_out(uint16_t addr, uint8_t val, void *priv)
             svga->crtcreg = val;
             return;
         case 0x3d5:
-            /* ViRGE/MX SR26 picks the CRTC(s) a write goes to: 40h IGA1, 44h both,
-               4Eh/4Fh IGA2 only. Only IGA1 drives the CRT, so IGA2's panel timings
-               are kept aside for reading back. */
-            if (virge->chip == S3_VIRGEMX) {
+            /* ViRGE/MX: the paired registers (s3_virge_mx_paired) exist once per CRT
+               controller; SR26 bit 3 disables writes to Controller 1's, bit 2 enables
+               writes to Controller 2's (40h C1, 44h both, 4Eh/4Fh C2 only). Only
+               Controller 1 is displayed (the CRT DAC source with no panel), Controller 2's
+               set is kept for reading back. */
+            if ((virge->chip == S3_VIRGEMX) && s3_virge_mx_paired(svga->crtcreg)) {
                 if ((svga->crtcreg >= 0x40) && ((svga->crtc[0x39] & 0xe0) != 0xa0))
                     return;
                 if (svga->seqregs[0x26] & 0x04)
                     virge->crtc_iga2[svga->crtcreg] = val;
-                if (svga->seqregs[0x26] & 0x0a)
+                if (svga->seqregs[0x26] & 0x08)
                     return;
             }
             if ((svga->crtcreg < 7) && (svga->crtc[0x11] & 0x80))
@@ -859,8 +895,12 @@ s3_virge_in(uint16_t addr, void *priv)
             ret = svga->crtcreg;
             break;
         case 0x3d5:
-            if ((virge->chip == S3_VIRGEMX) && (svga->seqregs[0x26] & 0x01) &&
-                (svga->crtcreg != 0x2d) && (svga->crtcreg != 0x2e) && (svga->crtcreg != 0x2f)) {
+            /* SR26 bit 1: all paired reads from Controller 2; bit 0: those of CR0-7,
+               CR10-12 and CR15-16. */
+            if ((virge->chip == S3_VIRGEMX) && s3_virge_mx_paired(svga->crtcreg) &&
+                ((svga->seqregs[0x26] & 0x02) ||
+                 ((svga->seqregs[0x26] & 0x01) && ((svga->crtcreg <= 0x07) ||
+                  ((svga->crtcreg >= 0x10) && (svga->crtcreg <= 0x12)) || (svga->crtcreg == 0x15) || (svga->crtcreg == 0x16))))) {
                 ret = virge->crtc_iga2[svga->crtcreg];
                 break;
             }
@@ -3478,72 +3518,64 @@ s3_virge_bitblt(virge_t *virge, int count, uint32_t cpu_dat)
             break;
 
         case CMD_SET_COMMAND_LINE:
+            /* Lines are drawn from the bottom scanline up. LXSTART (S11.20) is where
+               each scanline's run ends -- x1 + XDELTA/2 for X-major lines (rounded up
+               when going left), x1 for Y-major ones -- and steps by XDELTA per scanline.
+               A scanline draws on from the previous run's end to its own, at least one
+               pixel; the first starts at END0 and the last ends at END1, which may leave
+               either empty ("last pixel off"). The run's end is LXSTART's integer part
+               (truncated): with that, XFree86 3.3's S3V line code (tuned on the chip)
+               gives exactly X11's zero-width lines. */
             if (count == -1) {
                 virge->s3d.dest_x = virge->s3d.lxstart;
                 virge->s3d.dest_y = virge->s3d.lystart;
                 virge->s3d.h      = virge->s3d.lycnt;
                 virge->s3d.rop    = (virge->s3d.cmd_set >> 17) & 0xff;
             }
-            while (virge->s3d.h) {
-                int x;
-                int new_x;
-                int first_pixel = 1;
+            {
+                int dir  = virge->s3d.line_dir ? 1 : -1;
+                int prev = 0;
 
-                x = virge->s3d.dest_x >> 20;
+                while (virge->s3d.h) {
+                    int cur = virge->s3d.dest_x >> 20;
+                    int x;
+                    int end;
 
-                if (virge->s3d.h == virge->s3d.lycnt && ((virge->s3d.line_dir && x > virge->s3d.lxend0) ||
-                    (!virge->s3d.line_dir && x < virge->s3d.lxend0)))
-                    x = virge->s3d.lxend0;
+                    if (virge->s3d.h == virge->s3d.lycnt)
+                        x = virge->s3d.lxend0;
+                    else {
+                        x = prev + dir;
+                        if ((dir > 0) ? (x > cur) : (x < cur))
+                            x = cur;
+                    }
+                    end  = (virge->s3d.h == 1) ? virge->s3d.lxend1 : cur;
+                    prev = cur;
 
-                if (virge->s3d.h == 1)
-                    new_x = virge->s3d.lxend1 + (virge->s3d.line_dir ? 1 : -1);
-                else
-                    new_x = (virge->s3d.dest_x + virge->s3d.ldx) >> 20;
+                    for (; (dir > 0) ? (x <= end) : (x >= end); x += dir) {
+                        uint32_t dest_addr = virge->s3d.dest_base + (x * x_mul) +
+                                 (virge->s3d.dest_y * virge->s3d.dest_str);
+                        uint32_t source    = 0;
+                        uint32_t dest      = 0;
+                        uint32_t pattern;
+                        uint32_t out    = 0;
+                        int      update = 1;
 
-                if ((virge->s3d.line_dir && x > new_x) || (!virge->s3d.line_dir && x < new_x))
-                    goto skip_line;
+                        CLIP(x, virge->s3d.dest_y);
 
-                do {
-                    uint32_t dest_addr = virge->s3d.dest_base + (x * x_mul) +
-                             (virge->s3d.dest_y * virge->s3d.dest_str);
-                    uint32_t source    = 0;
-                    uint32_t dest      = 0;
-                    uint32_t pattern;
-                    uint32_t out    = 0;
-                    int      update = 1;
+                        if (update) {
+                            READ(dest_addr, dest);
+                            pattern = virge->s3d.pat_fg_clr;
 
-                    if ((virge->s3d.h == virge->s3d.lycnt || !first_pixel) &&
-                        ((virge->s3d.line_dir && x < virge->s3d.lxend0) ||
-                        (!virge->s3d.line_dir && x > virge->s3d.lxend0)))
-                        update = 0;
+                            MIX();
 
-                    if ((virge->s3d.h == 1 || !first_pixel) &&
-                        ((virge->s3d.line_dir && x > virge->s3d.lxend1) ||
-                        (!virge->s3d.line_dir && x < virge->s3d.lxend1)))
-                        update = 0;
-
-                    CLIP(x, virge->s3d.dest_y);
-
-                    if (update) {
-                        READ(dest_addr, dest);
-                        pattern = virge->s3d.pat_fg_clr;
-
-                        MIX();
-
-                        WRITE(dest_addr, out);
+                            WRITE(dest_addr, out);
+                        }
                     }
 
-                    if (x < new_x)
-                        x++;
-                    else if (x > new_x)
-                        x--;
-                    first_pixel = 0;
-                } while (x != new_x);
-
-skip_line:
-                virge->s3d.dest_x += virge->s3d.ldx;
-                virge->s3d.dest_y--;
-                virge->s3d.h--;
+                    virge->s3d.dest_x += virge->s3d.ldx;
+                    virge->s3d.dest_y--;
+                    virge->s3d.h--;
+                }
             }
             break;
 
@@ -5974,11 +6006,11 @@ s3_virge_debug_hook(UNUSED(const char *args))
     if (virge == NULL)
         return;
     svga = &virge->svga;
-    for (int bank = 0; bank < 2; bank++) {
-        const uint8_t *regs = bank ? svga->seqregs : svga->crtc;
+    for (int bank = 0; bank < ((virge->chip == S3_VIRGEMX) ? 3 : 2); bank++) {
+        const uint8_t *regs = (bank == 2) ? virge->crtc_iga2 : (bank ? svga->seqregs : svga->crtc);
 
-        for (int row = 0; row < 256; row += 16) {
-            int pos = sprintf(line, "%s%02X:", bank ? "SR" : "CR", row);
+        for (int row = 0; row < ((bank == 2) ? 0x80 : 256); row += 16) {
+            int pos = sprintf(line, "%s%02X:", (bank == 2) ? "IGA2 CR" : (bank ? "SR" : "CR"), row);
 
             for (int i = 0; i < 16; i++)
                 pos += sprintf(line + pos, " %02x", regs[row + i]);

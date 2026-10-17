@@ -283,15 +283,22 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   Canvas hooks over (they were lost before).
 - STB video cards from STB's own release BIOSes (in `ROMS-EXTRA`, not the 86Box ROM set):
   - S3 ViRGE/MX (86C260, 5333:8C01), STB Symmetry 3D (`vid_s3_virge.c`, `S3_VIRGEMX`: the GX2
-    core, 4 MB SGRAM, ROM `video/s3virge/stb_symmetry3d_m5_17_14.rom`). SR26 routes CRTC writes
-    (40h IGA1, 44h both, 4Eh/4Fh IGA2 = the panel/TV CRTC); IGA2 is a read-back shadow
-    (`crtc_iga2`), only IGA1 is displayed -- without it Windows' panel timings overwrote the CRT's.
+    core, 4 MB SGRAM, ROM `video/s3virge/stb_symmetry3d_m5_17_14.rom`). The datasheet's paired
+    CRTC registers (`s3_virge_mx_paired`) exist per controller: SR26 bit 3 blocks Controller 1
+    writes, bit 2 writes Controller 2 (40h C1, 44h both, 4Eh/4Fh C2 = the panel/TV CRTC), bits 1/0
+    read from C2. C2 is a read-back shadow (`crtc_iga2`), only C1 is displayed -- without it
+    Windows' panel timings overwrote the CRT's.
     The ROM (1.0B0) holds its sign-on 20-25 s by itself. Also from TheRetroWeb, AGP: an unbranded
     ViRGE/MX (`virge_mx_agp`, S3's BIOS 3.05.01-26, `video/s3virge/s3_virge_mx_3.05.01-26.rom`)
     and the ViRGE/MX+ Spectrah LD-S500 (8C03h, `virge_mx_plus_spectrah_ld_s500`, BIOS A1.3A,
     `video/s3virge/spectrah_ld-s500_a1.3a.bin`); S3's BIOS waits for SR46 bit 6 (panel powered
-    down), and SR01 bit 3 (half dot clock: 320x200-512x384) doubles pixels. Win98 SE: its CD's
-    `drivers\display\s3\86c260m5` driver.
+    down), and SR01 bit 3 (half dot clock: 320x200-512x384) doubles pixels. Windows, 2026-10-16
+    (both AGP cards, 440 boards): MX+ with S3VMX 4.11.01.3009 on Win95/98 SE, NT4 SP6a (S3 3.28.05;
+    SP1 has no AGP) and Win2000 SP4's inbox driver all run 1024x768. The generic MX on Win2000 and
+    NT4 is fine too, but on Win95/98 (the Win98 CD's `drivers\display\s3\86c260m5`) only a
+    640x480 window of a larger desktop shows: S3's BIOS (a laptop one) always reports an LCD
+    to 4F14h, the BIOS boots CRT-only (CR6B=01) and the driver then programs C1 with 640x480
+    timings. The STB BIOS boots in duoview (CR6B=83) and is fine. Genuine pairing, not emulation.
   - C&T 65554, STB Monocle (`vid_chips_69000.c`, `CHIPS_65554`: the 69000 code with 1/2/4 MB
     external DRAM that wraps (the BIOS sizes it so), ROM `video/chips/stb_monocle_65554_110.bin`).
     The BIOS and Windows run the panel path (FR01 = 2) with no panel: the 65554 shows the CRTC
