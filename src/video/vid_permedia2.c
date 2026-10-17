@@ -307,6 +307,7 @@ typedef struct p2_t {
     int       hold_overflow;
     uint8_t  *snap;      /* Packed copies: the current span's source. */
     size_t    snap_cap;
+    uint32_t  lfb_writes; /* Debug ("dev p2 tags"): aperture writes since the last call. */
 } p2_t;
 
 static video_timings_t timing_p2_pci = { .type = VIDEO_PCI, .write_b = 2, .write_w = 2, .write_l = 1, .read_b = 10, .read_w = 10, .read_l = 10 };
@@ -1126,6 +1127,7 @@ p2_lfb_writeb(uint32_t addr, uint8_t val, void *priv)
     const uint8_t  mask = p2->bypass_mask >> ((addr & 3) << 3);
 
     addr &= p2->vram_mask;
+    p2->lfb_writes++;
     p2->svga.vram[addr] = (p2->svga.vram[addr] & ~mask) | (val & mask);
     p2_vram_changed(p2, addr);
 }
@@ -1143,6 +1145,7 @@ p2_lfb_writew(uint32_t addr, uint16_t val, void *priv)
         return;
     }
     addr &= p2->vram_mask;
+    p2->lfb_writes++;
     v  = (uint16_t *) &p2->svga.vram[addr];
     *v = (*v & ~mask) | (val & mask);
     p2_vram_changed(p2, addr);
@@ -1160,6 +1163,7 @@ p2_lfb_writel(uint32_t addr, uint32_t val, void *priv)
         return;
     }
     addr &= p2->vram_mask;
+    p2->lfb_writes++;
     v  = (uint32_t *) &p2->svga.vram[addr];
     *v = (*v & ~p2->bypass_mask) | (val & p2->bypass_mask);
     p2_vram_changed(p2, addr);
@@ -1699,6 +1703,9 @@ p2_ctrl_write_int(p2_t *p2, uint32_t addr, uint32_t val)
         case P2_BYDMA_CONTROL:
             p2->bydma[(addr - P2_BYDMA_ADDRESS) >> 3] = val;
             p2->bydma_x = p2->bydma_y = 0;
+            p2_log("P2: bypass ctl %08X src %08X stride %08X mem %08X size %08X mask %08X\n", val, p2->bydma[0],
+                   p2->bydma[(P2_BYDMA_STRIDE - P2_BYDMA_ADDRESS) >> 3], p2->bydma[(P2_BYDMA_MEMADDR - P2_BYDMA_ADDRESS) >> 3],
+                   p2->bydma[(P2_BYDMA_SIZE - P2_BYDMA_ADDRESS) >> 3], p2->bydma[(P2_BYDMA_BYTEMASK - P2_BYDMA_ADDRESS) >> 3]);
             if ((val & 3) == 1)
                 p2_bypass_dma(p2);
             break;
@@ -3636,16 +3643,14 @@ p2_draw_step(p2_t *p2)
     if (r->prim == PRIM_RECT) {
         x = r->origin_x + ((cmd & RENDER_X_POSITIVE) ? (int) r->col : (int) (r->columns - 1 - r->col));
         y = r->origin_y + ((cmd & RENDER_Y_POSITIVE) ? (int) r->row : (int) (r->rows - 1 - r->row));
-    } else if (r->prim == PRIM_LINE) {
-        /* Lines take the pixel whose centre the DDA has passed: the integer
-           part of the position less a half. Both the 3Dlabs and ELSA Win9x
-           drivers load StartXDom/StartY as X + 1 - 1/65536 with no bias,
-           which this makes exactly GDI's GIQ lines in every octant (plain
-           truncation drew every line pixel whose fraction is below .5 one
-           step too far: CARDTEST GDICHK LINES, polygon outlines, clipping). */
-        y = (int) p2_fixed_int(r->y - 0x8000);
-        x = (int) p2_fixed_int(r->xdom - 0x8000);
     } else {
+        /* Lines too take the integer part of the DDA (the manual, ES40).
+           NT4's ELSA driver starts them at X + 1/2 - 1/65536 and so draws
+           GDI's GIQ lines exactly; the Win9x drivers (3Dlabs and ELSA, one
+           code base) start at X + 1 - 1/65536, which puts every minor-axis
+           pixel with a fraction below one half a step too far -- on the real
+           chip as well, as no one rule can serve both (CARDTEST GDICHK LINES
+           on Win98). */
         y = (int) p2_fixed_int(r->y);
         x = (int) p2_fixed_int(r->xdom);
         if (p2_packed_trap(p2, cmd))
@@ -4056,8 +4061,11 @@ p2_raster_continue(p2_t *p2, uint32_t tag, uint32_t count)
 {
     p2_raster_t *r = &p2->raster;
 
-    /* The finished primitive's DDAs take one more step, then reload as asked. */
-    if (r->prim != PRIM_RECT) {
+    /* The finished primitive's DDAs take one more step, then reload as asked.
+       A primitive with no rows (NT4's ELSA driver starts each span run of a
+       filled ellipse as a Count 0 trapezoid, then continues) owes no step:
+       taking one dropped a scanline at every join (CARDTEST GDICHK SHAPES). */
+    if ((r->prim != PRIM_RECT) && r->rows) {
         r->xdom += r->dxdom;
         r->xsub += r->dxsub;
         r->y += r->dy;
@@ -4867,6 +4875,8 @@ p2_debug_hook(const char *args)
                 pclog("P2: tag %03X n %8u = %08X\n", i, p2->tag_count[i], p2->gp[i]);
         }
         memset(p2->tag_count, 0, sizeof(p2->tag_count));
+        pclog("P2: aperture writes %u\n", p2->lfb_writes);
+        p2->lfb_writes = 0;
         return;
     }
 
