@@ -3,7 +3,7 @@
 Status as of **Release 2.1.5** (build 179, 17 October 2026). For each addition: what it is,
 its status, and the known bugs or limitations. "Driver" or "hardware" means real hardware with
 that driver behaves the same; those are not emulation bugs. Details live in `CLAUDE.md`, the
-handoff files and `tools/cardtest/NOTES.md`.
+handoff files.
 
 **Status legend:** ✅ working and verified in guests · 🟡 working, partly verified or with open
 issues · 🧪 experimental / not tried in a guest · ⛔ not in this release (unmerged branch)
@@ -50,10 +50,10 @@ issues · 🧪 experimental / not tried in a guest · ⛔ not in this release (u
 |---|---|---|---|
 | **NVIDIA RIVA 128 / 128 ZX** (NV3, PCI/AGP) | ✅ | Win98 SE (3DMark 99 ≈1465, DxDiag D3D, OpenGL screensavers), Win95, Win2000, NT4 AGP, WfW 3.11; mfgtest modes 33/33 | Filtering and alpha blending unchecked against real hardware. Stray columns in the overscan (hidden with overscan off). Overlay: no YV12/YVU9, no interlaced bob. Win2000 D3D is software only and OpenGL at 32 bpp uses Microsoft's renderer (driver limits). Two BIOS versions undumped. |
 | **NVIDIA RIVA TNT / TNT2 / Ultra / M64** (NV4/NV5, 18 board BIOSes; CPU-thread or Vulkan 3D) | ✅ | Win98 SE (drivers 4.11–45.23: 3DMark 99/2000, UT, Quake III 39 fps, GLQuake 85, Quake II 38.5), Win2000, NT4 SP6a, DOS VESA | New in 2.1.5: GDI transparent hatches, quads, texel origin and lost-trap fixes. Open: TNT2 shows Win98's "safe to turn off" screen as 80×400 (suspected NV5 mode decode); at 8 bpp some DirectDraw checks fail (not triaged); glean blend test fails; D3D mipmap WARN. Not emulated: TV encoder, capture, class 0x48, 3D into swizzled surfaces. Driver limits: 71.84 draws no Direct3D; Alt+Tab from full-screen OpenGL crashes driver 4.11; 45.23 D3D needs VIAGART on VIA boards. |
-| **S3 Savage3D** (STB Nitro 3200, AGP/PCI) | ✅ | Win98 SE (DxDiag 6.1, Tomb Raider 2 with S3TC/trilinear), NT4 (PCI card) | NT4 can't use the AGP card (NT4 HAL rejects it, as on real hardware): use the PCI card. Status-bit layout borrowed from the ViRGE, unverified. Not emulated: video capture, TV out. BIOS only in ROMS-EXTRA. Not yet run through CARDTEST. |
-| **3Dlabs Permedia 2** (STB GLyder MAX-2+, ELSA WINNER 2000/Office, GLoria Synergy) | 🟡 | Win98 SE (3Dlabs, ELSA, Synergy drivers: DxDiag DX7, 3DMark 99 2050, TR2, GLQuake), NT4, Win2000 inbox, DOS UniVBE | New in 2.1.5: 3D, YUV blits and CARDTEST fixes. CARDTEST round 2 fixed overlapping blits (3Dlabs drivers, Win2000 perm2), 3Dlabs colour brushes and text, and NT4/Win2000 lines and ellipses. **Open:** 3Dlabs Win98 DirectDraw source colour key (its HAL blits with the CPU), NT4 hatch alignment and first DIB brush, a Win2000 hatched rectangle with swapped colours, 8 bpp colour mismatches on NT4/Win2000. Win98 drivers' diagonal lines are off GIQ by their own setup (as on the chip). Hardware limits: no mipmapping, no alpha test, no scan-out overlay. Not modelled: patch address permutation, overlay filtering (nearest only), video capture/TV. 24 bpp untested (no driver offers it). |
+| **S3 Savage3D** (STB Nitro 3200, AGP/PCI) | ✅ | Win98 SE (DxDiag 6.1, Tomb Raider 2 with S3TC/trilinear), NT4 (PCI card) | NT4 can't use the AGP card (NT4 HAL rejects it, as on real hardware): use the PCI card. Status-bit layout borrowed from the ViRGE, unverified. Not emulated: video capture, TV out. BIOS only in ROMS-EXTRA. |
+| **3Dlabs Permedia 2** (STB GLyder MAX-2+, ELSA WINNER 2000/Office, GLoria Synergy) | 🟡 | Win98 SE (3Dlabs, ELSA, Synergy drivers: DxDiag DX7, 3DMark 99 2050, TR2, GLQuake), NT4, Win2000 inbox, DOS UniVBE | New in 2.1.5: 3D, YUV blits and rendering fixes. Later fixes: overlapping blits (3Dlabs drivers, Win2000 perm2), 3Dlabs colour brushes and text, and NT4/Win2000 lines and ellipses. **Open:** 3Dlabs Win98 DirectDraw source colour key (its HAL blits with the CPU), NT4 hatch alignment and first DIB brush, a Win2000 hatched rectangle with swapped colours, 8 bpp colour mismatches on NT4/Win2000. Win98 drivers' diagonal lines are off GIQ by their own setup (as on the chip). Hardware limits: no mipmapping, no alpha test, no scan-out overlay. Not modelled: patch address permutation, overlay filtering (nearest only), video capture/TV. 24 bpp untested (no driver offers it). |
 | **S3 ViRGE/MX** (STB Symmetry 3D), generic **ViRGE/MX AGP**, **ViRGE/MX+** (Spectrah LD-S500) | ✅ | MX+ on Win95, Win98 SE, NT4 SP6a, Win2000 at 1024×768; GDI exact on Win98/2000/NT4 | New in 2.1.5: CRTC register pairing and 2D lines per the datasheet. Generic MX on Win95/98 shows only a 640×480 window of a larger desktop (S3 BIOS/driver display-switch state, not emulation; Win95 confirmation pending). The STB ROM holds its sign-on screen 20–25 s (the ROM). Not yet run: STB Symmetry 3D in Windows, DDTEST. |
-| **Chips & Technologies 65554** (STB Monocle) | 🟡 | Win98 SE built-in driver | Without a panel it shows the CRTC timing, not the panel-cut picture. Interlaced modes halve vertical timings. The driver's 1024×600 entry fails. VBETest's 4-bit tests look wrong (VBETest's doing). Not run through CARDTEST yet. |
+| **Chips & Technologies 65554** (STB Monocle) | 🟡 | Win98 SE built-in driver | Without a panel it shows the CRTC timing, not the panel-cut picture. Interlaced modes halve vertical timings. The driver's 1024×600 entry fails. VBETest's 4-bit tests look wrong (VBETest's doing). |
 | **Alliance ProMotion 6410 / 6422 / AT3D (AT25)** | 🟡 new in 2.1.5 | POST/VESA on all three; Win95, Win98 SE, NT4 with Alliance drivers; DirectDraw and Media Player overlay on the 6422; AT3D 2D | AT3D is 2D only (no 3D engine, no Voodoo Rush). AT3D DirectDraw and NT4 untested. The STB source build's DirectDraw HAL doesn't come up (cause unknown). Video window is nearest-neighbour, interlace shown progressive, 24 bpp untested. ROMs only in ROMS-EXTRA. |
 | **SpeedStar 24X** as a WD90C31A-LR BIOS option | 🧪 | — | Not booted in a guest yet. |
 
@@ -62,13 +62,6 @@ issues · 🧪 experimental / not tried in a guest · ⛔ not in this release (u
 | Addition | Status | Known bugs / limitations |
 |---|---|---|
 | AGP chipset fixes (incl. SiS) | ✅ | None known. |
-| ASUS 486/25 added; some machine-table entries removed | ✅ | None known. |
-
-## Test tooling
-
-| Addition | Status | Known bugs / limitations |
-|---|---|---|
-| **CARDTEST** (`tools/cardtest`): self-checking DOS VGA/VESA and Win32 GDI/DirectDraw/Direct3D/OpenGL tests, one-click `RUNALL.BAT`, unattended GUI-benchmark runner (3DMark, Final Reality, WinBench, WHQL DCT, SPECviewperf), host tools that read results from VM disks | 🟡 new in 2.1.5 | Run so far on TNT, TNT2 and Permedia 2 (Win98, Win2000, NT4, DOS). Not yet run on Savage3D, ViRGE/MX, 65554, ProMotion, NV3. The unattended GUI runner is still being finished; the RUNALL restart-and-resume path is untested in a guest. A few oracle mismatches are known (GLCHK PERSP needs GL_NICEST; D3DCHK ALPHATST should skip on the P2). Built discs: `F:\VGATESTSUITE`. |
 
 ## Not in this release (unmerged branches)
 
