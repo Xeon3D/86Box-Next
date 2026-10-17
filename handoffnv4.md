@@ -1063,5 +1063,56 @@ them with `dev 3d` before optimising.
   every rig except the branch-owned ones (AVM-ISDN-RIG, NVIDIA-RIG*).
 - 2026-10-17: CARDTEST bugs fixed (538355dac transparent hatch, 778678c40
   trimesh after a triangle, 6541e112c lost trap -> ICD textures, b675e7336
-  bilinear texel origin). See "Done (2026-10-17)" at the top. Not merged
-  into master, not staged.
+  bilinear texel origin). See "Done (2026-10-17)" at the top. Pushed;
+  merged into master (c7c433c97, pushed), build 178 staged in every Latest
+  rig (not AVM-ISDN-RIG) and the NewCardRigs (not the alliance ones).
+- 2026-10-17 (afternoon): AUTOGUI's TNT2 hang in 3DMark 2000's default run
+  (Game 1 helicopter, small centred viewport; emulation thread stopped,
+  debug command file not consumed) **does not reproduce on build 178**.
+  It hit work-autogui running work-tnt2's old exe (2026-10-15 00:09, before
+  the engine-time rework 05d35d186 and today's fixes). Rerun on
+  `work-tnt2h` (work-tnt2's cfg, ERAZOR III, Celeron 233, with work-tnt's
+  disk, which has DX7 + 3DMark 2000; Windows re-found the TNT2 and asked
+  for one restart): all 22 tests ran, **1036 3DMarks** at 1024x768x16
+  (TNT 1045). AUTOGUI's own rerun on build 178 also got past it. No code
+  change. work-tnt2's disk has no 3DMark 2000; use work-tnt2h for TNT2
+  3DMark 2000 runs (desktop icon: `type 3`, Enter; then Tab,
+  Enter = Run Default Benchmark).
+- 2026-10-17 (evening): AUTOGUI's three findings from the WHQL DCT 1.30 run
+  on the TNT2 (Win98, NVIDIA 4.11.01.0115 from nv4drv.iso):
+  1. **"SUBSYS ID section of the PNPID is missing": the driver's INF, not
+     the emulator.** The card reports subsystem 1048:0C28 (ELSA ERAZOR III,
+     read from ROM bytes 0x54-0x57 at reset, `nv4_reset`; pci.ids lists
+     10de 0028 1048 0c28 "Erazor III"), and Windows enumerated
+     `PCI\VEN_10DE&DEV_0028&SUBSYS_0C281048&REV_11`. dct.exe reads the
+     display class key's `MatchingDeviceId` (the INF line that matched)
+     and looks for `SUBSYS_`; NVIDIA's reference Nv4agp.inf lists only
+     `PCI\VEN_10DE&DEV_0028`, so it is `PCI\VEN_10DE&DEV_0028`. A WHQL
+     rule for board makers' INFs; a real ERAZOR III with this driver
+     shows the same. Every board's ROM subsystem ID (0x54): ERAZOR II
+     PCI/AGP 1048:0C1B/0C1C, III 0C28, ULTRA 0C2E, LT 0C3A; V770 1092:4A00,
+     Creative 1102:1015, STB 10B4:274D, Leadtek 107D:2134, ASUS 1043:0200.
+  2. **"Test N corrupted the floating point state": an emulator bug, fixed
+     765b2e726** (CPU core, not NV4: every card). fpstate.dll FNSAVEs
+     before and after each test and compares CW, TOP and the top
+     register's tag. A temporary FSAVE log in work-fpu showed CW 027F and
+     TOP 0 unchanged but tags FFFF -> FFC0. With the old dynarec (what
+     build-static is: NEW_DYNAREC=OFF) `cpu_state.tag[]` holds the packed
+     encoding (0 valid, 3 empty), and `x87_emms()` wrote 0 = all valid;
+     x87 code that then pushed/popped 5 values left regs 0-2 "valid".
+     The interpreter showed the same (shared code). EMMS now writes 3s
+     and MMX entry 0s (the old dynarec's MMX_ENTER already did).
+     PC99Specular.exe before: tests 5/7/11/13... flagged; after: 243 pass,
+     0 fail, no FPU messages, every snapshot tw=FFFF.
+  3. **timecore.cpp line 40: the guest disk, not the emulated clock.** It is
+     MFC's `CTime(year, month, ...)`: `ASSERT(m_time != -1)` after
+     `mktime()` (the asserts at lines 32/34/36 are the day/month/year
+     range checks). mktime fails for dates past 2038, and this Win98
+     image has its directories (WINDOWS, WINDOWS\SYSTEM, Program Files,
+     ...), `driver.ex` and `extras` dated **2099-01-01 00:02**, from when
+     the base image was made; files written today are dated 2026-10-17.
+     A disk with sane dates would not assert. Not chased further: which
+     file DCT stats (likely a directory's "." entry).
+  Test VM: `F:\Claude\86Box-Next\work-fpu` (copy of work-autogui's disk with
+  DCT 1.30 in C:\DCT, old dynarec, ERAZOR III). PC99Specular:
+  Start > Run `c:\dct\common\pc99\x86\pc99specular.exe`, runs by itself.
