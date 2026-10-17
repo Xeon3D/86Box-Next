@@ -4040,6 +4040,11 @@ p2_raster_start(p2_t *p2, uint32_t command)
            p2->gp[TAG_FB_SOURCE_DELTA]);
     if (p2->gp[TAG_FB_WRITE_CONFIG] & (1 << 18))
         p2_log("P2: render patched: tmf %08X bpp %i\n", p2->gp[TAG_TEXTURE_MAP_FORMAT], r->bpp);
+    if (command & RENDER_AREA_STIPPLE)
+        p2_log("P2: render stipple mode %08X pat %02X %02X %02X %02X %02X %02X %02X %02X\n", p2->gp[TAG_AREA_STIPPLE_MODE],
+               p2->gp[TAG_AREA_STIPPLE_PAT] & 0xff, p2->gp[TAG_AREA_STIPPLE_PAT + 1] & 0xff, p2->gp[TAG_AREA_STIPPLE_PAT + 2] & 0xff,
+               p2->gp[TAG_AREA_STIPPLE_PAT + 3] & 0xff, p2->gp[TAG_AREA_STIPPLE_PAT + 4] & 0xff, p2->gp[TAG_AREA_STIPPLE_PAT + 5] & 0xff,
+               p2->gp[TAG_AREA_STIPPLE_PAT + 6] & 0xff, p2->gp[TAG_AREA_STIPPLE_PAT + 7] & 0xff);
     if (command & RENDER_TEXTURE)
         p2_log("P2: render tex base %08X tmf %08X tdf %08X trm %08X tam %08X tcm %08X lutm %08X lutidx %X s %08X %08X %08X t %08X %08X %08X\n",
                p2->gp[TAG_TEXTURE_BASE], p2->gp[TAG_TEXTURE_MAP_FORMAT], p2->gp[TAG_TEXTURE_DATA_FORMAT],
