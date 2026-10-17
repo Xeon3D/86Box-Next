@@ -158,6 +158,9 @@ add_library(vid OBJECT
     vid_f82c425.c
     vid_ti_cf62011.c
 
+    # Alliance Semiconductor
+    vid_alliance_promotion.c
+
     # Trident
     vid_tvga.c 
     vid_tgui9440.c
