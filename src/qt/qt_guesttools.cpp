@@ -11,6 +11,9 @@
 #include <QAbstractNativeEventFilter>
 #include <QApplication>
 #include <QClipboard>
+#include <QDrag>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QCryptographicHash>
 #include <QCoreApplication>
 #include <QDir>
@@ -43,6 +46,7 @@ extern "C" {
 #include <86box/cdrom.h>
 #include <86box/fdd.h>
 #include <86box/plat.h>
+#include <86box/mouse.h>
 #include <86box/guest_tools.h>
 }
 
@@ -73,8 +77,9 @@ localFiles(const QMimeData *data)
 
 /* ---- Files ------------------------------------------------------------------ */
 
-/* Emulation thread only: the host clipboard's files as the guest reads
-   them, and the files coming from the guest. */
+/* Emulation thread only: the host files as the guest reads them, one
+   snapshot per source (the clipboard, a drag), and the files coming from
+   the guest. */
 namespace {
 struct FileEntry {
     QString  path; /* on the host */
@@ -83,9 +88,10 @@ struct FileEntry {
     uint64_t size;
 };
 
-std::vector<FileEntry> snapshot;
+std::vector<FileEntry> snapshot[2];
 QFile                  readFile;
-int                    readIndex = -1;
+int                    readSource = -1;
+int                    readIndex  = -1;
 
 QString              uploadDir;
 std::vector<QString> uploadPaths;
@@ -115,53 +121,56 @@ stagingPrefix()
 }
 
 static void
-addEntries(const QString &path, const QString &name)
+addEntries(std::vector<FileEntry> &list, const QString &path, const QString &name)
 {
-    if (snapshot.size() >= GT_FILES_MAX_ENTRIES)
+    if (list.size() >= GT_FILES_MAX_ENTRIES)
         return;
 
     QFileInfo info(path);
     if (info.isDir()) {
-        snapshot.push_back({ path, name, GT_FILE_DIR, 0 });
+        list.push_back({ path, name, GT_FILE_DIR, 0 });
         if (info.isSymLink())
             return;
-        const QFileInfoList list = QDir(path).entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
-                                                            QDir::Name | QDir::DirsFirst);
-        for (const QFileInfo &child : list)
-            addEntries(child.filePath(), name + QLatin1Char('\\') + child.fileName());
+        const QFileInfoList children = QDir(path).entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
+                                                                QDir::Name | QDir::DirsFirst);
+        for (const QFileInfo &child : children)
+            addEntries(list, child.filePath(), name + QLatin1Char('\\') + child.fileName());
     } else if (info.isFile())
-        snapshot.push_back({ path, name, 0, static_cast<uint64_t>(info.size()) });
+        list.push_back({ path, name, 0, static_cast<uint64_t>(info.size()) });
 }
 
 int
-GuestTools::filesList()
+GuestTools::filesList(int source)
 {
     QStringList files;
 
-    if (instance == nullptr)
+    if ((instance == nullptr) || (source < 0) || (source > 1))
         return -1;
     {
         QMutexLocker lock(&instance->mutex);
-        files = instance->hostFiles;
+        files = (source == GT_SOURCE_DRAG) ? instance->dragFiles : instance->hostFiles;
     }
     if (files.isEmpty())
         return -1;
 
-    snapshot.clear();
-    readFile.close();
-    readIndex = -1;
+    snapshot[source].clear();
+    if (readSource == source) {
+        readFile.close();
+        readSource = -1;
+        readIndex  = -1;
+    }
     for (const QString &path : files)
-        addEntries(path, QFileInfo(path).fileName());
-    return static_cast<int>(snapshot.size());
+        addEntries(snapshot[source], path, QFileInfo(path).fileName());
+    return static_cast<int>(snapshot[source].size());
 }
 
 int
-GuestTools::filesEntry(int index, uint32_t *flags, uint64_t *size, const uint16_t **name, size_t *chars)
+GuestTools::filesEntry(int source, int index, uint32_t *flags, uint64_t *size, const uint16_t **name, size_t *chars)
 {
-    if ((index < 0) || (index >= static_cast<int>(snapshot.size())))
+    if ((source < 0) || (source > 1) || (index < 0) || (index >= static_cast<int>(snapshot[source].size())))
         return -1;
 
-    const FileEntry &e = snapshot[index];
+    const FileEntry &e = snapshot[source][index];
     *flags             = e.flags;
     *size              = e.size;
     *name              = reinterpret_cast<const uint16_t *>(e.name.utf16());
@@ -170,16 +179,21 @@ GuestTools::filesEntry(int index, uint32_t *flags, uint64_t *size, const uint16_
 }
 
 int
-GuestTools::filesRead(int index, uint64_t offset, void *buf, uint32_t bytes)
+GuestTools::filesRead(int source, int index, uint64_t offset, void *buf, uint32_t bytes)
 {
-    if ((index < 0) || (index >= static_cast<int>(snapshot.size())) || (snapshot[index].flags & GT_FILE_DIR))
+    if ((source < 0) || (source > 1) || (index < 0) || (index >= static_cast<int>(snapshot[source].size())) ||
+        (snapshot[source][index].flags & GT_FILE_DIR))
         return -1;
-    if (index != readIndex) {
+    if ((source != readSource) || (index != readIndex)) {
         readFile.close();
-        readFile.setFileName(snapshot[index].path);
-        readIndex = readFile.open(QIODevice::ReadOnly) ? index : -1;
-        if (readIndex < 0)
+        readFile.setFileName(snapshot[source][index].path);
+        if (!readFile.open(QIODevice::ReadOnly)) {
+            readSource = -1;
+            readIndex  = -1;
             return -1;
+        }
+        readSource = source;
+        readIndex  = index;
     }
     if (!readFile.seek(static_cast<qint64>(offset)))
         return -1;
@@ -239,6 +253,11 @@ GuestTools::filesBegin()
     }
     filesEnd(GT_FILES_CANCEL);
     removeStaging(keep);
+    {
+        QMutexLocker lock(&instance->mutex);
+        instance->dragOutDone = false;
+        instance->dragOutFiles.clear();
+    }
 
     uploadDir = QDir(stagingBase()).filePath(stagingPrefix() + QString::number(++uploadCount));
     QDir(uploadDir).removeRecursively();
@@ -302,7 +321,7 @@ GuestTools::filesEnd(int action)
     if (uploadDir.isEmpty())
         return (action == GT_FILES_CANCEL) ? 0 : -1;
 
-    if (action == GT_FILES_CLIPBOARD) {
+    if ((action == GT_FILES_CLIPBOARD) || (action == GT_FILES_DRAG)) {
         const QDir dir(uploadDir);
         for (const QString &path : uploadPaths) {
             if (QFileInfo(path).path() == dir.path())
@@ -314,6 +333,19 @@ GuestTools::filesEnd(int action)
     uploadDir.clear();
     uploadPaths.clear();
 
+    if (action == GT_FILES_DRAG) {
+        /* The host drag carrying them waits for this. */
+        if (debugFiles) {
+            for (const QString &path : top)
+                pclog("Guest Tools: guest file for the host drag: %s\n", path.toUtf8().constData());
+        }
+        if (instance != nullptr) {
+            QMutexLocker lock(&instance->mutex);
+            instance->dragOutFiles = top;
+            instance->dragOutDone  = true;
+        }
+        return 0;
+    }
     if (!top.isEmpty() && debugFiles) {
         for (const QString &path : top)
             pclog("Guest Tools: guest file for the host clipboard: %s\n", path.toUtf8().constData());
@@ -339,6 +371,100 @@ GuestTools::filesDebug(const char *paths)
         files << QDir::cleanPath(path.trimmed());
     QMutexLocker lock(&instance->mutex);
     instance->hostFiles = files;
+    instance->dragFiles = files;
+}
+
+/* ---- Drag and drop ---------------------------------------------------------- */
+
+void
+GuestTools::hostDragEnter(const QStringList &files)
+{
+    if (instance == nullptr)
+        return;
+    QMutexLocker lock(&instance->mutex);
+    instance->dragFiles = files;
+}
+
+/* The files of the guest drag the host carries on, once the guest has sent
+   them all (empty if it never did). Runs the event loop while it waits. */
+QStringList
+GuestTools::waitDragOutFiles()
+{
+    QElapsedTimer waited;
+    bool          cursor = false;
+
+    waited.start();
+    while (instance != nullptr) {
+        {
+            QMutexLocker lock(&instance->mutex);
+            if (instance->dragOutDone)
+                return instance->dragOutFiles;
+        }
+        /* The agent went away, or the guest stopped sending. */
+        if (!guest_tools_pointer_active() && (waited.elapsed() > 5000))
+            break;
+        if (waited.elapsed() > (30 * 60 * 1000))
+            break;
+        if (!cursor && (waited.elapsed() > 300)) {
+            QApplication::setOverrideCursor(Qt::WaitCursor);
+            cursor = true;
+        }
+        QEventLoop loop;
+        QTimer::singleShot(20, &loop, &QEventLoop::quit);
+        loop.exec();
+    }
+    if (cursor)
+        QApplication::restoreOverrideCursor();
+    return QStringList();
+}
+
+namespace {
+/* What the host drag of a guest's files carries: their paths, which only
+   exist once the guest has sent them, so asking waits for them. */
+class GuestDragData : public QMimeData {
+public:
+    QStringList formats() const override
+    {
+        return { QStringLiteral("text/uri-list") };
+    }
+
+    bool hasFormat(const QString &mimeType) const override
+    {
+        return mimeType == QStringLiteral("text/uri-list");
+    }
+
+protected:
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    QVariant retrieveData(const QString &mimeType, QMetaType) const override
+#else
+    QVariant retrieveData(const QString &mimeType, QVariant::Type) const override
+#endif
+    {
+        QVariantList urls;
+
+        if (mimeType != QStringLiteral("text/uri-list"))
+            return QVariant();
+        if (files.isEmpty())
+            files = GuestTools::waitDragOutFiles();
+        for (const QString &path : files)
+            urls << QUrl::fromLocalFile(path);
+        return urls;
+    }
+
+private:
+    mutable QStringList files;
+};
+}
+
+void
+GuestTools::startHostDrag()
+{
+    auto *drag = new QDrag(this);
+
+    drag->setMimeData(new GuestDragData);
+    hostDragging = true;
+    drag->exec(Qt::CopyAction, Qt::CopyAction);
+    hostDragging = false;
 }
 
 static const guest_tools_file_ops_t fileOps = {
@@ -401,7 +527,7 @@ GuestTools::GuestTools(QObject *parent)
 
     timer = new QTimer(this);
     connect(timer, &QTimer::timeout, this, &GuestTools::poll);
-    timer->start(100);
+    timer->start(50);
 }
 
 GuestTools::~GuestTools()
@@ -588,6 +714,18 @@ GuestTools::poll()
     if (guest_tools_keyboard_outside())
         handFocusToMachineUnderPointer();
 #endif
+
+    /* The agent caught a guest drag of files leaving the display: the guest
+       drops it on the agent (let go of the guest's button) and the host
+       carries it on with the host's button, still down. */
+    const bool out = guest_tools_drag_out();
+    if (out && !dragOut) {
+        dragOut = true;
+        mouse_set_buttons_ex(mouse_get_buttons_ex() & ~1);
+        if (!debugFiles && !hostDragging && (QApplication::mouseButtons() & Qt::LeftButton))
+            QTimer::singleShot(0, this, &GuestTools::startHostDrag);
+    } else if (!out && !hostDragging)
+        dragOut = false;
 }
 
 /* Emulation thread. */

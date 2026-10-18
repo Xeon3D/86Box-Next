@@ -297,7 +297,10 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   capture". The keyboard follows the pointer: off the guest's display (`guest_tools_keyboard_outside()`)
   `keyboard_input()` drops new presses (releases of keys down in the guest still pass), the Windows
   low-level hook and the Qt key filter let the host have the keys, and `GuestTools::poll()` hands
-  the focus to another 86Box-Next window (same exe name) under the pointer -- only between machines. Clipboard: UTF-16 text, LF line ends, 1 MB; `src/qt/qt_guesttools.cpp` keeps a
+  the focus to another 86Box-Next window (same exe name) under the pointer -- only between machines,
+  and without raising it: it posts that window a registered message ("86Box-Next.GuestTools.TakeFocus")
+  after AllowSetForegroundWindow, and the window's `FocusFilter` (a native event filter) takes the
+  foreground itself while adding SWP_NOZORDER to its WM_WINDOWPOSCHANGING for 250 ms. Clipboard: UTF-16 text, LF line ends, 1 MB; `src/qt/qt_guesttools.cpp` keeps a
   snapshot of the host clipboard for the emulation thread and drops its own echoes. Agents in
   `guest-tools/` (built in WSL: `wsl -e sh guest-tools/build.sh` -> `guest-tools/out/`
   86BOXGT.EXE, a 1.44 MB floppy image and an ISO): `windows/gtagent.c`, one Win32 exe for
@@ -326,6 +329,37 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   packet; a hook must `iret`, not `retf 2`, or the caller keeps interrupts off). debug_cmd
   `gt pointer x y` / `gt buttons mask` / `gt motion dx dy` / `gt clip text` (`|` = new line;
   switches to a stand-in host clipboard and logs the guest's) / `gt state`.
+  Files (device option `files`, on; follows the clipboard's directions; `GT_FEAT_FILES`, agent cap
+  `GT_CAP_FILES`): host to guest, CLIP_GET answers `GT_CLIP_FILES` (u32 count, then flags/u64
+  size/name per entry, names relative with '\', folders before their contents) when the host
+  clipboard holds local files (`hostFiles`, from `QMimeData::urls()`); `FILE_READ` reads 64 KB
+  chunks from a snapshot taken at that moment (`GuestTools::filesList()`, emulation thread). The
+  Win32 agent offers CF_HDROP with delayed rendering and only copies the files into
+  `%TEMP%\86BOXGT\<tick>` on WM_RENDERFORMAT (the previous copy is deleted then; the folder is
+  emptied at agent start); names are made safe there (no `..`, bad characters -> `_`). Guest to
+  host: a CF_HDROP on the guest clipboard starts an upload thread (FILES_BEGIN / FILE_ADD / FILE_WRITE
+  with REP OUTSD / FILES_END) into `<global data dir>/guest-tools/clipboard/<pid>-<n>` (the UI checks
+  every name, `safeName()`), and FILES_END `GT_FILES_CLIPBOARD` puts the top-level entries on the
+  host clipboard as URLs + "Preferred DropEffect" copy; `ownFiles` keeps that from coming back to the
+  same guest, other machines see it as host files (machine to machine). Limits 20000 entries / 2 GB.
+  The agent uses the W file APIs only through GetProcAddress on NT (Windows 95 has stubs), ANSI on
+  9x. Drag and drop (same option): host to guest, `RendererStack` accepts drops of local files from
+  outside the program while integrated (`guestToolsDragFiles()`; the OpenGL/Vulkan windows forward
+  drag events in `eventDelegate`), feeds the pointer from the drag positions and sets
+  `guest_tools_host_drag()` 1/2/0; POLL says `GT_POLL_DRAG`/`GT_POLL_DROP` with a drag seq, the agent
+  takes the list with DRAG_GET and runs `DoDragDrop` with its own IDataObject (CF_HDROP, rendered on
+  GetData with `GT_FILE_DRAG_INDEX` reads) and an IDropSource whose QueryContinueDrag follows the
+  host (drop / cancel); the poll thread wiggles the cursor when the host's state changes so the drag
+  loop sees it. Guest to host: POLL says `GT_POLL_DRAG_OUT` while the host pointer is off the display
+  with the guest's left button down; the agent opens a 3x3 topmost drop target under the guest
+  pointer ("catcher"), a guest drag of files entering it uploads them (FILES_END `GT_FILES_DRAG`) and
+  reports `GT_STATE_DRAG_OUT` once FILES_BEGIN went through; the UI (`GuestTools::poll()`, 50 ms)
+  then lets go of the guest's left button (the guest drops on the catcher, copy) and starts a QDrag
+  whose `GuestDragData` waits in `retrieveData()` (`waitDragOutFiles()`, a nested event loop) until
+  the upload is done. OLE32 + uuid are linked into the agent. `GT_CMD_LOG` writes an agent's line to
+  the emulator log (`gt_log()` in the agent). debug_cmd `gt files a|b` (stand-in host clipboard
+  files; the guest's files are logged, not put on the host clipboard), `gt drag a|b` / `gt drop` /
+  `gt dragleave`; a drag out in debug mode logs the files instead of starting a QDrag.
 - Upstream's CI workflows and Dependabot are disabled/removed in this repo; only
   `sync-upstream.yml` runs.
 - Build number in the title bar / About box: `.build-number` (git-ignored, repo root)

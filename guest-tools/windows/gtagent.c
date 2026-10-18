@@ -14,9 +14,13 @@
  *          Copyright 2026 Marcos Alves.
  */
 #define WIN32_LEAN_AND_MEAN
+#define CINTERFACE
+#define COBJMACROS
 #include <windows.h>
+#include <ole2.h>
 #include <shellapi.h>
 #include <mmsystem.h>
+#include <stdarg.h>
 #include <stdint.h>
 
 #include "guest_tools_proto.h"
@@ -32,6 +36,9 @@
 
 #define WM_TRAY           (WM_APP + 1)
 #define WM_HOST_CLIPBOARD (WM_APP + 2)
+#define WM_HOST_DRAG      (WM_APP + 3)
+#define WM_DRAG_OUT       (WM_APP + 4)
+#define WM_DRAG_OUT_END   (WM_APP + 5)
 
 #define ID_POINTER        100
 #define ID_CLIPBOARD      101
@@ -62,6 +69,13 @@ static uint32_t         host_features;
 static volatile LONG    opt_pointer   = 1;
 static volatile LONG    opt_clipboard = 1;
 
+/* Drag and drop, shared with the poll thread (see "Drag and drop"). */
+static volatile LONG host_drag_flags; /* GT_POLL_DRAG / GT_POLL_DROP, from the poll thread */
+static volatile LONG host_drag_seq;
+static int           in_host_drag;
+static volatile LONG drag_button;    /* the agent holds the guest's left button down for a host drag */
+static volatile LONG drag_out_state; /* reported as GT_STATE_DRAG_OUT */
+
 /* The clipboard text last exchanged with the host, so neither side gets
    its own text back. */
 static WCHAR           *last_text;
@@ -78,6 +92,19 @@ memcpy(void *dst, const void *src, size_t n)
     while (n--)
         *d++ = *s++;
     return dst;
+}
+
+int
+memcmp(const void *a, const void *b, size_t n)
+{
+    const uint8_t *p = a;
+    const uint8_t *q = b;
+
+    for (; n--; p++, q++) {
+        if (*p != *q)
+            return *p - *q;
+    }
+    return 0;
 }
 
 void *
@@ -238,6 +265,25 @@ gt_hello(void)
     return status == GT_OK;
 }
 
+/* A line in the emulator's log (GT_CMD_LOG), for debugging. */
+static void
+gt_log(const char *fmt, ...)
+{
+    char    line[256];
+    va_list ap;
+    int     n;
+
+    va_start(ap, fmt);
+    n = wvsprintfA(line, fmt, ap);
+    va_end(ap);
+    if (n <= 0)
+        return;
+    EnterCriticalSection(&io_lock);
+    gt_put_bytes(line, (DWORD) n);
+    gt_command(GT_CMD_LOG);
+    LeaveCriticalSection(&io_lock);
+}
+
 static void
 gt_bye(void)
 {
@@ -301,6 +347,8 @@ poll_proc(LPVOID param)
     uint32_t last_seq   = 0;
     int      have_seq   = 0;
     uint32_t state      = 0;
+    uint32_t last_drag  = 0;
+    int      drag_out   = 0;
 
     (void) param;
     timeBeginPeriod(1);
@@ -310,15 +358,17 @@ poll_proc(LPVOID param)
         uint32_t flags = 0;
         uint32_t pos   = 0;
         uint32_t seq   = 0;
+        uint32_t dseq  = 0;
         DWORD    now;
 
         EnterCriticalSection(&io_lock);
-        gt_outl(GT_PORT_DATA, state);
+        gt_outl(GT_PORT_DATA, state | (drag_out_state ? GT_STATE_DRAG_OUT : 0));
         status = gt_command(GT_CMD_POLL);
         if (status == GT_OK) {
             flags = gt_inl(GT_PORT_DATA);
             pos   = gt_inl(GT_PORT_DATA);
             seq   = gt_inl(GT_PORT_DATA);
+            dseq  = gt_inl(GT_PORT_DATA);
         }
         LeaveCriticalSection(&io_lock);
 
@@ -346,6 +396,38 @@ poll_proc(LPVOID param)
                 last_seq = seq;
                 have_seq = 1;
                 PostMessageA(hwnd, WM_HOST_CLIPBOARD, 0, 0);
+            }
+
+            /* Drag and drop. */
+            {
+                LONG old = host_drag_flags;
+                LONG now_flags = flags & (GT_POLL_DRAG | GT_POLL_DROP);
+
+                host_drag_seq   = (LONG) dseq;
+                host_drag_flags = now_flags;
+                if ((flags & GT_POLL_DRAG) && !(flags & GT_POLL_DROP) && (dseq != last_drag)) {
+                    last_drag = dseq;
+                    PostMessageA(hwnd, WM_HOST_DRAG, 0, 0);
+                }
+                /* The guest drag looks at the host's decision on its next
+                   mouse message: give it one. */
+                if ((now_flags != old) && in_host_drag) {
+                    POINT pt;
+
+                    if ((now_flags & GT_POLL_DROP) && InterlockedExchange((LONG *) &drag_button, 0))
+                        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+                    /* One pixel over, and left there: a move straight back
+                       would raise no message at all. */
+                    else if (GetCursorPos(&pt))
+                        SetCursorPos(pt.x + ((pt.x > 0) ? -1 : 1), pt.y);
+                }
+                if ((flags & GT_POLL_DRAG_OUT) && !drag_out) {
+                    drag_out = 1;
+                    PostMessageA(hwnd, WM_DRAG_OUT, 0, 0);
+                } else if (!(flags & GT_POLL_DRAG_OUT) && drag_out) {
+                    drag_out = 0;
+                    PostMessageA(hwnd, WM_DRAG_OUT_END, 0, 0);
+                }
             }
         }
 
@@ -403,6 +485,7 @@ typedef struct {
     DWORD         count;
     DWORD         alloc;
     uint64_t      total;
+    uint32_t      action; /* guest to host: GT_FILES_CLIPBOARD (0 too) or GT_FILES_DRAG */
 } file_list_t;
 
 /* Host to guest: the host's list, and the folder it was last copied to. */
@@ -788,10 +871,11 @@ read_host_file(DWORD index, HANDLE out, uint64_t size, uint8_t *buf)
     return 1;
 }
 
-/* Copy the host's files into a new folder under %TEMP%\86BOXGT and hand a
+/* Copy host files (the clipboard's, or a drag's with index_flag
+   GT_FILE_DRAG_INDEX) into a new folder under %TEMP%\86BOXGT and hand a
    CF_HDROP of the top-level ones. */
 static HGLOBAL
-host_files_render(void)
+files_render(file_list_t *list, uint32_t index_flag)
 {
     WCHAR    root[PATH_CHARS];
     WCHAR    dir[PATH_CHARS];
@@ -803,7 +887,7 @@ host_files_render(void)
     uint8_t *drop;
     HCURSOR  old;
 
-    if ((host_files.count == 0) || !temp_root(root))
+    if ((list->count == 0) || !temp_root(root))
         return NULL;
     fs_mkdir(root);
     /* The last paste is over by now. */
@@ -825,8 +909,8 @@ host_files_render(void)
     if (buf == NULL)
         return NULL;
     old = SetCursor(LoadCursorA(NULL, (LPCSTR) IDC_WAIT));
-    for (DWORD i = 0; i < host_files.count; i++) {
-        const file_entry_t *e = &host_files.e[i];
+    for (DWORD i = 0; i < list->count; i++) {
+        const file_entry_t *e = &list->e[i];
 
         if (!e->name[0] || !wjoin(path, dir, e->name))
             continue;
@@ -836,7 +920,7 @@ host_files_render(void)
             HANDLE out = fs_open(path, 1);
 
             if (out != INVALID_HANDLE_VALUE) {
-                read_host_file(i, out, e->size, buf);
+                read_host_file(i | index_flag, out, e->size, buf);
                 CloseHandle(out);
             }
         }
@@ -845,8 +929,8 @@ host_files_render(void)
     mem_free(buf);
 
     /* The top-level entries, as full paths. */
-    for (DWORD i = 0; i < host_files.count; i++) {
-        const WCHAR *n = host_files.e[i].name;
+    for (DWORD i = 0; i < list->count; i++) {
+        const WCHAR *n = list->e[i].name;
         int          top = n[0] != 0;
 
         for (const WCHAR *p = n; *p; p++)
@@ -864,8 +948,8 @@ host_files_render(void)
         WCHAR *wout = (WCHAR *) (drop + sizeof(DROPFILES_T));
         char  *aout = (char *) (drop + sizeof(DROPFILES_T));
 
-        for (DWORD i = 0; i < host_files.count; i++) {
-            const WCHAR *n   = host_files.e[i].name;
+        for (DWORD i = 0; i < list->count; i++) {
+            const WCHAR *n   = list->e[i].name;
             int          top = n[0] != 0;
 
             for (const WCHAR *p = n; *p; p++)
@@ -887,6 +971,12 @@ host_files_render(void)
     }
     GlobalUnlock(mem);
     return mem;
+}
+
+static HGLOBAL
+host_files_render(void)
+{
+    return files_render(&host_files, 0);
 }
 
 /* ---- Files, guest to host ---------------------------------------------- */
@@ -952,7 +1042,8 @@ upload_file(DWORD index, const file_entry_t *e, uint8_t *buf)
 static DWORD WINAPI
 upload_proc(LPVOID param)
 {
-    file_list_t *top = param;
+    file_list_t *top    = param;
+    uint32_t     action = top->action ? top->action : GT_FILES_CLIPBOARD;
     file_list_t  all;
     uint8_t     *buf;
     uint32_t     status;
@@ -986,6 +1077,9 @@ upload_proc(LPVOID param)
     LeaveCriticalSection(&io_lock);
 
     if (status == GT_OK) {
+        /* The host carries the drag on once it knows. */
+        if (action == GT_FILES_DRAG)
+            drag_out_state = 1;
         for (DWORD i = 0; ok && !upload_cancel && (i < all.count); i++) {
             const file_entry_t *e     = &all.e[i];
             DWORD               bytes = wlen(e->name) * sizeof(WCHAR);
@@ -1010,7 +1104,7 @@ upload_proc(LPVOID param)
         }
 
         EnterCriticalSection(&io_lock);
-        gt_outl(GT_PORT_DATA, (ok && !upload_cancel) ? GT_FILES_CLIPBOARD : GT_FILES_CANCEL);
+        gt_outl(GT_PORT_DATA, (ok && !upload_cancel) ? action : GT_FILES_CANCEL);
         gt_command(GT_CMD_FILES_END);
         LeaveCriticalSection(&io_lock);
     }
@@ -1032,73 +1126,64 @@ upload_stop(void)
     upload_cancel = 0;
 }
 
-/* The guest copied files (CF_HDROP): send them to the host. */
+/* The paths in a CF_HDROP, each with its last part as the name. */
 static void
-guest_files_changed(void)
+hdrop_add(file_list_t *top, HGLOBAL mem)
 {
-    file_list_t *top = mem_alloc(sizeof(file_list_t));
-    HGLOBAL      mem;
-    DWORD        tid;
+    const uint8_t     *base = GlobalLock(mem);
+    DWORD              size = GlobalSize(mem);
+    const DROPFILES_T *df   = (const DROPFILES_T *) base;
 
-    if (top == NULL)
-        return;
-    memset(top, 0, sizeof(*top));
-    if (!OpenClipboard(hwnd)) {
-        mem_free(top);
-        return;
-    }
-    mem = GetClipboardData(CF_HDROP);
-    if (mem != NULL) {
-        const uint8_t     *base = GlobalLock(mem);
-        DWORD              size = GlobalSize(mem);
-        const DROPFILES_T *df   = (const DROPFILES_T *) base;
+    if ((base != NULL) && (size > sizeof(DROPFILES_T)) && (df->pFiles < size)) {
+        DWORD pos = df->pFiles;
 
-        if ((base != NULL) && (size > sizeof(DROPFILES_T)) && (df->pFiles < size)) {
-            DWORD pos = df->pFiles;
+        while (pos < size) {
+            WCHAR path[PATH_CHARS];
+            DWORD n = 0;
 
-            while (pos < size) {
-                WCHAR path[PATH_CHARS];
-                DWORD n = 0;
+            if (df->fWide) {
+                const WCHAR *str = (const WCHAR *) (base + pos);
 
-                if (df->fWide) {
-                    const WCHAR *s = (const WCHAR *) (base + pos);
+                while (((pos + (n + 1) * 2) <= size) && str[n])
+                    n++;
+                if ((n == 0) || (n >= PATH_CHARS))
+                    break;
+                memcpy(path, str, n * sizeof(WCHAR));
+                path[n] = 0;
+                pos += (n + 1) * 2;
+            } else {
+                const char *str = (const char *) (base + pos);
 
-                    while (((pos + (n + 1) * 2) <= size) && s[n])
-                        n++;
-                    if ((n == 0) || (n >= PATH_CHARS))
-                        break;
-                    memcpy(path, s, n * sizeof(WCHAR));
-                    path[n] = 0;
-                    pos += (n + 1) * 2;
-                } else {
-                    const char *s = (const char *) (base + pos);
+                while (((pos + n + 1) <= size) && str[n])
+                    n++;
+                if (n == 0)
+                    break;
+                pos += n + 1;
+                n = MultiByteToWideChar(CP_ACP, 0, str, (int) n, path, PATH_CHARS - 1);
+                if (n == 0)
+                    continue;
+                path[n] = 0;
+            }
+            {
+                const WCHAR *name = path;
 
-                    while (((pos + n + 1) <= size) && s[n])
-                        n++;
-                    if (n == 0)
-                        break;
-                    pos += n + 1;
-                    n = MultiByteToWideChar(CP_ACP, 0, s, (int) n, path, PATH_CHARS - 1);
-                    if (n == 0)
-                        continue;
-                    path[n] = 0;
+                for (const WCHAR *p = path; *p; p++) {
+                    if ((*p == L'\\') && p[1])
+                        name = p + 1;
                 }
-                /* The name the host gets: the last part of the path. */
-                {
-                    const WCHAR *name = path;
-
-                    for (const WCHAR *p = path; *p; p++) {
-                        if ((*p == L'\\') && p[1])
-                            name = p + 1;
-                    }
-                    list_add(top, 0, 0, path, name, wlen(name));
-                }
+                list_add(top, 0, 0, path, name, wlen(name));
             }
         }
-        if (base != NULL)
-            GlobalUnlock(mem);
     }
-    CloseClipboard();
+    if (base != NULL)
+        GlobalUnlock(mem);
+}
+
+/* Send these items to the host in the background (top is freed). */
+static void
+upload_start(file_list_t *top)
+{
+    DWORD tid;
 
     upload_stop();
     if (top->count == 0) {
@@ -1111,6 +1196,639 @@ guest_files_changed(void)
         list_free(top);
         mem_free(top);
     }
+}
+
+/* The guest copied files (CF_HDROP): send them to the host. */
+static void
+guest_files_changed(void)
+{
+    file_list_t *top = mem_alloc(sizeof(file_list_t));
+    HGLOBAL      mem;
+
+    if (top == NULL)
+        return;
+    memset(top, 0, sizeof(*top));
+    if (!OpenClipboard(hwnd)) {
+        mem_free(top);
+        return;
+    }
+    mem = GetClipboardData(CF_HDROP);
+    if (mem != NULL)
+        hdrop_add(top, mem);
+    CloseClipboard();
+    upload_start(top);
+}
+
+/* ---- Drag and drop ----------------------------------------------------- */
+
+/* Host to guest: the host drags files over the display. The agent runs an
+   OLE drag in the guest with them (DoDragDrop): the guest pointer, which
+   follows the host's, carries it; it drops when the host drops, and the
+   files are copied over when the target asks for them.
+
+   Guest to host: the host pointer left the display with the left button
+   down. The agent puts a tiny drop target under the guest pointer: a guest
+   drag of files there sends them to the host, which carries the drag on. */
+
+static LONG          drag_seq_active;
+static file_list_t   drag_files;
+static HGLOBAL       drag_hdrop;
+static int           drag_rendered;
+static HWND          drag_source;
+static HWND          drag_prev_fg;
+
+#define DRAG_SOURCE_CLASS    "86BoxGuestToolsDragSource"
+#define ID_DRAG_SOURCE_TIMER 2
+
+static HWND          catcher;
+static int           catcher_caught;
+
+#define CATCHER_CLASS "86BoxGuestToolsDragCatcher"
+#define ID_CATCHER_TIMER 1
+
+static HGLOBAL
+hglobal_copy(HGLOBAL src)
+{
+    DWORD   size = GlobalSize(src);
+    HGLOBAL dst  = GlobalAlloc(GMEM_MOVEABLE | GMEM_DDESHARE, size);
+
+    if (dst != NULL) {
+        memcpy(GlobalLock(dst), GlobalLock(src), size);
+        GlobalUnlock(src);
+        GlobalUnlock(dst);
+    }
+    return dst;
+}
+
+static int
+is_hdrop(const FORMATETC *f)
+{
+    return (f->cfFormat == CF_HDROP) && (f->tymed & TYMED_HGLOBAL) &&
+           ((f->dwAspect == DVASPECT_CONTENT) || (f->dwAspect == 0));
+}
+
+/* -- IEnumFORMATETC: just CF_HDROP -- */
+
+typedef struct {
+    IEnumFORMATETC iface;
+    LONG           refs;
+    ULONG          pos;
+} enum_fmt_t;
+
+static IEnumFORMATETCVtbl enum_fmt_vtbl;
+
+static IEnumFORMATETC *
+enum_fmt_new(ULONG pos)
+{
+    enum_fmt_t *e = mem_alloc(sizeof(enum_fmt_t));
+
+    if (e == NULL)
+        return NULL;
+    e->iface.lpVtbl = &enum_fmt_vtbl;
+    e->refs         = 1;
+    e->pos          = pos;
+    return &e->iface;
+}
+
+static HRESULT STDMETHODCALLTYPE
+ef_QueryInterface(IEnumFORMATETC *This, REFIID riid, void **ppv)
+{
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IEnumFORMATETC)) {
+        *ppv = This;
+        ((enum_fmt_t *) This)->refs++;
+        return S_OK;
+    }
+    *ppv = NULL;
+    return E_NOINTERFACE;
+}
+
+static ULONG STDMETHODCALLTYPE
+ef_AddRef(IEnumFORMATETC *This)
+{
+    return ++((enum_fmt_t *) This)->refs;
+}
+
+static ULONG STDMETHODCALLTYPE
+ef_Release(IEnumFORMATETC *This)
+{
+    LONG refs = --((enum_fmt_t *) This)->refs;
+
+    if (refs == 0)
+        mem_free(This);
+    return refs;
+}
+
+static HRESULT STDMETHODCALLTYPE
+ef_Next(IEnumFORMATETC *This, ULONG celt, FORMATETC *rgelt, ULONG *fetched)
+{
+    enum_fmt_t *e = (enum_fmt_t *) This;
+    ULONG       n = 0;
+
+    if ((celt > 0) && (e->pos == 0)) {
+        rgelt->cfFormat = CF_HDROP;
+        rgelt->ptd      = NULL;
+        rgelt->dwAspect = DVASPECT_CONTENT;
+        rgelt->lindex   = -1;
+        rgelt->tymed    = TYMED_HGLOBAL;
+        e->pos          = 1;
+        n               = 1;
+    }
+    if (fetched != NULL)
+        *fetched = n;
+    return (n == celt) ? S_OK : S_FALSE;
+}
+
+static HRESULT STDMETHODCALLTYPE
+ef_Skip(IEnumFORMATETC *This, ULONG celt)
+{
+    enum_fmt_t *e = (enum_fmt_t *) This;
+
+    e->pos += celt;
+    return (e->pos <= 1) ? S_OK : S_FALSE;
+}
+
+static HRESULT STDMETHODCALLTYPE
+ef_Reset(IEnumFORMATETC *This)
+{
+    ((enum_fmt_t *) This)->pos = 0;
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE
+ef_Clone(IEnumFORMATETC *This, IEnumFORMATETC **ppenum)
+{
+    *ppenum = enum_fmt_new(((enum_fmt_t *) This)->pos);
+    return (*ppenum != NULL) ? S_OK : E_OUTOFMEMORY;
+}
+
+static IEnumFORMATETCVtbl enum_fmt_vtbl = {
+    ef_QueryInterface, ef_AddRef, ef_Release, ef_Next, ef_Skip, ef_Reset, ef_Clone
+};
+
+/* -- IDataObject: the host drag's files, copied over when asked for -- */
+
+static HRESULT STDMETHODCALLTYPE
+do_QueryInterface(IDataObject *This, REFIID riid, void **ppv)
+{
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDataObject)) {
+        *ppv = This;
+        return S_OK;
+    }
+    *ppv = NULL;
+    return E_NOINTERFACE;
+}
+
+/* A static object: the counts do nothing. */
+static ULONG STDMETHODCALLTYPE
+do_AddRef(IDataObject *This)
+{
+    (void) This;
+    return 2;
+}
+
+static ULONG STDMETHODCALLTYPE
+do_Release(IDataObject *This)
+{
+    (void) This;
+    return 1;
+}
+
+static HGLOBAL files_render(file_list_t *list, uint32_t index_flag);
+
+static HRESULT STDMETHODCALLTYPE
+do_GetData(IDataObject *This, FORMATETC *f, STGMEDIUM *medium)
+{
+    (void) This;
+    if (!is_hdrop(f))
+        return DV_E_FORMATETC;
+    if (!drag_rendered) {
+        drag_rendered = 1;
+        drag_hdrop    = files_render(&drag_files, GT_FILE_DRAG_INDEX);
+    }
+    if (drag_hdrop == NULL)
+        return E_OUTOFMEMORY;
+    medium->tymed          = TYMED_HGLOBAL;
+    medium->hGlobal        = hglobal_copy(drag_hdrop);
+    medium->pUnkForRelease = NULL;
+    return (medium->hGlobal != NULL) ? S_OK : E_OUTOFMEMORY;
+}
+
+static HRESULT STDMETHODCALLTYPE
+do_GetDataHere(IDataObject *This, FORMATETC *f, STGMEDIUM *medium)
+{
+    (void) This;
+    (void) f;
+    (void) medium;
+    return E_NOTIMPL;
+}
+
+static HRESULT STDMETHODCALLTYPE
+do_QueryGetData(IDataObject *This, FORMATETC *f)
+{
+    (void) This;
+    return is_hdrop(f) ? S_OK : DV_E_FORMATETC;
+}
+
+static HRESULT STDMETHODCALLTYPE
+do_GetCanonicalFormatEtc(IDataObject *This, FORMATETC *in, FORMATETC *out)
+{
+    (void) This;
+    (void) in;
+    out->ptd = NULL;
+    return E_NOTIMPL;
+}
+
+static HRESULT STDMETHODCALLTYPE
+do_SetData(IDataObject *This, FORMATETC *f, STGMEDIUM *medium, BOOL release)
+{
+    (void) This;
+    (void) f;
+    (void) medium;
+    (void) release;
+    return E_NOTIMPL;
+}
+
+static HRESULT STDMETHODCALLTYPE
+do_EnumFormatEtc(IDataObject *This, DWORD dir, IEnumFORMATETC **ppenum)
+{
+    (void) This;
+    if (dir != DATADIR_GET) {
+        *ppenum = NULL;
+        return E_NOTIMPL;
+    }
+    *ppenum = enum_fmt_new(0);
+    return (*ppenum != NULL) ? S_OK : E_OUTOFMEMORY;
+}
+
+static HRESULT STDMETHODCALLTYPE
+do_DAdvise(IDataObject *This, FORMATETC *f, DWORD advf, IAdviseSink *sink, DWORD *conn)
+{
+    (void) This;
+    (void) f;
+    (void) advf;
+    (void) sink;
+    (void) conn;
+    return OLE_E_ADVISENOTSUPPORTED;
+}
+
+static HRESULT STDMETHODCALLTYPE
+do_DUnadvise(IDataObject *This, DWORD conn)
+{
+    (void) This;
+    (void) conn;
+    return OLE_E_ADVISENOTSUPPORTED;
+}
+
+static HRESULT STDMETHODCALLTYPE
+do_EnumDAdvise(IDataObject *This, IEnumSTATDATA **ppenum)
+{
+    (void) This;
+    *ppenum = NULL;
+    return OLE_E_ADVISENOTSUPPORTED;
+}
+
+static IDataObjectVtbl data_obj_vtbl = {
+    do_QueryInterface, do_AddRef, do_Release, do_GetData, do_GetDataHere, do_QueryGetData,
+    do_GetCanonicalFormatEtc, do_SetData, do_EnumFormatEtc, do_DAdvise, do_DUnadvise, do_EnumDAdvise
+};
+static IDataObject data_obj = { &data_obj_vtbl };
+
+/* -- IDropSource: the host decides when it drops or goes away -- */
+
+static HRESULT STDMETHODCALLTYPE
+ds_QueryInterface(IDropSource *This, REFIID riid, void **ppv)
+{
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDropSource)) {
+        *ppv = This;
+        return S_OK;
+    }
+    *ppv = NULL;
+    return E_NOINTERFACE;
+}
+
+static ULONG STDMETHODCALLTYPE
+ds_AddRef(IDropSource *This)
+{
+    (void) This;
+    return 2;
+}
+
+static ULONG STDMETHODCALLTYPE
+ds_Release(IDropSource *This)
+{
+    (void) This;
+    return 1;
+}
+
+static HRESULT STDMETHODCALLTYPE
+ds_QueryContinueDrag(IDropSource *This, BOOL escape, DWORD keys)
+{
+    LONG flags = host_drag_flags;
+
+    (void) This;
+    (void) keys;
+    if (escape || (host_drag_seq != drag_seq_active) || !(flags & GT_POLL_DRAG))
+        return DRAGDROP_S_CANCEL;
+    if (flags & GT_POLL_DROP)
+        return DRAGDROP_S_DROP;
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE
+ds_GiveFeedback(IDropSource *This, DWORD effect)
+{
+    (void) This;
+    (void) effect;
+    return DRAGDROP_S_USEDEFAULTCURSORS;
+}
+
+static IDropSourceVtbl drop_source_vtbl = {
+    ds_QueryInterface, ds_AddRef, ds_Release, ds_QueryContinueDrag, ds_GiveFeedback
+};
+static IDropSource drop_source = { &drop_source_vtbl };
+
+/* The host drag entered: run the guest's (on the window's thread). */
+static void
+host_drag_start(void)
+{
+    uint32_t status;
+    uint32_t format = GT_CLIP_NONE;
+    uint32_t bytes  = 0;
+    uint8_t *list   = NULL;
+    DWORD    effect = 0;
+
+    if (in_host_drag || !opt_clipboard || !(host_features & GT_FEAT_FILES) || !(host_features & GT_FEAT_CLIP_IN))
+        return;
+    drag_seq_active = host_drag_seq;
+
+    EnterCriticalSection(&io_lock);
+    status = gt_command(GT_CMD_DRAG_GET);
+    if (status == GT_OK) {
+        format = gt_inl(GT_PORT_DATA);
+        bytes  = gt_inl(GT_PORT_DATA);
+        if ((format == GT_CLIP_FILES) && (bytes <= HOST_LIST_MAX)) {
+            list = mem_alloc(bytes);
+            if (list != NULL)
+                gt_get_bytes(list, bytes);
+        }
+    }
+    LeaveCriticalSection(&io_lock);
+    if (list == NULL)
+        return;
+
+    {
+        /* host_files_take() fills host_files: borrow it. */
+        file_list_t keep = host_files;
+
+        memset(&host_files, 0, sizeof(host_files));
+        host_files_take(list, bytes);
+        list_free(&drag_files);
+        drag_files = host_files;
+        host_files = keep;
+    }
+    mem_free(list);
+    if (drag_files.count == 0)
+        return;
+
+    if (drag_hdrop != NULL)
+        GlobalFree(drag_hdrop);
+    drag_hdrop    = NULL;
+    drag_rendered = 0;
+    (void) effect;
+
+    /* An OLE drag wants the button down and the mouse captured, as when a
+       program starts one from a click: put a window of ours under the
+       pointer and press the guest's left button on it; the drag starts from
+       that click (drag_source_proc) and the host's drop lets go of it. */
+    {
+        POINT pt;
+
+        if (!GetCursorPos(&pt))
+            return;
+        drag_prev_fg = GetForegroundWindow();
+        drag_source  = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, DRAG_SOURCE_CLASS, "", WS_POPUP,
+                                       pt.x - 16, pt.y - 16, 32, 32, NULL, NULL, hinst, NULL);
+        if (drag_source == NULL)
+            return;
+        ShowWindow(drag_source, SW_SHOWNA);
+        UpdateWindow(drag_source);
+        SetTimer(drag_source, ID_DRAG_SOURCE_TIMER, 1000, NULL);
+        drag_button = 1;
+        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+    }
+}
+
+/* The click on our window: run the drag. */
+static void
+host_drag_run(void)
+{
+    DWORD   effect = 0;
+    HRESULT hr;
+
+    KillTimer(drag_source, ID_DRAG_SOURCE_TIMER);
+    ShowWindow(drag_source, SW_HIDE);
+    in_host_drag = 1;
+    hr = DoDragDrop(&data_obj, &drop_source, DROPEFFECT_COPY, &effect);
+    gt_log("DoDragDrop %lx effect %lu", (unsigned long) hr, effect);
+    in_host_drag = 0;
+    if (InterlockedExchange((LONG *) &drag_button, 0))
+        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+    DestroyWindow(drag_source);
+    drag_source = NULL;
+    if (drag_prev_fg != NULL)
+        SetForegroundWindow(drag_prev_fg);
+}
+
+static LRESULT CALLBACK
+drag_source_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+        case WM_LBUTTONDOWN:
+            if (drag_button && !in_host_drag)
+                host_drag_run();
+            return 0;
+        case WM_TIMER:
+            /* The click went elsewhere: give up. */
+            if ((wp == ID_DRAG_SOURCE_TIMER) && !in_host_drag) {
+                gt_log("host drag: the click missed");
+                KillTimer(wnd, ID_DRAG_SOURCE_TIMER);
+                if (InterlockedExchange((LONG *) &drag_button, 0))
+                    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+                DestroyWindow(wnd);
+                drag_source = NULL;
+            }
+            return 0;
+        case WM_MOUSEACTIVATE:
+            return MA_NOACTIVATE;
+        case WM_PAINT:
+            {
+                PAINTSTRUCT ps;
+
+                BeginPaint(wnd, &ps);
+                EndPaint(wnd, &ps);
+            }
+            return 0;
+    }
+    return DefWindowProcA(wnd, msg, wp, lp);
+}
+
+/* -- IDropTarget: the catcher of a guest drag leaving the display -- */
+
+static void hdrop_add(file_list_t *top, HGLOBAL mem);
+static void upload_start(file_list_t *top);
+
+static HRESULT STDMETHODCALLTYPE
+dt_QueryInterface(IDropTarget *This, REFIID riid, void **ppv)
+{
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDropTarget)) {
+        *ppv = This;
+        return S_OK;
+    }
+    *ppv = NULL;
+    return E_NOINTERFACE;
+}
+
+static ULONG STDMETHODCALLTYPE
+dt_AddRef(IDropTarget *This)
+{
+    (void) This;
+    return 2;
+}
+
+static ULONG STDMETHODCALLTYPE
+dt_Release(IDropTarget *This)
+{
+    (void) This;
+    return 1;
+}
+
+static HRESULT STDMETHODCALLTYPE
+dt_DragEnter(IDropTarget *This, IDataObject *data, DWORD keys, POINTL pt, DWORD *effect)
+{
+    FORMATETC f = { CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+    STGMEDIUM medium;
+
+    (void) This;
+    (void) keys;
+    (void) pt;
+    if (!catcher_caught && (IDataObject_GetData(data, &f, &medium) == S_OK)) {
+        file_list_t *top = mem_alloc(sizeof(file_list_t));
+
+        if (top != NULL) {
+            memset(top, 0, sizeof(*top));
+            top->action = GT_FILES_DRAG;
+            if (medium.tymed == TYMED_HGLOBAL)
+                hdrop_add(top, medium.hGlobal);
+            catcher_caught = top->count > 0;
+            upload_start(top);
+        }
+        ReleaseStgMedium(&medium);
+    }
+    *effect = catcher_caught ? (*effect & DROPEFFECT_COPY) : DROPEFFECT_NONE;
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE
+dt_DragOver(IDropTarget *This, DWORD keys, POINTL pt, DWORD *effect)
+{
+    (void) This;
+    (void) keys;
+    (void) pt;
+    *effect = catcher_caught ? (*effect & DROPEFFECT_COPY) : DROPEFFECT_NONE;
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE
+dt_DragLeave(IDropTarget *This)
+{
+    (void) This;
+    return S_OK;
+}
+
+#define WM_CATCHER_DONE (WM_APP + 6)
+
+static HRESULT STDMETHODCALLTYPE
+dt_Drop(IDropTarget *This, IDataObject *data, DWORD keys, POINTL pt, DWORD *effect)
+{
+    (void) This;
+    (void) data;
+    (void) keys;
+    (void) pt;
+    /* A copy: the guest keeps its files. */
+    *effect = catcher_caught ? (*effect & DROPEFFECT_COPY) : DROPEFFECT_NONE;
+    PostMessageA(hwnd, WM_CATCHER_DONE, 0, 0);
+    return S_OK;
+}
+
+static IDropTargetVtbl drop_target_vtbl = {
+    dt_QueryInterface, dt_AddRef, dt_Release, dt_DragEnter, dt_DragOver, dt_DragLeave, dt_Drop
+};
+static IDropTarget drop_target = { &drop_target_vtbl };
+
+static void
+catcher_close(void)
+{
+    if (catcher == NULL)
+        return;
+    KillTimer(hwnd, ID_CATCHER_TIMER);
+    RevokeDragDrop(catcher);
+    DestroyWindow(catcher);
+    catcher        = NULL;
+    catcher_caught = 0;
+    drag_out_state = 0;
+}
+
+/* The host pointer left with the left button down: a 3x3 drop target under
+   the guest pointer, which stays where the host's left the display. */
+static void
+catcher_open(void)
+{
+    POINT pt;
+    int   cx = GetSystemMetrics(SM_CXSCREEN);
+    int   cy = GetSystemMetrics(SM_CYSCREEN);
+    int   x;
+    int   y;
+
+    if ((catcher != NULL) || in_host_drag || !opt_clipboard || !GetCursorPos(&pt))
+        return;
+    x = pt.x - 1;
+    y = pt.y - 1;
+    if (x < 0)
+        x = 0;
+    if (y < 0)
+        y = 0;
+    if (x > (cx - 3))
+        x = cx - 3;
+    if (y > (cy - 3))
+        y = cy - 3;
+
+    catcher = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, CATCHER_CLASS, "", WS_POPUP,
+                              x, y, 3, 3, NULL, NULL, hinst, NULL);
+    if (catcher == NULL)
+        return;
+    if (RegisterDragDrop(catcher, &drop_target) != S_OK) {
+        DestroyWindow(catcher);
+        catcher = NULL;
+        return;
+    }
+    catcher_caught = 0;
+    ShowWindow(catcher, SW_SHOWNOACTIVATE);
+    /* Moves make the guest drag look again at what is under the pointer. */
+    SetCursorPos((pt.x == (x + 1)) ? (x + 2) : (x + 1), (pt.y == (y + 1)) ? (y + 2) : (y + 1));
+    SetCursorPos(pt.x, pt.y);
+}
+
+static LRESULT CALLBACK
+catcher_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_PAINT) {
+        PAINTSTRUCT ps;
+
+        BeginPaint(wnd, &ps);
+        EndPaint(wnd, &ps);
+        return 0;
+    }
+    return DefWindowProcA(wnd, msg, wp, lp);
 }
 
 /* ---- Clipboard --------------------------------------------------------- */
@@ -1438,6 +2156,31 @@ wnd_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
             /* Going away: the files stay on the host. */
             return 0;
 
+        case WM_HOST_DRAG:
+            host_drag_start();
+            return 0;
+
+        case WM_DRAG_OUT:
+            catcher_open();
+            return 0;
+
+        case WM_DRAG_OUT_END:
+            /* Caught, the guest drop may still be on its way. */
+            if (catcher_caught)
+                SetTimer(hwnd, ID_CATCHER_TIMER, 2000, NULL);
+            else
+                catcher_close();
+            return 0;
+
+        case WM_CATCHER_DONE:
+            catcher_close();
+            return 0;
+
+        case WM_TIMER:
+            if (wp == ID_CATCHER_TIMER)
+                catcher_close();
+            return 0;
+
         case WM_DESTROYCLIPBOARD:
             list_free(&host_files);
             return 0;
@@ -1472,6 +2215,7 @@ wnd_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
             return 0;
 
         case WM_DESTROY:
+            catcher_close();
             upload_stop();
             ChangeClipboardChain(wnd, next_viewer);
             tray_icon(NIM_DELETE);
@@ -1689,6 +2433,7 @@ agent_main(void)
         return 0;
 
     InitializeCriticalSection(&io_lock);
+    OleInitialize(NULL);
     fs_init();
     cf_drop_effect = RegisterClipboardFormatA("Preferred DropEffect");
     {
@@ -1716,6 +2461,15 @@ agent_main(void)
     wc.lpszClassName = AGENT_CLASS;
     if (!RegisterClassA(&wc))
         return 1;
+    wc.lpfnWndProc   = catcher_proc;
+    wc.hIcon         = NULL;
+    wc.hbrBackground = NULL;
+    wc.lpszClassName = CATCHER_CLASS;
+    RegisterClassA(&wc);
+    wc.lpfnWndProc   = drag_source_proc;
+    wc.hCursor       = LoadCursorA(NULL, (LPCSTR) IDC_ARROW);
+    wc.lpszClassName = DRAG_SOURCE_CLASS;
+    RegisterClassA(&wc);
     if (CreateWindowA(AGENT_CLASS, AGENT_TITLE, WS_OVERLAPPED, 0, 0, 0, 0, NULL, NULL, hinst, NULL) == NULL)
         return 1;
 

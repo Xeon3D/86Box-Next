@@ -62,6 +62,20 @@
 #define GT_CMD_FILE_WRITE 0x09 /* req: u32 index, u64 offset, u32 bytes, data; reply: u32 status */
 #define GT_CMD_FILES_END  0x0a /* req: u32 action (GT_FILES_*); reply: u32 status */
 
+/* Drag and drop. Host to guest: while the host drags files over the guest
+   display, POLL says GT_POLL_DRAG (with a new drag seq for each drag);
+   DRAG_GET answers as CLIP_GET does with GT_CLIP_FILES, and FILE_READ reads
+   its entries with GT_FILE_DRAG_INDEX set in the index. GT_POLL_DROP: the
+   host dropped them where the pointer is; neither flag: the drag left.
+   Guest to host: GT_POLL_DRAG_OUT says the host pointer left the display
+   with the left button down; an agent that catches a guest drag of files
+   there says GT_STATE_DRAG_OUT and sends them with FILES_END GT_FILES_DRAG,
+   and the host carries on the drag on its side. */
+#define GT_CMD_DRAG_GET   0x0b /* reply: as CLIP_GET */
+
+/* A line for the emulator's log, for debugging agents. */
+#define GT_CMD_LOG        0x0c /* req: ASCII text; reply: u32 status */
+
 /* Reply status. */
 #define GT_OK             0
 #define GT_ERR_COMMAND    1 /* unknown command */
@@ -93,11 +107,16 @@
 
 /* Agent state (POLL request). */
 #define GT_STATE_POINTER  0x0001 /* the agent follows the host pointer right now */
+#define GT_STATE_DRAG_OUT 0x0002 /* the agent caught a guest drag leaving the display */
 
 /* POLL reply flags. */
 #define GT_POLL_POINTER   0x0001 /* pointer integration active: x, y are valid */
 #define GT_POLL_INSIDE    0x0002 /* the host pointer is over the guest display */
 #define GT_POLL_CLIP      0x0004 /* the host clipboard has news (see clip seq) */
+#define GT_POLL_DRAG      0x0008 /* the host drags files over the display (see drag seq) */
+#define GT_POLL_DROP      0x0010 /* ... and dropped them */
+#define GT_POLL_DRAG_OUT  0x0020 /* the host pointer left the display, left button down */
+/* The POLL reply has a u32 drag seq after the clip seq. */
 
 /* Pointer coordinates: 0..GT_POINTER_MAX across the guest display. */
 #define GT_POINTER_MAX    0xffff
@@ -113,6 +132,9 @@
 /* File entries. */
 #define GT_FILE_DIR       0x0001
 
+/* FILE_READ index of an entry in the drag's list (DRAG_GET). */
+#define GT_FILE_DRAG_INDEX 0x80000000UL
+
 #define GT_FILE_CHUNK     65536UL
 #define GT_FILES_MAX_ENTRIES 20000UL
 #define GT_FILES_MAX_BYTES   (2048ULL * 1024ULL * 1024ULL)
@@ -120,6 +142,7 @@
 /* FILES_END actions. */
 #define GT_FILES_CANCEL   0 /* drop what came */
 #define GT_FILES_CLIPBOARD 1 /* put it on the host clipboard */
+#define GT_FILES_DRAG     2 /* the files of the guest drag leaving the display */
 
 /* An agent that misses POLLs for this long is gone. */
 #define GT_AGENT_TIMEOUT_MS 2000

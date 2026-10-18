@@ -283,6 +283,11 @@ RendererCommon::eventDelegate(QEvent *event, bool &result)
 #endif
         case QEvent::Enter:
         case QEvent::Leave:
+        /* Native renderer windows: Guest Tools takes drops on the stack. */
+        case QEvent::DragEnter:
+        case QEvent::DragMove:
+        case QEvent::DragLeave:
+        case QEvent::Drop:
             result = QApplication::sendEvent(parentWidget, event);
             return true;
     }

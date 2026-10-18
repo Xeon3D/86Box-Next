@@ -34,20 +34,26 @@ public:
     static void insertMedia(QWidget *parent);
 
     /* guest_tools_file_ops_t, on the emulation thread. */
-    static int filesList();
-    static int filesEntry(int index, uint32_t *flags, uint64_t *size, const uint16_t **name, size_t *chars);
-    static int filesRead(int index, uint64_t offset, void *buf, uint32_t bytes);
+    static int filesList(int source);
+    static int filesEntry(int source, int index, uint32_t *flags, uint64_t *size, const uint16_t **name, size_t *chars);
+    static int filesRead(int source, int index, uint64_t offset, void *buf, uint32_t bytes);
     static int filesBegin();
     static int filesAdd(uint32_t flags, uint64_t size, const uint16_t *name, size_t chars);
     static int filesWrite(int index, uint64_t offset, const void *buf, uint32_t bytes);
     static int filesEnd(int action);
     static void filesDebug(const char *paths);
 
+    /* A host drag of these files entered the guest display (UI thread). */
+    static void hostDragEnter(const QStringList &files);
+
+    static QStringList waitDragOutFiles();
+
 private:
     void hostClipboardChanged();
     void setHostClipboard(const QString &text);
     void setHostFiles(const QStringList &files);
     void poll();
+    void startHostDrag();
 
     static void      setHostHandler(const uint16_t *text, size_t chars);
     static uint16_t *getHostHandler(size_t *chars);
@@ -58,6 +64,11 @@ private:
     QString     hostText;  /* the host clipboard as the guest last saw or set it */
     QStringList hostFiles; /* the host clipboard's local files, if it holds files */
     QStringList ownFiles;  /* the files the guest last put there */
+    QStringList dragFiles; /* the host drag over the display */
+    QStringList dragOutFiles; /* the guest drag the host carries on, once sent */
+    bool        dragOutDone  = false;
+    bool        dragOut      = false; /* the agent caught a guest drag leaving */
+    bool        hostDragging = false;
     bool    hostHasText   = false;
     bool    pointerActive = false;
     QTimer *timer         = nullptr;

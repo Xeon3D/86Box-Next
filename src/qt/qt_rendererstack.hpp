@@ -7,6 +7,7 @@
 #include <QLayout>
 #include <QBoxLayout>
 #include <QWidget>
+#include <QStringList>
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 #    include <QWindow>
 #endif
@@ -53,6 +54,12 @@ public:
     /* 86Box-Next: pointer integration with 86Box Guest Tools. */
     bool guestToolsPointer() const;
     void guestToolsPointerMoved(QMouseEvent *event);
+    void guestToolsPointerAt(const QPointF &pos);
+    QStringList guestToolsDragFiles(const QDropEvent *event) const;
+    void dragEnterEvent(QDragEnterEvent *event) override;
+    void dragMoveEvent(QDragMoveEvent *event) override;
+    void dragLeaveEvent(QDragLeaveEvent *event) override;
+    void dropEvent(QDropEvent *event) override;
     bool gtCursorHidden = false;
     void changeEvent(QEvent *event) override;
     void resizeEvent(QResizeEvent *event) override

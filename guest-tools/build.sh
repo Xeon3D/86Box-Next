@@ -33,7 +33,7 @@ cp "$here/windows/gtagent.rc" "$here/windows/gtagent.h" "$obj/"
     -Wl,--disable-dynamicbase -Wl,--disable-nxcompat -Wl,--no-insert-timestamp \
     -s -o "$out/86BOXGT.EXE" \
     "$here/windows/gtagent.c" "$obj/gtagent_res.o" \
-    -lkernel32 -luser32 -ladvapi32 -lshell32 -lwinmm -lgcc
+    -lkernel32 -luser32 -ladvapi32 -lshell32 -lwinmm -lole32 -luuid -lgcc
 
 # ---- Windows 3.x agent (Open Watcom; WATCOM defaults to ~/ow) ----
 WATCOM=${WATCOM:-$HOME/ow}

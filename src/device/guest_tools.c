@@ -68,6 +68,9 @@ static atomic_uint gt_last_poll;     /* plat_get_ticks() of the agent's last POL
 static atomic_uint gt_pointer;       /* host pointer: x << 16 | y, 0..GT_POINTER_MAX */
 static atomic_int  gt_pointer_inside;
 static atomic_uint gt_clip_seq;      /* bumped on every host clipboard change */
+static atomic_int  gt_drag_state;    /* host drag over the display: 0 none, 1 over, 2 dropped */
+static atomic_uint gt_drag_seq;      /* bumped on every host drag that enters */
+static atomic_int  gt_drag_out;      /* the agent caught a guest drag leaving */
 
 static void (*gt_set_host_clipboard)(const uint16_t *text, size_t chars);
 static uint16_t *(*gt_get_host_clipboard)(size_t *chars);
@@ -158,6 +161,29 @@ guest_tools_set_file_ops(const guest_tools_file_ops_t *ops)
     gt_file_ops = ops;
 }
 
+int
+guest_tools_files_enabled(void)
+{
+    int features = atomic_load(&gt_features);
+
+    return (features & GT_FEAT_FILES) && (features & GT_FEAT_CLIP_IN);
+}
+
+void
+guest_tools_host_drag(int state)
+{
+    /* A new drag (a drop stays until the next one): the agent takes the new list. */
+    if ((state == 1) && (atomic_load(&gt_drag_state) != 1))
+        atomic_fetch_add(&gt_drag_seq, 1);
+    atomic_store(&gt_drag_state, state);
+}
+
+int
+guest_tools_drag_out(void)
+{
+    return atomic_load(&gt_drag_out) && guest_tools_pointer_active();
+}
+
 /* debug_cmd "gt ...": drive the device without the host's pointer or
    clipboard. Once used, the host clipboard is left alone until restart. */
 void
@@ -176,6 +202,20 @@ guest_tools_debug(const char *args)
         gt_debug_files = 1;
         guest_tools_host_clipboard_changed();
         always_log("Guest Tools: host clipboard files \"%s\"\n", args + 6);
+    } else if (!strncmp(args, "drag ", 5)) {
+        /* A host drag of these files over the display ("gt drop" / "gt dragleave"). */
+        if ((gt_file_ops != NULL) && (gt_file_ops->debug != NULL))
+            gt_file_ops->debug(args + 5);
+        gt_debug       = 1;
+        gt_debug_files = 1;
+        guest_tools_host_drag(1);
+        always_log("Guest Tools: host drag \"%s\"\n", args + 5);
+    } else if (!strcmp(args, "drop")) {
+        guest_tools_host_drag(2);
+        always_log("Guest Tools: host drop\n");
+    } else if (!strcmp(args, "dragleave")) {
+        guest_tools_host_drag(0);
+        always_log("Guest Tools: host drag left\n");
     } else if (!strncmp(args, "clip ", 5)) {
         const char *text = args + 5;
         size_t      len  = strlen(text);
@@ -213,7 +253,7 @@ guest_tools_debug(const char *args)
                    plat_get_ticks() - atomic_load(&gt_last_poll), guest_tools_pointer_active(),
                    pos >> 16, pos & 0xffff, atomic_load(&gt_pointer_inside), atomic_load(&gt_clip_seq));
     } else
-        always_log("Guest Tools: gt pointer x y | gt buttons mask | gt motion dx dy | gt clip text | gt files a|b | gt state\n");
+        always_log("Guest Tools: gt pointer x y | gt buttons mask | gt motion dx dy | gt clip text | gt files a|b | gt drag a|b | gt drop | gt dragleave | gt state\n");
 }
 
 /* ---- Request and reply buffers ---------------------------------------- */
@@ -346,20 +386,92 @@ gt_cmd_poll(guest_tools_t *dev)
     state = gt_get_u32(dev->req);
     atomic_store(&gt_pointer_ready, (dev->features & GT_FEAT_POINTER) && (state & GT_STATE_POINTER));
     atomic_store(&gt_last_poll, plat_get_ticks());
+    atomic_store(&gt_drag_out, (dev->features & GT_FEAT_FILES) && (dev->features & GT_FEAT_CLIP_OUT) &&
+                               (state & GT_STATE_DRAG_OUT));
 
     if ((dev->features & GT_FEAT_POINTER) && (mouse_input_mode == 0)) {
         flags |= GT_POLL_POINTER;
         if (atomic_load(&gt_pointer_inside))
             flags |= GT_POLL_INSIDE;
+        /* Out with the left button down: maybe a guest drag leaving. */
+        else if ((dev->features & GT_FEAT_FILES) && (dev->features & GT_FEAT_CLIP_OUT) &&
+                 atomic_load(&gt_pointer_ready) && (mouse_get_buttons_ex() & 1))
+            flags |= GT_POLL_DRAG_OUT;
     }
     if ((dev->features & GT_FEAT_CLIP_IN) && (seq != dev->clip_seq_delivered))
         flags |= GT_POLL_CLIP;
+    if ((dev->features & GT_FEAT_CLIP_IN) && (dev->features & GT_FEAT_FILES)) {
+        switch (atomic_load(&gt_drag_state)) {
+            case 1:
+                flags |= GT_POLL_DRAG;
+                break;
+            case 2:
+                flags |= GT_POLL_DRAG | GT_POLL_DROP;
+                break;
+        }
+    }
 
     gt_reply_u32(dev, GT_OK);
     gt_reply_u32(dev, flags);
     gt_reply_u16(dev, pos >> 16);
     gt_reply_u16(dev, pos & 0xffff);
     gt_reply_u32(dev, seq);
+    gt_reply_u32(dev, atomic_load(&gt_drag_seq));
+    return GT_OK;
+}
+
+/* A GT_CLIP_FILES reply from a source's snapshot; 0 if it has no files. */
+static int
+gt_reply_files(guest_tools_t *dev, int source)
+{
+    int      count;
+    uint32_t len_pos;
+    uint32_t start;
+
+    if (gt_file_ops == NULL)
+        return 0;
+    count = gt_file_ops->list(source);
+    if (count < 0)
+        return 0;
+
+    gt_reply_u32(dev, GT_OK);
+    gt_reply_u32(dev, GT_CLIP_FILES);
+    len_pos = dev->reply_len;
+    gt_reply_u32(dev, 0);
+    start = dev->reply_len;
+    gt_reply_u32(dev, (uint32_t) count);
+    for (int i = 0; i < count; i++) {
+        uint32_t        flags = 0;
+        uint64_t        size  = 0;
+        const uint16_t *name  = NULL;
+        size_t          nch   = 0;
+
+        gt_file_ops->entry(source, i, &flags, &size, &name, &nch);
+        gt_reply_u32(dev, flags);
+        gt_reply_u32(dev, (uint32_t) size);
+        gt_reply_u32(dev, (uint32_t) (size >> 32));
+        gt_reply_u32(dev, (uint32_t) nch * 2);
+        for (size_t c = 0; c < nch; c++)
+            gt_reply_u16(dev, name[c]);
+    }
+    gt_reply_patch_u32(dev, len_pos, dev->reply_len - start);
+    guest_tools_log("Guest Tools: host files to guest (source %d), %d entries\n", source, count);
+    return 1;
+}
+
+static uint32_t
+gt_cmd_drag_get(guest_tools_t *dev)
+{
+    if (!dev->hello)
+        return GT_ERR_NO_AGENT;
+    if (!(dev->features & GT_FEAT_CLIP_IN) || !(dev->features & GT_FEAT_FILES))
+        return GT_ERR_DISABLED;
+
+    if (!gt_reply_files(dev, GT_SOURCE_DRAG)) {
+        gt_reply_u32(dev, GT_OK);
+        gt_reply_u32(dev, GT_CLIP_NONE);
+        gt_reply_u32(dev, 0);
+    }
     return GT_OK;
 }
 
@@ -377,38 +489,10 @@ gt_cmd_clip_get(guest_tools_t *dev)
         return GT_ERR_DISABLED;
 
     /* Files on the host clipboard, for an agent that takes them. */
-    if ((dev->features & GT_FEAT_FILES) && (dev->agent_caps & GT_CAP_FILES) && (!gt_debug || gt_debug_files) && (gt_file_ops != NULL)) {
-        int count = gt_file_ops->list();
-
-        if (count >= 0) {
-            uint32_t len_pos;
-            uint32_t start;
-
-            dev->clip_seq_delivered = seq;
-            gt_reply_u32(dev, GT_OK);
-            gt_reply_u32(dev, GT_CLIP_FILES);
-            len_pos = dev->reply_len;
-            gt_reply_u32(dev, 0);
-            start = dev->reply_len;
-            gt_reply_u32(dev, (uint32_t) count);
-            for (int i = 0; i < count; i++) {
-                uint32_t        flags = 0;
-                uint64_t        size  = 0;
-                const uint16_t *name  = NULL;
-                size_t          nch   = 0;
-
-                gt_file_ops->entry(i, &flags, &size, &name, &nch);
-                gt_reply_u32(dev, flags);
-                gt_reply_u32(dev, (uint32_t) size);
-                gt_reply_u32(dev, (uint32_t) (size >> 32));
-                gt_reply_u32(dev, (uint32_t) nch * 2);
-                for (size_t c = 0; c < nch; c++)
-                    gt_reply_u16(dev, name[c]);
-            }
-            gt_reply_patch_u32(dev, len_pos, dev->reply_len - start);
-            guest_tools_log("Guest Tools: host files to guest, %d entries\n", count);
-            return GT_OK;
-        }
+    if ((dev->features & GT_FEAT_FILES) && (dev->agent_caps & GT_CAP_FILES) && (!gt_debug || gt_debug_files) &&
+        gt_reply_files(dev, GT_SOURCE_CLIPBOARD)) {
+        dev->clip_seq_delivered = seq;
+        return GT_OK;
     }
 
     if (gt_debug) {
@@ -511,7 +595,8 @@ gt_cmd_file_read(guest_tools_t *dev)
     gt_reply_u32(dev, 0);
     if (!gt_reply_reserve(dev, bytes))
         return GT_ERR_IO;
-    got = gt_file_ops->read((int) index, offset, dev->reply + dev->reply_len, bytes);
+    got = gt_file_ops->read((index & GT_FILE_DRAG_INDEX) ? GT_SOURCE_DRAG : GT_SOURCE_CLIPBOARD,
+                            (int) (index & ~GT_FILE_DRAG_INDEX), offset, dev->reply + dev->reply_len, bytes);
     if (got < 0)
         return GT_ERR_IO;
     dev->reply_len += (uint32_t) got;
@@ -678,6 +763,22 @@ gt_command(guest_tools_t *dev, uint8_t cmd)
         case GT_CMD_FILES_END:
             status = gt_cmd_files_end(dev);
             break;
+        case GT_CMD_DRAG_GET:
+            status = gt_cmd_drag_get(dev);
+            break;
+        case GT_CMD_LOG:
+            {
+                char line[256];
+                uint32_t n = (dev->req_len < (sizeof(line) - 1)) ? dev->req_len : (sizeof(line) - 1);
+
+                for (uint32_t i = 0; i < n; i++)
+                    line[i] = ((dev->req[i] >= 0x20) && (dev->req[i] < 0x7f)) ? (char) dev->req[i] : '.';
+                line[n] = '\0';
+                pclog("Guest Tools agent: %s\n", line);
+                gt_reply_u32(dev, GT_OK);
+                status = GT_OK;
+                break;
+            }
         case GT_CMD_BYE:
             gt_upload_cancel(dev);
             dev->hello = 0;
@@ -788,6 +889,7 @@ guest_tools_reset(void *priv)
     guest_tools_t *dev = (guest_tools_t *) priv;
 
     gt_upload_cancel(dev);
+    atomic_store(&gt_drag_out, 0);
     dev->hello        = 0;
     dev->req_len      = 0;
     dev->req_overflow = 0;
