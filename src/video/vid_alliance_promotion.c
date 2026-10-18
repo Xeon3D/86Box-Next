@@ -923,10 +923,12 @@ pm_overlay_pixel(pm_t *pm, uint16_t ctl, uint32_t line, int sx)
     const uint32_t mask = pm->vram_mask;
 
     switch ((ctl >> 4) & 7) {
+        /* The packed YUV formats pair pixels in aligned dwords of video
+           memory: a tile of the second design can start on an odd pixel. */
         case 3: /* YUY2 */
         case 6: {
-            const uint32_t a = line + (sx & ~1) * 2;
-            const int      y = vram[(a + ((sx & 1) ? 2 : 0)) & mask];
+            const uint32_t a = (line + sx * 2) & ~3;
+            const int      y = vram[(a + (((line + sx * 2) & 2) ? 2 : 0)) & mask];
             const int      u = vram[(a + 1) & mask];
             const int      v = vram[(a + 3) & mask];
 
@@ -938,7 +940,8 @@ pm_overlay_pixel(pm_t *pm, uint16_t ctl, uint32_t line, int sx)
         case 4: /* UYVY */
         case 5: /* YYVU */
         case 7: { /* Y */
-            const uint32_t a  = line + (sx & ~1) * 2;
+            const uint32_t a  = (line + sx * 2) & ~3;
+            const int      od = !!((line + sx * 2) & 2);
             const uint8_t  b0 = vram[a & mask];
             const uint8_t  b1 = vram[(a + 1) & mask];
             const uint8_t  b2 = vram[(a + 2) & mask];
@@ -952,11 +955,11 @@ pm_overlay_pixel(pm_t *pm, uint16_t ctl, uint32_t line, int sx)
                 return (y << 16) | (y << 8) | y;
             }
             if (((ctl >> 4) & 7) == 5) {
-                y = (sx & 1) ? b1 : b0;
+                y = od ? b1 : b0;
                 v = b2;
                 u = b3;
             } else {
-                y = (sx & 1) ? b3 : b1;
+                y = od ? b3 : b1;
                 u = b0;
                 v = b2;
             }
