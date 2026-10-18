@@ -927,7 +927,22 @@ pm_overlay_draw(svga_t *svga, int displine)
 
         if (x >= svga->hdisp)
             break;
-        p[x] = pm_overlay_pixel(pm, ctl, line, (i * sw) / dw);
+        if ((ctl & 0x0400) && (sw < dw)) {
+            /* VC_INTERP (bit 10): a stretched window blends neighbouring
+               source pixels horizontally (the second design calls the same
+               bit VC2_HOR_INTERP). */
+            const int      pos = (i * sw * 256) / dw;
+            const int      sx  = pos >> 8;
+            const int      f   = pos & 0xff;
+            const uint32_t c0  = pm_overlay_pixel(pm, ctl, line, sx);
+            const uint32_t c1  = f ? pm_overlay_pixel(pm, ctl, line, (sx + 1 < sw) ? (sx + 1) : sx) : c0;
+            uint32_t       out = 0;
+
+            for (int s = 0; s < 24; s += 8)
+                out |= (uint32_t) (((((c0 >> s) & 0xff) * (256 - f)) + (((c1 >> s) & 0xff) * f)) >> 8) << s;
+            p[x] = out;
+        } else
+            p[x] = pm_overlay_pixel(pm, ctl, line, (i * sw) / dw);
     }
 }
 
