@@ -1,0 +1,448 @@
+# DX7SDK.AGS -- the DirectX 7.0a SDK's prebuilt samples from disc 2: each one
+# is started (working folder = its media folder), screenshotted after a few
+# seconds and closed (Esc, then killed). A sample that complains about the
+# device shows up as a dismissed dialog in the log. No install needed.
+autodismiss 1
+closeclass CabinetWClass
+log d3dim/bend
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\bend.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_bend
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/billboard
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\billboard.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_billboard
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/boids
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\boids.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_boids
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/bumpearth
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\bumpearth.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_bumpearth
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/bumpwaves
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\bumpwaves.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_bumpwaves
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/clipmirror
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\clipmirror.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_clipmirror
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/compress
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\compress.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_compress
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/dolphin
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\dolphin.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_dolphin
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/envcube
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\envcube.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_envcube
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/filter
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\filter.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_filter
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/fireworks
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\fireworks.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_fireworks
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/flare
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\flare.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_flare
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/lightmap
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\lightmap.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_lightmap
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/lights
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\lights.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_lights
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/mipmap
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\mipmap.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_mipmap
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/mtexture
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\mtexture.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_mtexture
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/shadowvol
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\shadowvol.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_shadowvol
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/shadowvol2
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\shadowvol2.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_shadowvol2
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/spheremap
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\spheremap.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_spheremap
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/stencildepth
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\stencildepth.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_stencildepth
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/stencilmirror
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\stencilmirror.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_stencilmirror
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/vbuffer
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\vbuffer.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_vbuffer
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/videotex
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\videotex.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_videotex
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/wbuffer
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\wbuffer.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_wbuffer
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dim/xfile
+run "%CD2%\DX7SDK\samples\multimedia\d3dim\bin\xfile.exe" "%CD2%\DX7SDK\samples\multimedia\d3dim\media"
+waitmine 60
+sleep 12
+shot d3dim_xfile
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log ddraw/ddenum
+run "%CD2%\DX7SDK\samples\multimedia\ddraw\bin\ddenum.exe" "%CD2%\DX7SDK\samples\multimedia\ddraw\bin"
+waitmine 60
+sleep 12
+shot ddraw_ddenum
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log ddraw/ddex1
+run "%CD2%\DX7SDK\samples\multimedia\ddraw\bin\ddex1.exe" "%CD2%\DX7SDK\samples\multimedia\ddraw\bin"
+waitmine 60
+sleep 12
+shot ddraw_ddex1
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log ddraw/ddex2
+run "%CD2%\DX7SDK\samples\multimedia\ddraw\bin\ddex2.exe" "%CD2%\DX7SDK\samples\multimedia\ddraw\bin"
+waitmine 60
+sleep 12
+shot ddraw_ddex2
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log ddraw/ddex3
+run "%CD2%\DX7SDK\samples\multimedia\ddraw\bin\ddex3.exe" "%CD2%\DX7SDK\samples\multimedia\ddraw\bin"
+waitmine 60
+sleep 12
+shot ddraw_ddex3
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log ddraw/ddex4
+run "%CD2%\DX7SDK\samples\multimedia\ddraw\bin\ddex4.exe" "%CD2%\DX7SDK\samples\multimedia\ddraw\bin"
+waitmine 60
+sleep 12
+shot ddraw_ddex4
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log ddraw/ddex5
+run "%CD2%\DX7SDK\samples\multimedia\ddraw\bin\ddex5.exe" "%CD2%\DX7SDK\samples\multimedia\ddraw\bin"
+waitmine 60
+sleep 12
+shot ddraw_ddex5
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log ddraw/ddoverlay
+run "%CD2%\DX7SDK\samples\multimedia\ddraw\bin\ddoverlay.exe" "%CD2%\DX7SDK\samples\multimedia\ddraw\bin"
+waitmine 60
+sleep 12
+shot ddraw_ddoverlay
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log ddraw/donuts
+run "%CD2%\DX7SDK\samples\multimedia\ddraw\bin\donuts.exe" "%CD2%\DX7SDK\samples\multimedia\ddraw\bin"
+waitmine 60
+sleep 12
+shot ddraw_donuts
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log ddraw/dxtex
+run "%CD2%\DX7SDK\samples\multimedia\ddraw\bin\dxtex.exe" "%CD2%\DX7SDK\samples\multimedia\ddraw\bin"
+waitmine 60
+sleep 12
+shot ddraw_dxtex
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log ddraw/font
+run "%CD2%\DX7SDK\samples\multimedia\ddraw\bin\font.exe" "%CD2%\DX7SDK\samples\multimedia\ddraw\bin"
+waitmine 60
+sleep 12
+shot ddraw_font
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log ddraw/fswindow
+run "%CD2%\DX7SDK\samples\multimedia\ddraw\bin\fswindow.exe" "%CD2%\DX7SDK\samples\multimedia\ddraw\bin"
+waitmine 60
+sleep 12
+shot ddraw_fswindow
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log ddraw/modetest
+run "%CD2%\DX7SDK\samples\multimedia\ddraw\bin\modetest.exe" "%CD2%\DX7SDK\samples\multimedia\ddraw\bin"
+waitmine 60
+sleep 12
+shot ddraw_modetest
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log ddraw/mosquito
+run "%CD2%\DX7SDK\samples\multimedia\ddraw\bin\mosquito.exe" "%CD2%\DX7SDK\samples\multimedia\ddraw\bin"
+waitmine 60
+sleep 12
+shot ddraw_mosquito
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log ddraw/multimon
+run "%CD2%\DX7SDK\samples\multimedia\ddraw\bin\multimon.exe" "%CD2%\DX7SDK\samples\multimedia\ddraw\bin"
+waitmine 60
+sleep 12
+shot ddraw_multimon
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log ddraw/stretch
+run "%CD2%\DX7SDK\samples\multimedia\ddraw\bin\stretch.exe" "%CD2%\DX7SDK\samples\multimedia\ddraw\bin"
+waitmine 60
+sleep 12
+shot ddraw_stretch
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log ddraw/switcher
+run "%CD2%\DX7SDK\samples\multimedia\ddraw\bin\switcher.exe" "%CD2%\DX7SDK\samples\multimedia\ddraw\bin"
+waitmine 60
+sleep 12
+shot ddraw_switcher
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log ddraw/wormhole
+run "%CD2%\DX7SDK\samples\multimedia\ddraw\bin\wormhole.exe" "%CD2%\DX7SDK\samples\multimedia\ddraw\bin"
+waitmine 60
+sleep 12
+shot ddraw_wormhole
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dx/envmap
+run "%CD2%\DX7SDK\samples\multimedia\d3dx\bin\envmap.exe" "%CD2%\DX7SDK\samples\multimedia\d3dx\media"
+waitmine 60
+sleep 12
+shot d3dx_envmap
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dx/gravity
+run "%CD2%\DX7SDK\samples\multimedia\d3dx\bin\gravity.exe" "%CD2%\DX7SDK\samples\multimedia\d3dx\media"
+waitmine 60
+sleep 12
+shot d3dx_gravity
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dx/particle
+run "%CD2%\DX7SDK\samples\multimedia\d3dx\bin\particle.exe" "%CD2%\DX7SDK\samples\multimedia\d3dx\media"
+waitmine 60
+sleep 12
+shot d3dx_particle
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dx/sprite
+run "%CD2%\DX7SDK\samples\multimedia\d3dx\bin\sprite.exe" "%CD2%\DX7SDK\samples\multimedia\d3dx\media"
+waitmine 60
+sleep 12
+shot d3dx_sprite
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dx/tentacle
+run "%CD2%\DX7SDK\samples\multimedia\d3dx\bin\tentacle.exe" "%CD2%\DX7SDK\samples\multimedia\d3dx\media"
+waitmine 60
+sleep 12
+shot d3dx_tentacle
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dx/trivfs
+run "%CD2%\DX7SDK\samples\multimedia\d3dx\bin\trivfs.exe" "%CD2%\DX7SDK\samples\multimedia\d3dx\media"
+waitmine 60
+sleep 12
+shot d3dx_trivfs
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log d3dx/trivwin
+run "%CD2%\DX7SDK\samples\multimedia\d3dx\bin\trivwin.exe" "%CD2%\DX7SDK\samples\multimedia\d3dx\media"
+waitmine 60
+sleep 12
+shot d3dx_trivwin
+keys {ESC}
+sleep 3
+kill
+sleep 2
+log done

@@ -285,6 +285,7 @@ extern const char *video_get_internal_name(int card);
 extern int         video_get_video_from_internal_name(char *s);
 #ifdef EMU_DEVICE_H
 extern const device_t *video_get_video_from_old_internal_name(char *s);
+extern const char     *video_get_old_section_name(char *s);
 #endif
 extern int         video_is_mda(void);
 extern int         video_is_cga(void);
@@ -303,6 +304,8 @@ extern void video_blit_memtoscreen_8(int x, int y, int w, int h);
 extern void video_blend_monitor(int x, int y, int monitor_index);
 extern void video_process_8_monitor(int x, int y, int monitor_index);
 extern void video_blit_memtoscreen_monitor(int x, int y, int w, int h, int monitor_index);
+/* The part of the target buffer the last blit showed (the overscan only when it is on). */
+extern void video_get_blit_rect_monitor(int monitor_index, int *x, int *y, int *w, int *h);
 extern void video_blit_complete_monitor(int monitor_index);
 extern void video_wait_for_blit_monitor(int monitor_index);
 extern void video_wait_for_buffer_monitor(int monitor_index);
@@ -411,6 +414,7 @@ extern const device_t ati28800_wonderxl24_device;
 extern const device_t bochs_svga_device;
 
 /* Chips & Technologies */
+extern const device_t chips_65554_device;
 extern const device_t chips_69000_device;
 extern const device_t chips_69000_onboard_device;
 
@@ -555,7 +559,6 @@ extern void           paradise_wd90c20_vga_enable(void *priv, uint16_t port);
 extern const device_t paradise_wd90c30_device;
 extern const device_t paradise_wd90c31_device;
 extern const device_t paradise_wd90c31_onboard_device;
-extern const device_t paradise_speedstar24x_device;
 
 /* Quadram Quadcolor I / I + II */
 extern const device_t quadcolor_device;
@@ -605,11 +608,21 @@ extern const device_t s3_virge_375_onboard_pci_device;
 extern const device_t s3_virge_gx_pci_device;
 extern const device_t s3_virge_gx2_pci_device;
 extern const device_t s3_virge_gx2_agp_device;
+extern const device_t s3_virge_mx_pci_device;
+extern const device_t s3_virge_mx_agp_device;
+extern const device_t s3_virge_mx_plus_agp_device;
 extern const device_t s3_trio3d2x_pci_device;
 extern const device_t s3_trio3d2x_agp_device;
 
+/* S3 Savage3D */
+extern const device_t s3_savage3d_stb_nitro3200_pci_device;
+extern const device_t s3_savage3d_stb_nitro3200_agp_device;
+
 /* Sigma Color 400 */
 extern const device_t sigma_device;
+
+/* SiS */
+extern const device_t sis6306_onboard_device;
 
 /* Trident TGUI 94x0 */
 extern const device_t tgui9400cxi_device;
@@ -669,11 +682,26 @@ enum {
     HD44780_COLOR_MAX
 };
 
+/* Alliance Semiconductor ProMotion */
+extern const device_t pm6410_pci_device;
+extern const device_t pm6422_pci_device;
+extern const device_t pm_at3d_pci_device;
+
+/* 3Dlabs / TI Permedia 2 */
+extern const device_t permedia2_stb_glyder_max2_pci_device;
+extern const device_t permedia2_stb_glyder_max2_agp_device;
+
 /* Nvidia */
 extern const device_t nv3_device_pci;
 extern const device_t nv3_device_agp;
 extern const device_t nv3t_device_pci;
 extern const device_t nv3t_device_agp;
+extern const device_t nv4_tnt_pci_device;
+extern const device_t nv4_tnt_agp_device;
+extern const device_t nv5_tnt2_pci_device;
+extern const device_t nv5_tnt2_agp_device;
+extern const device_t nv5_tnt2_ultra_pci_device;
+extern const device_t nv5_tnt2_ultra_agp_device;
 
 #endif
 

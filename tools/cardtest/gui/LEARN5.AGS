@@ -1,0 +1,23 @@
+# LEARN5.AGS -- developer aid: 3DMark2000's result window, then the DCT 1.30
+# installer and manager.
+autodismiss 1
+closeclass CabinetWClass
+log 3DMark2000 default benchmark
+run "%PF%\MadOnion.com\3DMark2000\3DMark2000.exe" "%PF%\MadOnion.com\3DMark2000"
+wait class:#32770 120
+autodismiss 0
+click "Run Default Benchmark"
+pause 120
+wait "Score" 7200
+sleep 5
+dump
+shotscreen m2000_score
+read m2000end
+autodismiss 1
+kill
+sleep 3
+log DCT 1.30 install
+run "%CD2%\DCT130\Setup.exe" "%CD2%\DCT130"
+wizard 1800
+shotscreen dct_after
+dump

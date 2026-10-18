@@ -368,6 +368,62 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   which names the Tools menu item "Install 86Box Guest Tools 1.1.N..." or, for an older agent,
   "Update 86Box Guest Tools (old -> new)..." (`GuestTools::updateInstallAction()`); `gt state`
   logs it. Raise the minor version by hand for new features.
+- STB video cards from STB's own release BIOSes (in `ROMS-EXTRA`, not the 86Box ROM set):
+  - S3 ViRGE/MX (86C260, 5333:8C01), STB Symmetry 3D (`vid_s3_virge.c`, `S3_VIRGEMX`: the GX2
+    core, 4 MB SGRAM, ROM `video/s3virge/stb_symmetry3d_m5_17_14.rom`). The datasheet's paired
+    CRTC registers (`s3_virge_mx_paired`) exist per controller: SR26 bit 3 blocks Controller 1
+    writes, bit 2 writes Controller 2 (40h C1, 44h both, 4Eh/4Fh C2 = the panel/TV CRTC), bits 1/0
+    read from C2. C2 is a read-back shadow (`crtc_iga2`), only C1 is displayed -- without it
+    Windows' panel timings overwrote the CRT's.
+    The ROM (1.0B0) holds its sign-on 20-25 s by itself. Also from TheRetroWeb, AGP: an unbranded
+    ViRGE/MX (`virge_mx_agp`, S3's BIOS 3.05.01-26, `video/s3virge/s3_virge_mx_3.05.01-26.rom`)
+    and the ViRGE/MX+ Spectrah LD-S500 (8C03h, `virge_mx_plus_spectrah_ld_s500`, BIOS A1.3A,
+    `video/s3virge/spectrah_ld-s500_a1.3a.bin`); S3's BIOS waits for SR46 bit 6 (panel powered
+    down), and SR01 bit 3 (half dot clock: 320x200-512x384) doubles pixels. Windows, 2026-10-16
+    (both AGP cards, 440 boards): MX+ with S3VMX 4.11.01.3009 on Win95/98 SE, NT4 SP6a (S3 3.28.05;
+    SP1 has no AGP) and Win2000 SP4's inbox driver all run 1024x768. The generic MX on Win2000 and
+    NT4 is fine too, but on Win95/98 (the Win98 CD's `drivers\display\s3\86c260m5`) only a
+    640x480 window of a larger desktop shows: S3's BIOS (a laptop one) always reports an LCD
+    to 4F14h, the BIOS boots CRT-only (CR6B=01) and the driver then programs C1 with 640x480
+    timings. The STB BIOS boots in duoview (CR6B=83) and is fine. Genuine pairing, not emulation.
+  - C&T 65554, STB Monocle (`vid_chips_69000.c`, `CHIPS_65554`: the 69000 code with 1/2/4 MB
+    external DRAM that wraps (the BIOS sizes it so), ROM `video/chips/stb_monocle_65554_110.bin`).
+    The BIOS and Windows run the panel path (FR01 = 2) with no panel: the 65554 shows the CRTC
+    timing, not the picture cut to the panel. Interlaced modes halve all vertical timings.
+    Its packed 16-colour modes (20h-2Ah: GR05 bit 6 without AR10 bit 6) show each nibble as a
+    pixel. SciTech VBETest draws those modes with planar writes (it resets GR05), so its 4-bit
+    "Banked+Linear" tests look wrong -- VBETest's doing, not the card's. Win98 SE's built-in
+    "Chips & Technologies 65554 PCI" driver works; its 1024x600 entry fails.
+  - `debug_cmd dev` dumps both cards' registers.
+- S3 Savage3D, the STB Nitro 3200 (`src/video/vid_s3_savage.c`, AGP and PCI, 5333:8A21, 8 MB;
+  BIOS `roms/video/s3savage/n32_110.rom` from STB's SourceSafe dump, in ROMS-EXTRA): ViRGE-style VGA
+  core, 128 MB BAR0 (LFB, MMIO at +16 MB with the VGA ports at 8000h + port, six tiled apertures at
+  +32 MB), primary stream via MM81C0/81C8 with 16/32 bpp tiled scan-out (2 KB tiles of 8x8-pixel
+  blocks, a block being two 4-pixel columns of 8 rows: S3's DDSURF.C/DDBLTTEX.C), and the BCI 2D engine (rectangles with ROP3, patterns, host and screen blits, text,
+  lines, bitmap descriptors, shadow status in system memory; a dword with bits 31:30 set where a
+  position or size is expected starts the next command). GX3 3D engine (`savage_3d_*`):
+  DrawPrimitive and DrawIndexedPrimitive (vertex buffer at register 3Eh) lists/strips/fans,
+  textures tiled in 2 KB tiles (8 bpp 64x32, 16 bpp 64x16, 32 bpp 32x16) in video or AGP memory,
+  S3TC (DXT1), mipmaps (levels in whole 8x8 blocks, 4x4 and smaller sharing one), point/bilinear/
+  trilinear sampling with LOD bias, wrap/clamp/mirror (TexCtrl 15:14), texture blend, transparency (TexCtrl bit 20), specular,
+  vertex/table fog, alpha test/blend, 16- and 32-bit Z, scissors; the scan-out latches MM81C0 page flips
+  per frame. The Win9x driver also draws palettized DIBs at 16 bpp that way (DIB32.ASM). Direct3D
+  verified: DxDiag 6.1 cube, Tomb Raider 2 (matches its software renderer; with the
+  driver's HKCC\Display\Settings AC=ON and AT=ON it draws with S3TC and trilinear). Win98 SE (S3
+  4.11.01) and NT4 (S3 6.10.04) run accelerated; NT4's s3mini does not load on the AGP card --
+  VideoPortVerifyAccessRanges rejects its legacy VGA/ROM ranges on bus 1 because NT4's HAL only
+  accepts the AGP bridge's windows and the BIOS leaves its I/O window empty (as on real
+  hardware); use the PCI card. Secondary stream (overlay, `savage_overlay_*`, composed by a
+  wrapper around the primary line renderer): GX3 register meanings from DDOVER.C -- scale
+  factors are 1.15 source steps (MM8198/81E0), MM81E8 is the source line count (bit 15 vertical
+  filter), MM81EC bit 0 horizontal interpolation, MM8190 source width + format (YVYU, YUY2
+  CCIR/full range, Y211, RGB 555/565/888/8888), MM819C colour adjust, MM81A0 compose modes and
+  keys (dest key compares the primary's raw bits, YUV source keys whole bytes). Interrupts:
+  MM8504 status 7:0 (bit 0 vsync) / enables 15:8, CR32 bit 4 master, INTA
+  (KMVT.ASM's scheme). DDC2 on CRAA, as the BIOS's VBE 4F15 and both drivers use it. Tests:
+  OVTEST.EXE modes 1-7 and IRQTEST.COM (savage3d-tools in the notes folder). "dev" in the debug
+  command file dumps the BCI parser, 3D, overlay and interrupt state; "dev bcilog 1|0" logs every BCI dword and MMIO register write; "dev texdump <TexAddr>
+  <TexDescr> <file.bmp>" decodes a texture as the 3D engine reads it.
 - Upstream's CI workflows and Dependabot are disabled/removed in this repo; only
   `sync-upstream.yml` runs.
 - Build number in the title bar / About box: `.build-number` (git-ignored, repo root)

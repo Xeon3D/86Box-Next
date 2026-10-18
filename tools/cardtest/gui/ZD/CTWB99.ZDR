@@ -1,0 +1,19 @@
+; CARDTEST: WinBench 99 graphics tests (GDI/DirectDraw/Graphics WinMark/video),
+; no defrag, no reboot; results exported to C:\CTRES\GUI\ZDWB.
+[Config]
+Benchmark=WB99
+[Environment]
+[Options]
+ExitBenchmark=True
+DemoMode=False
+SystemConfigurationCheck=False
+[Messages]
+InitMessage=3,CARDTEST: WinBench 99 graphics tests are starting.
+[Step1]
+Suite=c:\zdbench\suites\ctwb99.zds
+ClearResults=True
+Database=c:\ZDBench\Results\CTWB99.ztd
+TextFile=c:\ctres\gui\zdwb\wb99.txt
+CSVFile=c:\ctres\gui\zdwb\wb99.csv
+Common Properties:CDROM Drive=%CD2%\
+[StepN]

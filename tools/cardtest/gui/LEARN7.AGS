@@ -1,0 +1,14 @@
+# LEARN7.AGS -- developer aid: DCT 1.30 manager past its configuration check.
+autodismiss 1
+on "Debug Assertion" Ignore
+closeclass CabinetWClass
+run "C:\dct\Common\Shell\x86\dct.exe" "C:\dct\Common\Shell\x86"
+sleep 120
+dump
+shotscreen dct_main
+wait "DCT" 300
+sleep 10
+readlist
+dump
+shotscreen dct_main2
+kill

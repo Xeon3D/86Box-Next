@@ -11,10 +11,44 @@
 
 **86Box-Next is a fork of [86Box](https://github.com/86Box/86Box)**, the low level x86 emulator for IBM PC systems and compatibles from 1981 to the PCI era. It is merged with upstream 86Box every week. Everything 86Box does, this does too; below is what it adds.
 
-Windows x64 builds are on the [releases page](https://github.com/Xeon3D/86Box-Next/releases). They are static: one `86Box-Next.exe` and one `isp-server.exe`, no DLLs. The ROMs are not included: use the [86Box ROM set](https://github.com/86Box/roms).
+Windows x64 builds are on the [releases page](https://github.com/Xeon3D/86Box-Next/releases). They are static: one `86Box-Next.exe` and one `isp-server.exe`, no DLLs. The ROMs are not included: use the [86Box ROM set](https://github.com/86Box/roms). The NVIDIA BIOSes are not in it; they are in [Xeon3D/roms](https://github.com/Xeon3D/roms) (`roms/video/nvidia/nv3` and `nv4`), which is the 86Box set plus those.
+
+**[NEXT-ADDITIONS.md](NEXT-ADDITIONS.md)** lists every addition over upstream 86Box in one table, with its status (working, partly working, experimental) and its known bugs.
 
 Extra features
 --------------
+
+### NVIDIA graphics cards
+* **RIVA 128 and RIVA 128 ZX** (NV3), PCI and AGP:
+  * 2D acceleration, DirectDraw and Direct3D with NVIDIA's own Windows drivers;
+  * the video overlay (YUY2/UYVY, scaled, colour-keyed) used by video players;
+  * VGA, VESA and NVIDIA's extended modes up to 1600x1200, and the RAMDAC's checksum, so NVIDIA's manufacturing test passes.
+* **RIVA TNT, TNT2 and TNT2 Ultra** (NV4/NV5), PCI and AGP, with 18 boards' own BIOSes as the card's Model: ELSA ERAZOR II/III/III Pro/III LT/III ULTRA and Synergy II-32, Diamond Viper V550/V770, Creative Graphics Blaster RIVA TNT, STB Velocity 4400, ASUS AGP-V3400TNT and Leadtek WinFast 3D S320 II:
+  * 2D acceleration up to 1600x1200 in 32-bit colour;
+  * Direct3D (DirectX 5 and 6 triangles, multitexturing) and the **OpenGL ICD**: 3DMark 99 and 2000, Unreal Tournament and Quake III Arena run on NVIDIA's Windows 98 driver;
+  * the 3D is drawn on worker threads (1 to 8), or on the **host's GPU** through Vulkan ("Draw 3D on the host GPU" in the card's settings), with the same pixels either way.
+
+#### RIVA TNT / TNT2: what has been tested
+
+Guests ran on Pentium II-class machines (ASUS P6BAP, Celeron 233-266, or a Pentium 233 on Socket 7 for the PCI cards). Benchmark figures are the guest's own (its emulated CPU sets them), not host speed.
+
+| OS | NVIDIA driver | Cards | Works | Does not work / not tested |
+|---|---|---|---|---|
+| Windows 98 SE | 4.11.01.0115 (reference, 1999) | TNT, TNT2 (not Ultra/M64: the driver does not list them) | 2D up to 1600x1200x32; DirectDraw and its overlay; Direct3D: DxDiag, **3DMark 99 MAX 2620**, **3DMark 2000 1050**, Unreal Tournament demo; OpenGL: **Quake III Arena** (39 fps timedemo), **GLQuake 85 fps**, **Quake II 38.5 fps** | Alt+Tab out of a fullscreen OpenGL game and back crashes the driver (its own 1999 bug, as far as we can tell) |
+| Windows 98 SE | 8.05 | TNT, TNT2, TNT2 Ultra, TNT2 M64 | 2D, Direct3D (**3DMark 99: 2714 Ultra, 2717 M64**), overlay and DVD subpicture: Media Player plays MPEG-1 and Indeo 4/5 through the overlay in real time | |
+| Windows 98 SE | 71.84 (2005) | TNT, TNT2 Ultra | Desktop, resolution and colour-depth changes, DirectDraw | **Direct3D draws nothing**: the driver's TNT path never sets up a 3D colour/depth buffer (found by disassembling it), and real TNT2s fail 3DMark 99/2000 with it too ([VOGONS](https://www.vogons.org/viewtopic.php?t=28336)). Use 8.05 or older |
+| Windows 98 SE | 45.23 (2003) | TNT2 (45.23 does not list the original TNT) | Desktop at 8/16/32 bpp, colour-depth and resolution changes, DirectDraw, Direct3D 8 (DxDiag), **3DMark 99 MAX 2679**, OpenGL: **GLQuake 55.6 fps** (likely vsync-capped) | Direct3D 6/7 needs a working AGP GART driver: on the VIA boards install VIA's 4in1 AGP driver (VIAGART), or 3DMark 99 reports no texturing accelerator and DxDiag's D3D7 test fails at step 8, as on real VIA boards |
+| Windows 98 SE | Detonator 2.08 (July 1999) | TNT | 2D, **3DMark 99 MAX 2792**, **GLQuake 85.9 fps** | |
+| Windows 98 SE | ASUS 1.02 (December 1998) | ASUS V3400TNT | 2D, **3DMark 99 MAX 2805**, **GLQuake 85.9 fps** | |
+| Windows 2000 | built-in NVIDIA driver | TNT (PCI) | 1024x768x32 desktop, overlay, Media Player MPEG-1, restart | 3D not tested |
+| Windows 2000 | 71.84 | TNT2 (PCI) | Installs, desktop | 3D not tested |
+| Windows NT 4.0 SP6a | 28.32, 43.45 | TNT (AGP) | 800x600x16 and 1024x768x32 desktops, mode change without reboot, OpenGL (3D Pipes), DirectDraw overlay | Direct3D: NT4 has none |
+| DOS | card BIOS (VBE 3.0) | all 18 boards POST; tested in depth: ERAZOR II PCI on a Socket 7 board (Intel TC430HX, Pentium 200) | Text and VGA modes; SciTech VBETest: banked and linear framebuffer, double buffering, virtual-screen scrolling (640x480 and 1600x1200, 16-bit); **Quake 1.01 and 1.06** in every VESA mode from 320x200 to 1280x1024, **timedemo 22 fps at 640x480** | Most boards' BIOSes report a fixed amount of memory to VESA programs, as on the real cards (NVIDIA's reference BIOS hard-codes it): ELSA TNT 8 MB, ELSA TNT2 / Creative / ASUS / Leadtek 4 MB, STB / Diamond V770 16 MB; the Diamond V550 reports what is fitted |
+| Linux | XFree86 `nv`, `rivafb` | | | Not tested |
+
+Not emulated: the TV encoders and video capture (PME), the DirectX 3 triangle class (0x48), 3D drawn into a swizzled surface. Nothing found so far needs them.
+
+Tip: with the **shareware** Quake data GLQuake shows the desktop instead of the game in fullscreen. That is GLQuake, not the card: it cannot read back its palette cache with shareware data, regenerates it behind a dialog on every start, and minimizes itself when that dialog takes the focus. Use the full game's PAK0/PAK1 or `-window`.
 
 ### Dial-up, telephone lines and voice calls
 * **Modems on COM ports:** Diamond SupraExpress 56e PRO and ELSA MicroLink 56k, with a status bar icon to change the line while the machine runs. The line can be:
@@ -75,6 +109,7 @@ Extra features
 * A new icon set.
 * The release (or build number) in the title bar.
 * Static Windows builds.
+* A debug command file (`BOX86NEXT_DEBUG_CMD`) to drive a running machine from scripts: keys, screenshots, breakpoints, memory and device state.
 
 Licensing
 ---------

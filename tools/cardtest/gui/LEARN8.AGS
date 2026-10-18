@@ -1,0 +1,9 @@
+# LEARN8.AGS -- developer aid: the DCT 1.30 manager's Run drop-down entries.
+autodismiss 1
+on "Debug Assertion" Ignore
+closeclass CabinetWClass
+run "C:\dct\Common\Shell\x86\dct.exe" "C:\dct\Common\Shell\x86"
+wait "Display Conformance Test" 600
+sleep 5
+readlist
+kill

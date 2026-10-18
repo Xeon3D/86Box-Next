@@ -1,0 +1,34 @@
+# LEARN3.AGS -- developer aid, round 3
+autodismiss 1
+on "License Agreement" Accept
+closeclass CabinetWClass
+log Final Reality after the licence
+run "%PF%\Final Reality\FR.exe" "%PF%\Final Reality"
+sleep 45
+dump
+shotscreen fr2
+kill
+sleep 3
+log 3DMark2000 first start
+find 3DMark2000.exe "%PF%\MadOnion.com" no2000
+run "%F%" "%PF%\MadOnion.com\3DMark2000"
+sleep 75
+dump
+shotscreen m2000a
+kill
+sleep 3
+:no2000
+log 3DMark 99 full benchmark
+run "%PF%\3DMark 99 Max\3dmark.exe" "%PF%\3DMark 99 Max"
+wait class:#32770 90
+click "New 3DMark Benchmark"
+wait "Untitled" 30
+click "Benchmark"
+sleep 60
+dump
+shotscreen m99run
+wait "Result" 3000
+sleep 5
+dump
+shotscreen m99res
+read results

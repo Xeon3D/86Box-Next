@@ -19,8 +19,8 @@
  *          every pixel sees the same sequence of writes as on the serial
  *          path and the output is bit-exact with it.
  *
- *          The thread count is the "Render threads" option (1, 2, 3, 4, 6
- *          or 8). With 1 there are no workers: each primitive is drawn on
+ *          The thread count is the emulator's "Render threads" option
+ *          (1-4). With 1 there are no workers: each primitive is drawn on
  *          the submitting thread as it arrives. The GPU backend, the bus
  *          capture tap and JIT verify mode each force the count to 1.
  *
@@ -75,7 +75,7 @@
 #define RB_TRI         0
 #define RB_LINE        1
 #define RB_POINT       2
-#define RB_MAX_WORKERS 8
+#define RB_MAX_WORKERS RAGE128_MAX_RENDER_THREADS
 
 /* One deferred primitive: the index of the state it was submitted under
    (in the batch's state table) and its vertices (a line uses v[0] and
@@ -314,7 +314,6 @@ rage128_raster_flush(rage128_t *dev)
     thread_wait_mutex(dev->raster_flush_mtx);
 
     if (rb && rb->nthreads > 1 && rb->cmd_count != 0) {
-        atomic_store(&dev->pace_3d_seen, 1); /* tells the speed governor 3D was drawn */
         rb_run_parallel(rb);
 
         rb->cmd_count   = 0;
@@ -324,7 +323,6 @@ rage128_raster_flush(rage128_t *dev)
         rb_reset_written(rb);
         atomic_store(&dev->cce_batch_pending, 0); /* workers have finished */
     }
-
     /* Recycle the texture staging arena and start a new batch generation.
        No worker is running here (they finished above, or there was no
        batch). With workers this is the only place the arena is reset: a
@@ -366,6 +364,11 @@ rage128_raster_flush(rage128_t *dev)
     rage128_z_stage_writeback(dev);
     rage128_c_stage_writeback(dev);
 
+    /* Scratch fences written behind the batch become visible only now,
+       after the write-back above, so a driver that sees one also finds
+       the pixels of a target in AGP memory in guest memory. */
+    rage128_pm4_scratch_apply(dev);
+
     thread_release_mutex(dev->raster_flush_mtx);
 }
 
@@ -386,6 +389,7 @@ rage128_raster_abandon(rage128_t *dev)
     rb->rt_z_valid  = 0;
     rb_reset_written(rb);
     atomic_store(&dev->cce_batch_pending, 0);
+    rage128_pm4_scratch_drop(dev); /* the fences behind the dropped draws go with them */
 }
 
 /* Worker count (1 = no workers). rage128_raster_state_capture uses it to
@@ -435,13 +439,24 @@ rb_rows_to_bytes(uint32_t base, uint32_t stride, int tiled, int32_t y0, int32_t 
    draw's slack would reach into whatever the driver placed right after
    the render target, such as a Z buffer, and every such draw would look
    as if it sampled its own output. In X the interval covers whole rows,
-   which is safe because a hazard test may only over-report. */
-static void
-rb_prim_ranges(const rage128_raster_state_t *rs, int32_t y0, int32_t y1,
+   which is safe because a hazard test may only over-report.
+
+   Only the scissor clips a draw; nothing clips it to its target's width.
+   A primitive whose columns reach past the pitch writes pixel x of row
+   y onto the bytes of a later row (row y + 1 on a linear surface, row
+   y + 16 on a tiled one), so the interval is widened past the last row
+   to the farthest such byte (r128_prim_past_pitch). Returns 1 for such
+   a primitive, on the color surface or on a Z surface it reads or
+   writes: its rows do not own their bytes, which rb_enqueue must know. */
+static int
+rb_prim_ranges(const rage128_raster_state_t *rs, const r3d_vtx_t *v, int n,
+               int32_t y0, int32_t y1,
                uint32_t *clo, uint32_t *chi, uint32_t *zlo, uint32_t *zhi)
 {
-    int32_t sy0 = rs->d.sy0;
-    int32_t sy1 = rs->d.sy1;
+    int32_t sy0  = rs->d.sy0;
+    int32_t sy1  = rs->d.sy1;
+    int     past = 0;
+    int     xmax;
 
     *clo = *zlo = 0xffffffffu;
     *chi = *zhi = 0;
@@ -450,17 +465,26 @@ rb_prim_ranges(const rage128_raster_state_t *rs, int32_t y0, int32_t y1,
     if (y1 > sy1)
         y1 = sy1;
     if (y1 < y0)
-        return;
+        return 0;
+    xmax = r128_prim_xmax(rs, &v[0], n > 1 ? &v[1] : NULL, n > 2 ? &v[2] : NULL);
     rb_rows_to_bytes(rs->dst_offset, rs->dst_pitch * rs->dst_bpp,
                      rs->d.c_tiled, y0, y1, clo, chi);
+    if (*chi > *clo)
+        past |= r128_prim_past_pitch(rs->dst_offset, rs->dst_pitch * rs->dst_bpp,
+                                     rs->d.c_tiled, y1, xmax, rs->dst_bpp, chi);
     /* Z rows count when the Z test or stencil is on. Stencil shares the
        Z cell, so a stencil-only draw touches it too, and a draw that
        tests Z without writing it still reads it. */
-    if (rs->d.z_en || rs->d.sten_on)
-        rb_rows_to_bytes(rs->t3d.z_offset,
-                         rs->d.zrowpx * (uint32_t) rs->d.zbpp,
-                         rs->d.z_tiled, y0, y1,
+    if (rs->d.z_en || rs->d.sten_on) {
+        uint32_t zs = rs->d.zrowpx * (uint32_t) rs->d.zbpp;
+
+        rb_rows_to_bytes(rs->t3d.z_offset, zs, rs->d.z_tiled, y0, y1,
                          zlo, zhi);
+        if (*zhi > *zlo)
+            past |= r128_prim_past_pitch(rs->t3d.z_offset, zs, rs->d.z_tiled,
+                                         y1, xmax, (uint32_t) rs->d.zbpp, zhi);
+    }
+    return past;
 }
 
 /* True if either enabled texture stage samples bytes in [lo,hi). */
@@ -657,7 +681,6 @@ rb_run_inline(rage128_t *dev, const rage128_raster_state_t *rs, int kind,
 {
     r128_jit_span_fn jfn = rage128_jit_get_block(dev, &rs->d);
 
-    atomic_store(&dev->pace_3d_seen, 1);
     if (kind == RB_TRI)
         rage128_3d_tri(dev, rs, 0, 0, &v[0], &v[1], &v[2], jfn);
     else if (kind == RB_LINE)
@@ -667,8 +690,19 @@ rb_run_inline(rage128_t *dev, const rage128_raster_state_t *rs, int kind,
 }
 
 /* Add a primitive to the batch after resolving what it depends on.
-   Three cases, checked in this order:
+   Four cases, checked in this order:
 
+     - Its columns pass the pitch of its color or Z surface
+       (rb_prim_ranges), so pixel x of row y lands on the bytes of a
+       later row. Row ownership rests on each row owning its bytes:
+       when the later row belongs to another worker, which write lands
+       last is a race, while the serial walk writes row by row and the
+       last row wins. The batch is flushed and the primitive is drawn
+       inline, so everything before it is finished, its own rows are
+       written in walk order, and everything after it is queued behind
+       it. Only the scissor clips a draw; the Windows 98 Direct3D
+       driver has been seen leaving it at the card maximum and drawing
+       screen-sized triangles into textures 32 to 128 pixels wide.
      - The primitive samples bytes it writes itself. Drawn serially, a
        pixel can read texels that earlier pixels of the same primitive
        wrote; split across workers, a row could read texels another
@@ -679,7 +713,7 @@ rb_run_inline(rage128_t *dev, const rage128_raster_state_t *rs, int kind,
        render to texture): flush, then defer it as usual.
      - Its render target differs from the batch's: rb_guard_rt.
 
-   The first two need the primitive's own byte intervals, so its rows
+   The first three need the primitive's own byte intervals, so its rows
    are computed once here and also stored as the command's row range
    for the ownership skip. */
 static void
@@ -689,11 +723,12 @@ rb_enqueue(rage128_t *dev, rage128_raster_t *rb,
     rb_cmd_t *cmd;
     uint32_t  clo, chi, zlo, zhi;
     int32_t   y0, y1;
+    int       past;
 
     rb_prim_rows(rs, v, n, &y0, &y1);
-    rb_prim_ranges(rs, y0, y1, &clo, &chi, &zlo, &zhi);
+    past = rb_prim_ranges(rs, v, n, y0, y1, &clo, &chi, &zlo, &zhi);
 
-    if (rb_tex_hits(rs, clo, chi) || rb_tex_hits(rs, zlo, zhi)) {
+    if (past || rb_tex_hits(rs, clo, chi) || rb_tex_hits(rs, zlo, zhi)) {
         rage128_raster_flush(dev);
         rb_run_inline(dev, rs, kind, v);
         return;
@@ -773,7 +808,6 @@ rage128_raster_submit_tri(rage128_t *dev, const rage128_raster_state_t *rs,
         return;
 
     if (!rb || rb->nthreads <= 1) {
-        atomic_store(&dev->pace_3d_seen, 1);
         rage128_3d_tri(dev, rs, 0, 0, a, b, c, rage128_jit_get_block(dev, &rs->d));
         return;
     }
@@ -809,7 +843,6 @@ rage128_raster_submit_line(rage128_t *dev, const rage128_raster_state_t *rs,
         return;
 
     if (!rb || rb->nthreads <= 1) {
-        atomic_store(&dev->pace_3d_seen, 1);
         rage128_3d_line(dev, rs, 0, 0, a, b, rage128_jit_get_block(dev, &rs->d));
         return;
     }
@@ -842,7 +875,6 @@ rage128_raster_submit_point(rage128_t *dev, const rage128_raster_state_t *rs,
         return;
 
     if (!rb || rb->nthreads <= 1) {
-        atomic_store(&dev->pace_3d_seen, 1);
         rage128_3d_point(dev, rs, 0, 0, v, rage128_jit_get_block(dev, &rs->d));
         return;
     }

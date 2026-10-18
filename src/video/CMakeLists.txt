@@ -29,6 +29,7 @@ add_library(vid OBJECT
     ramdac/vid_ramdac_bt48x.c 
     ramdac/vid_ramdac_bt481.c 
     ramdac/vid_ramdac_ibm_rgb528.c
+    ramdac/vid_ramdac_mu9c1880.c
     ramdac/vid_ramdac_sc1148x.c 
     ramdac/vid_ramdac_sc1502x.c 
     ramdac/vid_ramdac_sdac.c 
@@ -157,6 +158,9 @@ add_library(vid OBJECT
     vid_f82c425.c
     vid_ti_cf62011.c
 
+    # Alliance Semiconductor
+    vid_alliance_promotion.c
+
     # Trident
     vid_tvga.c 
     vid_tgui9440.c
@@ -164,6 +168,11 @@ add_library(vid OBJECT
     # S3 Graphics
     vid_s3.c 
     vid_s3_virge.c
+    vid_permedia2.c
+    vid_s3_savage.c
+
+    # SiS
+    vid_sis6306.c
 
     # Matrox
     vid_mga.c
@@ -191,6 +200,25 @@ add_library(vid OBJECT
     nv/nv3/subsystems/nv3_pramin.c 
     nv/nv3/subsystems/nv3_pvideo.c
     nv/nv3/subsystems/nv3_user.c
+
+    # NVidia RIVA TNT / TNT2
+    nv/nv4/nv4_core.c
+    nv/nv4/nv4_vga.c
+    nv/nv4/subsystems/nv4_pmc.c
+    nv/nv4/subsystems/nv4_pbus.c
+    nv/nv4/subsystems/nv4_ptimer.c
+    nv/nv4/subsystems/nv4_pfb.c
+    nv/nv4/subsystems/nv4_pramdac.c
+    nv/nv4/subsystems/nv4_pcrtc.c
+    nv/nv4/subsystems/nv4_pramin.c
+    nv/nv4/subsystems/nv4_dma.c
+    nv/nv4/subsystems/nv4_pfifo.c
+    nv/nv4/subsystems/nv4_pgraph.c
+    nv/nv4/subsystems/nv4_pgraph_2d.c
+    nv/nv4/subsystems/nv4_pgraph_3d.c
+    nv/nv4/subsystems/nv4_pgraph_3d_gpu.c
+    nv/nv4/subsystems/nv4_pvideo.c
+    nv/nv4/subsystems/nv4_stubs.c
 
     # NVidia RIVA 128 - Object Classes
     nv/nv3/classes/nv3_class_names.c
@@ -240,7 +268,11 @@ if(XL24)
     target_compile_definitions(vid PRIVATE USE_XL24)
 endif()
 
-option(ENABLE_RAGE128_LOG "Enable ATI Rage 128 debug logging" OFF)
+if(RAGE128_MAXX)
+    target_compile_definitions(vid PRIVATE USE_RAGE128_MAXX)
+endif()
+
+option(ENABLE_RAGE128_LOG "Turn ATI Rage 128 logging on by default (RAGE128_LOG overrides it at run time)" OFF)
 if(ENABLE_RAGE128_LOG)
     set_property(SOURCE
         vid_ati_rage128.c
@@ -285,6 +317,13 @@ if(NOT MSVC)
         PROPERTIES COMPILE_OPTIONS "-ffp-contract=off"
     )
 endif()
+# The RIVA TNT's CPU span shader must round as its GPU kernel does.
+if(NOT MSVC)
+    set_source_files_properties(
+        nv/nv4/subsystems/nv4_pgraph_3d.c
+        PROPERTIES COMPILE_OPTIONS "-ffp-contract=off"
+    )
+endif()
 
 # ATI Rage 128: optional GPU raster backend (vid_ati_rage128_gpu.c) needs
 # Vulkan HEADERS only -- the library is dlopen'd at runtime (after the
@@ -301,6 +340,8 @@ find_package(Vulkan QUIET)
 find_path(R128_VULKAN_INCLUDE_DIR vulkan/vulkan.h HINTS ${Vulkan_INCLUDE_DIR})
 if(R128_VULKAN_INCLUDE_DIR)
     target_compile_definitions(vid PRIVATE R128_GPU_HAVE_VULKAN)
+    # the RIVA TNT's GPU lane (nv4_pgraph_3d_gpu.c) loads Vulkan the same way
+    target_compile_definitions(vid PRIVATE NV4_GPU_HAVE_VULKAN)
     target_include_directories(vid PRIVATE ${R128_VULKAN_INCLUDE_DIR})
     message(STATUS "Rage 128 GPU raster backend: Vulkan headers found (${R128_VULKAN_INCLUDE_DIR}), enabled (runtime dlopen)")
 else()

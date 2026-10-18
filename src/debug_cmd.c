@@ -13,14 +13,23 @@
  *                 dev args         passed to the device that registered a hook
  *                 cpu              CS:EIP, registers and the code bytes there
  *                 peek addr        the physical address and 16 bytes at a linear address
+ *                 peekp addr [n]   n (16) bytes at a physical address, 16 a line
  *                 bp addr [n]      log registers and stack the next n (default 8) times the
  *                                  CPU executes linear addr; "bp clear" drops them all
  *                 wp addr          log each instruction that changes the dword at linear addr
  *                                  (its physical page as mapped now); "wp clear" drops it
+ *                 map addr         the memory mappings that read and write physical addr,
+ *                                  and where the AGP aperture sends it
+ *                 cdrom n path     put an image in CD-ROM drive n (0 = the first); no path
+ *                                  empties the drive
+ *                 pci bus dev fn   the device's 256-byte configuration space (hex), read
+ *                                  through configuration mechanism #1
+ *                 pciw bus dev fn reg byte   a configuration write of one byte
  *                 gt args          86Box Guest Tools: "pointer x y" (0-1, x < 0 = left the
  *                                  display), "clip text" (a stand-in host clipboard; the
  *                                  guest's text is logged), "buttons mask" (1 left, 2 right),
- *                                  "state"
+ *                                  "files a|b" / "drag a|b" / "drop" / "dragleave"
+ *                                  (stand-in host files), "state"
  *
  *               Each command is logged ("debug_cmd: ..."), so a test can wait
  *               for the file to vanish and then read the log.
@@ -32,10 +41,15 @@
 #include <ctype.h>
 #include <86box/86box.h>
 #include <86box/keyboard.h>
+#include <86box/mouse.h>
 #include <86box/video.h>
 #include <86box/debug_cmd.h>
 #include <86box/guest_tools.h>
 #include <86box/mem.h>
+#include <86box/cdrom.h>
+#include <86box/agpgart.h>
+#include <86box/pci.h>
+#include <86box/plat.h>
 #include "cpu.h"
 
 #define DEBUG_CMD_QUEUE 512
@@ -47,6 +61,7 @@ static uint16_t debug_cmd_keys[DEBUG_CMD_QUEUE];
 static int      debug_cmd_key_head;
 static int      debug_cmd_key_tail;
 static int      debug_cmd_key_wait;
+int            debug_cmd_mouse = 0;
 static void   (*debug_cmd_device_hook)(const char *args);
 
 void
@@ -91,7 +106,7 @@ debug_cmd_shot(const char *path)
 {
     const monitor_t *mon = &monitors[0];
     const bitmap_t  *bmp = mon->target_buffer;
-    int              w, h;
+    int              x, y, w, h;
     FILE            *f;
     uint8_t          hdr[54] = { 0 };
 
@@ -99,12 +114,18 @@ debug_cmd_shot(const char *path)
         always_log("debug_cmd: shot %s: no screen\n", path);
         return;
     }
-    w = mon->mon_xsize + 32;
-    h = mon->mon_ysize + 32;
-    if (w > bmp->w)
-        w = bmp->w;
-    if (h > bmp->h)
-        h = bmp->h;
+    /* What the last blit showed: the overscan only when it is displayed
+       (the buffer's border rows are not kept up to date otherwise). */
+    video_get_blit_rect_monitor(0, &x, &y, &w, &h);
+    if ((w <= 0) || (h <= 0)) {
+        x = y = 0;
+        w = mon->mon_xsize + mon->mon_overscan_x;
+        h = mon->mon_ysize + mon->mon_overscan_y;
+    }
+    if ((x + w) > bmp->w)
+        w = bmp->w - x;
+    if ((y + h) > bmp->h)
+        h = bmp->h - y;
     if ((w <= 0) || (h <= 0) || ((f = fopen(path, "wb")) == NULL)) {
         always_log("debug_cmd: shot %s: cannot write (%dx%d)\n", path, w, h);
         return;
@@ -122,8 +143,8 @@ debug_cmd_shot(const char *path)
     hdr[26] = 1;
     hdr[28] = 32;
     fwrite(hdr, 1, sizeof(hdr), f);
-    for (int y = 0; y < h; y++)
-        fwrite(bmp->line[y], 4, w, f);
+    for (int row = 0; row < h; row++)
+        fwrite(&bmp->line[y + row][x], 4, w, f);
     fclose(f);
     always_log("debug_cmd: shot %s (%dx%d, mode %dx%d)\n", path, w, h, mon->mon_xsize, mon->mon_ysize);
 }
@@ -144,9 +165,47 @@ debug_cmd_cpu(void)
         else
             snprintf(code + 3 * i, 4, " %02x", mem_readb_phys((uint32_t) phys));
     }
-    always_log("debug_cmd: cpu %04x:%08x (lin %08x) flags %04x eax %08x ebx %08x ecx %08x edx %08x esi %08x edi %08x ebp %08x esp %08x ds %04x es %04x\n",
-               CS, cpu_state.pc, lin, cpu_state.flags, EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP, DS, ES);
+    always_log("debug_cmd: cpu %04x:%08x (lin %08x) flags %04x eax %08x ebx %08x ecx %08x edx %08x esi %08x edi %08x ebp %08x esp %08x ss %04x ds %04x es %04x cr0 %08x\n",
+               CS, cpu_state.pc, lin, cpu_state.flags, EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP, SS, DS, ES, cr0);
     always_log("debug_cmd: code%s\n", code);
+}
+
+static uint8_t
+debug_cmd_lin_readb(uint32_t lin)
+{
+    uint64_t phys = (cr0 >> 31) ? mmutranslate_noabrt(lin, 0) : (uint64_t) lin;
+
+    return (phys == 0xffffffffffffffffULL) ? 0xff : mem_readb_phys((uint32_t) phys);
+}
+
+/* segbase <selector>: the selector's descriptor base, from the GDT or the LDT
+   (to turn a protected mode sel:offset into a "bp" address). */
+static void
+debug_cmd_segbase(const char *arg)
+{
+    uint32_t sel  = strtoul(arg, NULL, 16);
+    uint32_t desc = ((sel & 4) ? ldt.base : gdt.base) + (sel & ~7);
+    uint8_t  d[8];
+
+    for (int i = 0; i < 8; i++)
+        d[i] = debug_cmd_lin_readb(desc + i);
+    always_log("debug_cmd: segbase %04x = %08x (limit %05x, access %02x)\n", sel,
+               d[2] | (d[3] << 8) | (d[4] << 16) | ((uint32_t) d[7] << 24),
+               d[0] | (d[1] << 8) | ((d[6] & 0x0f) << 16), d[5]);
+}
+
+/* For devices: log where the guest is (as "cpu" does) and its stack frame at
+   SS:BP -- a 16-bit far return address shows the caller's selector. */
+void
+debug_cmd_log_cpu(void)
+{
+    char     bytes[3 * 16 + 1];
+    uint32_t lin = ss + ((cpu_state.op32 & CPU_STATUS_STACK32) ? EBP : BP);
+
+    debug_cmd_cpu();
+    for (int i = 0; i < 16; i++)
+        snprintf(bytes + 3 * i, 4, " %02x", debug_cmd_lin_readb(lin + i));
+    always_log("debug_cmd: [ss:bp] %08x:%s\n", lin, bytes);
 }
 
 #define DEBUG_CMD_BPS 16
@@ -189,8 +248,9 @@ debug_cmd_bp_check(uint32_t lin)
         debug_cmd_bp_left[i]--;
         uint32_t sp = ss + ESP;
         always_log("debug_cmd: bp %08x eax %08x ebx %08x ecx %08x edx %08x esi %08x edi %08x ebp %08x esp %08x | "
-                   "ds %08x es %08x | stack %08x %08x %08x %08x %08x %08x %08x %08x\n",
-                   lin, EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP, ds, es, debug_cmd_lin_read32(sp), debug_cmd_lin_read32(sp + 4),
+                   "ds %08x es %08x fs %04x:%08x-%08x | stack %08x %08x %08x %08x %08x %08x %08x %08x\n",
+                   lin, EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP, ds, es, FS, fs_seg, cpu_state.seg_fs.limit,
+                   debug_cmd_lin_read32(sp), debug_cmd_lin_read32(sp + 4),
                    debug_cmd_lin_read32(sp + 8), debug_cmd_lin_read32(sp + 12), debug_cmd_lin_read32(sp + 16),
                    debug_cmd_lin_read32(sp + 20), debug_cmd_lin_read32(sp + 24), debug_cmd_lin_read32(sp + 28));
     }
@@ -264,6 +324,46 @@ debug_cmd_peek(const char *arg)
     always_log("debug_cmd: peek %08x (phys %08x):%s\n", lin, (uint32_t) phys, bytes);
 }
 
+static void
+debug_cmd_peekp(const char *arg)
+{
+    char    *end;
+    uint32_t phys = strtoul(arg, &end, 16);
+    uint32_t n    = strtoul(end, NULL, 0);
+    char     bytes[3 * 16 + 1];
+
+    if ((n == 0) || (n > 4096))
+        n = 16;
+    for (uint32_t o = 0; o < n; o += 16) {
+        for (int i = 0; i < 16; i++)
+            snprintf(bytes + 3 * i, 4, " %02x", mem_readb_phys(phys + o + i));
+        always_log("debug_cmd: peekp %08x:%s\n", phys + o, bytes);
+    }
+}
+
+int debug_cmd_speed_log;
+
+void
+debug_cmd_log_speed(int speed_percent)
+{
+    always_log("debug_cmd: speed %d%% at %04x:%08x\n", speed_percent, CS, cpu_state.pc);
+}
+
+static void
+debug_cmd_map(const char *arg)
+{
+    uint32_t             phys = strtoul(arg, NULL, 16);
+    const mem_mapping_t *r    = read_mapping[phys >> MEM_GRANULARITY_BITS];
+    const mem_mapping_t *w    = write_mapping[phys >> MEM_GRANULARITY_BITS];
+    uint32_t             ram;
+
+    always_log("debug_cmd: map %08x: read %s %08x+%08x exec %d, write %s %08x+%08x exec %d\n", phys,
+               r ? (r->enable ? "on" : "off") : "none", r ? r->base : 0, r ? r->size : 0, r ? !!r->exec : 0,
+               w ? (w->enable ? "on" : "off") : "none", w ? w->base : 0, w ? w->size : 0, w ? !!w->exec : 0);
+    if (agpgart_resolve(phys, &ram))
+        always_log("debug_cmd: map %08x: AGP aperture -> %08x\n", phys, ram);
+}
+
 /* find <text>: physical RAM addresses holding the text (the first 16) */
 static void
 debug_cmd_find(const char *arg)
@@ -282,6 +382,57 @@ debug_cmd_find(const char *arg)
     }
     if (!found)
         always_log("debug_cmd: find \"%s\": not found\n", arg);
+}
+
+/* pci <bus> <dev> <fn>: configuration space through mechanism #1, with the
+   guest's CF8h index put back afterwards */
+static void
+debug_cmd_pci(const char *arg)
+{
+    unsigned bus = 0;
+    unsigned dev = 0;
+    unsigned fn  = 0;
+    uint32_t saved;
+    uint32_t regs[64];
+    char     line[80];
+
+    if (sscanf(arg, "%x %x %x", &bus, &dev, &fn) != 3) {
+        always_log("debug_cmd: pci needs bus dev fn\n");
+        return;
+    }
+    saved = pci_readl(0x0cf8, NULL);
+    for (int i = 0; i < 64; i++) {
+        pci_writel(0x0cf8, 0x80000000 | ((bus & 0xff) << 16) | ((dev & 0x1f) << 11) | ((fn & 7) << 8) | (i << 2), NULL);
+        regs[i] = pci_readl(0x0cfc, NULL);
+    }
+    pci_writel(0x0cf8, saved, NULL);
+    for (int i = 0; i < 64; i += 4) {
+        snprintf(line, sizeof(line), "%08x %08x %08x %08x", regs[i], regs[i + 1], regs[i + 2], regs[i + 3]);
+        always_log("debug_cmd: pci %02x:%02x.%x %02x: %s\n", bus, dev, fn, i << 2, line);
+    }
+}
+
+/* pciw <bus> <dev> <fn> <reg> <byte>: a configuration write, as the guest
+   would make it */
+static void
+debug_cmd_pciw(const char *arg)
+{
+    unsigned bus = 0;
+    unsigned dev = 0;
+    unsigned fn  = 0;
+    unsigned reg = 0;
+    unsigned val = 0;
+    uint32_t saved;
+
+    if (sscanf(arg, "%x %x %x %x %x", &bus, &dev, &fn, &reg, &val) != 5) {
+        always_log("debug_cmd: pciw needs bus dev fn reg byte\n");
+        return;
+    }
+    saved = pci_readl(0x0cf8, NULL);
+    pci_writel(0x0cf8, 0x80000000 | ((bus & 0xff) << 16) | ((dev & 0x1f) << 11) | ((fn & 7) << 8) | (reg & 0xfc), NULL);
+    pci_write(0x0cfc + (reg & 3), val & 0xff, NULL);
+    pci_writel(0x0cf8, saved, NULL);
+    always_log("debug_cmd: pciw %02x:%02x.%x %02x = %02x\n", bus, dev, fn, reg & 0xff, val & 0xff);
 }
 
 static void
@@ -313,6 +464,20 @@ debug_cmd_run(char *line)
                 debug_cmd_queue_key(0xaa);
         }
         always_log("debug_cmd: type %s\n", arg);
+    } else if (!strcmp(line, "mouse")) {
+        /* mouse DX DY [BUTTONS]: relative motion, then the buttons
+           (bit 0 left, 1 right, 2 middle) until the next mouse line */
+        int dx = 0, dy = 0, b = -1;
+
+        debug_cmd_mouse = 1;
+
+        if (sscanf(arg, "%d %d %d", &dx, &dy, &b) >= 2) {
+            if (dx || dy)
+                mouse_scale(dx, dy);
+            if (b >= 0)
+                mouse_set_buttons_ex(b);
+        }
+        always_log("debug_cmd: mouse %s\n", arg);
     } else if (!strcmp(line, "shot"))
         debug_cmd_shot(arg);
     else if (!strcmp(line, "dev")) {
@@ -328,6 +493,15 @@ debug_cmd_run(char *line)
         debug_cmd_bp(arg);
     else if (!strcmp(line, "peek"))
         debug_cmd_peek(arg);
+    else if (!strcmp(line, "peekp"))
+        debug_cmd_peekp(arg);
+    else if (!strcmp(line, "map"))
+        debug_cmd_map(arg);
+    else if (!strcmp(line, "speedlog")) {
+        debug_cmd_speed_log = atoi(arg) != 0;
+        always_log("debug_cmd: speedlog %s\n", debug_cmd_speed_log ? "on" : "off");
+    } else if (!strcmp(line, "segbase"))
+        debug_cmd_segbase(arg);
     else if (!strcmp(line, "find"))
         debug_cmd_find(arg);
     else if (!strcmp(line, "interp")) {
@@ -338,7 +512,23 @@ debug_cmd_run(char *line)
         /* reset: hard reset, as the Action menu's (devices closed and made again) */
         always_log("debug_cmd: hard reset\n");
         pc_reset_hard();
-    } else if (!strcmp(line, "gt"))
+    } else if (!strcmp(line, "cdrom")) {
+        char *path = arg;
+        long  id   = strtol(arg, &path, 10);
+
+        while (*path == ' ')
+            path++;
+        if ((path == arg) || (id < 0) || (id >= CDROM_NUM))
+            always_log("debug_cmd: cdrom: no drive \"%s\"\n", arg);
+        else {
+            always_log("debug_cmd: cdrom %ld \"%s\"\n", id, path);
+            plat_cdrom_mount_queued((uint8_t) id, path);
+        }
+    } else if (!strcmp(line, "pci"))
+        debug_cmd_pci(arg);
+    else if (!strcmp(line, "pciw"))
+        debug_cmd_pciw(arg);
+    else if (!strcmp(line, "gt"))
         guest_tools_debug(arg);
     else if (!strcmp(line, "log"))
         always_log("debug_cmd: %s\n", arg);

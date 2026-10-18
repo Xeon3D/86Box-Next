@@ -1,0 +1,6 @@
+# SETTLE.AGS -- RUNGUI /RESUME runs this first: after a restart, RunOnce
+# starts RUNGUI before Explorer and the display driver's helpers are up, and
+# 3DMark then finds no Direct3D accelerator. Wait for the taskbar + 30 s.
+wait class:Shell_TrayWnd 600
+sleep 30
+:end

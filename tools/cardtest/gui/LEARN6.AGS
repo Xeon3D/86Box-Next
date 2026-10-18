@@ -1,0 +1,14 @@
+# LEARN6.AGS -- developer aid: the DCT 1.30 manager's window and its Run list.
+autodismiss 1
+closeclass CabinetWClass
+run "C:\dct\Common\Shell\x86\dct.exe" "C:\dct\Common\Shell\x86"
+sleep 30
+waitmine 60
+dump
+readlist
+shotscreen dct_main
+sleep 5
+dump
+kill
+dir C:\dct\*.*
+dir C:\dct\Common\*.*

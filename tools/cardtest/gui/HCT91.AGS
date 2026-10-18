@@ -1,0 +1,51 @@
+# HCT91.AGS -- Microsoft WHQL HCT 9.1 (Windows 98 / NT 4) display tests that
+# run on their own, straight from the HCT 9.1 disc (dl\cardtest-extra\hct91\
+# HCT91.iso, as a further CD drive): GDIMan regression (screen DC vs memory DC:
+# blits, ROP3/ROP4, metafiles, DrawState), the guijr video tests, the SGI
+# OpenGL conformance suite (oglcfm: every pixel format), DPMS (Windows 9x).
+# Their logs go to C:\CTRES\GUI\HCT91; the "Passed" summary lines become results.
+# Prompts that want a human to judge the screen are screenshotted, answered
+# "No"/skipped and listed as MANUAL for later review.
+autodismiss 1
+manual "Did you"
+manual "Was the"
+manual "Do you see"
+manual "Is the"
+ifexist "%HCT%\hct\hwtest.exe" have
+skip HCT91 "HCT 9.1 disc not mounted"
+goto end
+:have
+copydir "%HCT%\hct\Device\Video" C:\HCTVID
+copydir "%HCT%\hct\Device\Video\i386" C:\HCTVID
+copydir "%HCT%\hct\NTLOG\i386" C:\HCTVID
+copydir "%HCT%\hct\TLOG\i386" C:\HCTVID
+ifexist "%WIN%\SYSTEM32\CMD.EXE" nt
+log GDIMan regression suite
+run "command.com /c gdim_run.bat" C:\HCTVID
+waitexit 5400
+log guijr video tests
+run "command.com /c vidtest2.bat" C:\HCTVID
+waitexit 5400
+log OpenGL conformance, every pixel format
+run "command.com /c oglcfm.bat" C:\HCTVID
+waitexit 10800
+log DPMS (screen blanks)
+run "command.com /c dpms.bat" C:\HCTVID
+waitexit 900
+goto collect
+:nt
+log GDIMan regression suite
+run "cmd.exe /c gdim_run.bat" C:\HCTVID
+waitexit 5400
+log guijr video tests
+run "cmd.exe /c vidtest2.bat" C:\HCTVID
+waitexit 5400
+log OpenGL conformance, every pixel format
+run "cmd.exe /c oglcfm.bat" C:\HCTVID
+waitexit 10800
+:collect
+closeclass tty
+copydir C:\HCTVID %OUT% *.log
+dir C:\HCTVID\*.log
+grep HCT91 C:\HCTVID\*.log "Passed"
+:end

@@ -179,6 +179,14 @@ network_rx_on_tx_popv(netcard_t *card, netpkt_t *v, int n)
     return 0;
 }
 
+/* Nothing is ever held back: see network_rx_on_tx_put_pkt(). */
+int
+network_rx_on_tx_flush(netcard_t *card)
+{
+    (void) card;
+    return 0;
+}
+
 /* -------------------------------------------- the guest, on Ethernet */
 
 static const uint8_t guest_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };

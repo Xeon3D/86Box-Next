@@ -34,8 +34,11 @@ EXE="$BUILD/src/86Box-Next.exe"
 export PATH="$UCRT/bin:/c/msys64/usr/bin:$PATH"
 
 [ -f "$EXE" ] || { echo "no $EXE - build first" >&2; exit 1; }
-if tasklist //FI "IMAGENAME eq 86Box-Next.exe" 2>/dev/null | grep -qi "86Box-Next.exe"; then
-    echo "86Box-Next is running; close it and stage again" >&2
+# Only an 86Box-Next running from a rig blocks the copy; test VMs elsewhere
+# (work-* folders) run their own exe copies.
+RIGS_WIN=$(cygpath -w "$(cd "$OUT" && pwd)")
+if ! powershell.exe -NoProfile -Command "\$r = '$RIGS_WIN\'; if (Get-CimInstance Win32_Process -Filter \"Name='86Box-Next.exe'\" | Where-Object { \$_.ExecutablePath -and \$_.ExecutablePath.StartsWith(\$r, 'OrdinalIgnoreCase') }) { exit 1 }" >/dev/null 2>&1; then
+    echo "86Box-Next is running from a rig in $OUT; close it and stage again" >&2
     exit 2
 fi
 # Every rig: a subfolder of Latest with a machine or an exe in it.  A rig

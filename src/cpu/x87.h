@@ -18,7 +18,13 @@ x87_set_mmx(void)
     } else {
         cpu_state.TOP = 0;
         p             = (uint64_t *) cpu_state.tag;
+#ifdef USE_NEW_DYNAREC
         *p            = 0x0101010101010101ULL;
+#else
+        /* Old-dynarec tags are the packed x87 encoding (0 valid, 3 empty):
+           an MMX instruction makes every register valid */
+        *p            = 0;
+#endif
     }
     cpu_state.ismmx = 1;
 }
@@ -32,7 +38,13 @@ x87_emms(void)
         fpu_state.tos = 0; /* reset FPU Top-Of-Stack */
     } else {
         p  = (uint64_t *) cpu_state.tag;
+#ifdef USE_NEW_DYNAREC
         *p = 0;
+#else
+        /* EMMS empties every register: packed tag 3 in the old-dynarec
+           encoding (0 there means valid) */
+        *p = 0x0303030303030303ULL;
+#endif
     }
     cpu_state.ismmx = 0;
 }

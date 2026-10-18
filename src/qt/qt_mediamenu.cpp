@@ -669,7 +669,7 @@ MediaMenu::cdromMount(int i, int dir, const QString &arg)
     else {
         filename = QFileDialog::getOpenFileName(parentWidget, QString(),
                                                 getMediaOpenDirectory(),
-                                                tr("CD-ROM images") % util::DlgFilter({ "iso", "cue", "toc", "ccd", "mds", "mdx", "aaruf", "aaruformat", "aif", "chd" }) % tr("All files") % util::DlgFilter({ "*" }, true));
+                                                tr("CD-ROM images") % util::DlgFilter({ "iso", "cue", "toc", "ccd", "mds", "mdx", "nrg", "aaruf", "aaruformat", "aif", "chd" }) % tr("All files") % util::DlgFilter({ "*" }, true));
     }
 
     if (filename.isEmpty())
@@ -1578,6 +1578,22 @@ void
 cdrom_mount(uint8_t id, char *fn)
 {
     MediaMenu::ptr->cdromMount(id, QString(fn));
+}
+
+void
+plat_cdrom_mount_queued(uint8_t id, const char *fn)
+{
+    QString name(fn);
+
+    /* an empty name ejects (as the menu's Eject): mounting "" would try
+       to open it as an image */
+    QMetaObject::invokeMethod(MediaMenu::ptr.get(), [id, name] {
+                                  if (name.isEmpty())
+                                      MediaMenu::ptr->cdromEject(id);
+                                  else
+                                      MediaMenu::ptr->cdromMount(id, name);
+                              },
+                              Qt::QueuedConnection);
 }
 
 void

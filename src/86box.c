@@ -243,6 +243,9 @@ int      global_cfg_overridden = 0;                               /* Global conf
 
 int      monitor_edid = 0;                                        /* (C) Which EDID to use. 0=default, 1=custom. */
 char     monitor_edid_path[1024] = { 0 };                         /* (C) Path to custom EDID */
+#ifdef USE_VFIO
+vfio_device_conf_t vfio_device_conf[VFIO_DEVICE_MAX] = { 0 };    /* (C) VFIO passthrough devices */
+#endif
 
 double   video_gl_input_scale = 1.0;                              /* (C) OpenGL 3.x input scale */
 int      video_gl_input_scale_mode = FULLSCR_SCALE_FULL;          /* (C) OpenGL 3.x input stretch mode */
@@ -2149,6 +2152,8 @@ pc_run(void)
 #else
         ui_emu_status(speed_percent);
 #endif
+        if (debug_cmd_speed_log)
+            debug_cmd_log_speed(speed_percent);
         title_update = 0;
     }
 }

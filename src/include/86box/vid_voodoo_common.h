@@ -309,6 +309,7 @@ typedef struct voodoo_t {
     uint32_t fbiInit5;
     uint32_t fbiInit6;
     uint32_t fbiInit7; /*Voodoo 2*/
+    uint32_t intrCtrl;
 
     /*Voodoo 2 board ID straps, read back through fbiInit5 bits 8:5 and
       fbiInit7 bit 0; read-only, independent of fbiInit writes. OEM drivers
@@ -347,6 +348,7 @@ typedef struct voodoo_t {
 
     int rgb_sel;
 
+    uint32_t trexInit0[2];
     uint32_t trexInit1[2];
 
     uint32_t tmuConfig;
@@ -774,6 +776,13 @@ typedef struct voodoo_t {
     uint8_t monitor_index;
 } voodoo_t;
 
+enum {
+    VOODOO_INTRCTRL_ENABLE_MASK            = 0x0030003f,
+    VOODOO_INTRCTRL_PENDING_MASK           = 0x800ff800,
+    VOODOO_INTRCTRL_READ_MASK              = 0x803ff83f,
+    VOODOO_INTRCTRL_INTERRUPT_ACTIVE       = 0x80000000
+};
+
 typedef struct voodoo_set_t {
     voodoo_t *voodoos[2];
 
@@ -786,6 +795,10 @@ extern rgba8_t rgb332[0x100];
 extern rgba8_t ai44[0x100];
 extern rgba8_t rgb565[0x10000];
 extern rgba8_t argb1555[0x10000];
+extern rgba8_t bgr565[0x10000];
+extern rgba8_t abgr1555[0x10000];
+extern rgba8_t rgba1555[0x10000];
+extern rgba8_t bgra1555[0x10000];
 extern rgba8_t argb4444[0x10000];
 extern rgba8_t ai88[0x10000];
 

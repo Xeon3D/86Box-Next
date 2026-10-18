@@ -1,0 +1,45 @@
+# ZDWB.AGS -- Ziff-Davis WinBench 99 (graphics tests) and 3D WinBench 2000
+# (no video playback tests: they want the ZD CD in the first CD drive) from disc 2: silent install (ZD's own SilentSU + setup.iss), then each in
+# its batch mode (.ZDR files on disc 1 in GUI\ZD: no reboot, results exported
+# as text and CSV to C:\CTRES\GUI\ZDWB). Takes long on a 266 MHz guest.
+autodismiss 1
+on "License" Proceed
+on "Registration" Yes
+# a ZD batch run that crashed resumes itself at every logon: not wanted
+regdelrun ZDBUI32
+closeclass CabinetWClass
+ifexist "C:\ZDBENCH\UI32\ZDBUI32.exe" installed
+log installing WinBench 99 and 3D WinBench 2000
+run "%CD2%\ZDBench\wb99\SilentSU.exe" "%CD2%\ZDBench\wb99"
+waitexit 1800
+run "%CD2%\ZDBench\3dwb2000\SilentSU.exe" "%CD2%\ZDBench\3dwb2000"
+waitexit 1800
+closeclass CabinetWClass
+:installed
+ifexist "C:\ZDBENCH\UI32\ZDBUI32.exe" ok
+fail INSTALL "ZDBENCH not installed"
+goto end
+:ok
+pass INSTALL
+copy "%CD1%\GUI\ZD\CTWB99.ZDS" C:\ZDBENCH\SUITES\CTWB99.ZDS
+copyx "%CD1%\GUI\ZD\CTWB99.ZDR" C:\ZDBENCH\WB99\CTWB99.ZDR
+copy "%CD1%\GUI\ZD\CT3DWB.ZDR" C:\ZDBENCH\3DWB2000\CT3DWB.ZDR
+taskbar off
+# the High-End Graphics WinMark needs a 1024x768 desktop
+mode 1024 768 16
+log WinBench 99 graphics tests (batch mode)
+open C:\ZDBENCH\WB99\CTWB99.ZDR C:\ZDBENCH\WB99
+waitexit 10800
+shotscreen wb99_end
+grep WB99 C:\CTRES\GUI\ZDWB\WB99.TXT WinMark
+mode restore
+log 3D WinBench 2000 (batch mode)
+open C:\ZDBENCH\3DWB2000\CT3DWB.ZDR C:\ZDBENCH\3DWB2000
+waitexit 10800
+shotscreen 3dwb_end
+# a crashed wbb3dbr.exe leaves a Dr. Watson box behind
+closeclass "#32770"
+grep 3DWB2000 C:\CTRES\GUI\ZDWB\3DWB2000.TXT WinMark
+regdelrun ZDBUI32
+taskbar restore
+:end
