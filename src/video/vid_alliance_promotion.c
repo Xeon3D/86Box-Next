@@ -1014,10 +1014,12 @@ pm_v2_step(int scale, int phase, int from, int to, int *f)
         return to - from;
     }
     {
-        const uint32_t a = phase + (uint32_t) to * scale;
+        /* Signed: a tile at column 0 counts from -1. */
+        const int64_t a = phase + (int64_t) to * scale;
+        const int64_t b = phase + (int64_t) from * scale;
 
-        *f = (a & 0xfff) >> 4;
-        return (int) ((a >> 12) - ((phase + (uint32_t) from * scale) >> 12));
+        *f = (int) ((a & 0xfff) >> 4);
+        return (int) ((a >> 12) - (b >> 12));
     }
 }
 
@@ -1047,7 +1049,11 @@ pm_overlay_draw_v2(svga_t *svga, pm_t *pm, uint32_t *p)
                 goto next;
             for (int x = t.left; (x < t.right) && (x < svga->hdisp); x++) {
                 int      fx;
-                int      sx = pm_v2_step(hs, pm_xr16(pm, base + 6) & 0xfff, t.left, x, &fx);
+                /* Horizontally the accumulator for column x is phase +
+                   scale * (x - 1): Alliance's driver sets the phase from
+                   left - 1 and starts each tile's data at the ceiling of
+                   its source position, which only line up this way. */
+                int      sx = pm_v2_step(hs, pm_xr16(pm, base + 6) & 0xfff, t.left - 1, x - 1, &fx);
                 int      sx2;
                 uint32_t c;
 

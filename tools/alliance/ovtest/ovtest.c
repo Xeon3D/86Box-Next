@@ -2,8 +2,10 @@
    every 40 lines) shown in a window's client area, clipped to the window by
    a clipper on the primary surface and refreshed with UpdateOverlay five
    times a second, so covering the window makes the driver clip the
-   overlay (the window opens where the Start menu covers its lower left).
-   The title bar shows the last results. Build (in WSL):
+   overlay. "OVTEST [w h [x y]]" sets the client size (400x300) and the
+   window position (where the Start menu covers its lower left); a client
+   smaller than 320x240 makes the overlay shrink. The title bar shows the
+   last results. Build (in WSL):
    i686-w64-mingw32-gcc -O2 -mwindows -nostdlib -fno-builtin -Wl,-e,_entry@0
      -o OVTEST.EXE ovtest.c -lddraw -lgdi32 -luser32 -lkernel32 */
 #include <windows.h>
@@ -113,6 +115,35 @@ show(HWND w)
     SetWindowTextA(w, t);
 }
 
+/* The command line's numbers after the program name. */
+static int
+args(int *v, int n)
+{
+    const char *c = GetCommandLineA();
+    int         k = 0;
+
+    if (*c == '"') {
+        for (c++; *c && (*c != '"'); c++)
+            ;
+        if (*c)
+            c++;
+    } else {
+        while (*c && (*c != ' '))
+            c++;
+    }
+    while (*c && (k < n)) {
+        while (*c == ' ')
+            c++;
+        if ((*c < '0') || (*c > '9'))
+            break;
+        v[k] = 0;
+        while ((*c >= '0') && (*c <= '9'))
+            v[k] = v[k] * 10 + (*c++ - '0');
+        k++;
+    }
+    return k;
+}
+
 static LRESULT CALLBACK
 wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
 {
@@ -135,7 +166,9 @@ wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
 int WINAPI
 WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int sh)
 {
-    WNDCLASS wc = { 0 };
+    WNDCLASS wc  = { 0 };
+    int      v[4] = { 400, 300, 92, 357 };
+    RECT     r;
     MSG      msg;
     HWND     w;
 
@@ -147,7 +180,11 @@ WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int sh)
     wc.hbrBackground = (HBRUSH) GetStockObject(BLACK_BRUSH);
     wc.lpszClassName = "ovtest";
     RegisterClass(&wc);
-    w = CreateWindow("ovtest", "ovtest", WS_OVERLAPPEDWINDOW, 92, 357, 408, 327, NULL, NULL, inst, NULL);
+    args(v, 4);
+    SetRect(&r, 0, 0, v[0], v[1]);
+    AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+    w = CreateWindow("ovtest", "ovtest", WS_OVERLAPPEDWINDOW, v[2], v[3], r.right - r.left, r.bottom - r.top, NULL, NULL,
+                     inst, NULL);
     ShowWindow(w, sh);
     UpdateWindow(w);
     setup(w);
