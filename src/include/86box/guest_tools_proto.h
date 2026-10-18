@@ -49,12 +49,27 @@
 #define GT_CMD_CLIP_SET   0x04 /* req: u32 format, u32 bytes, data; reply: u32 status */
 #define GT_CMD_BYE        0x05 /* the agent is going away; reply: u32 status */
 
+/* Files. Host to guest: CLIP_GET answers GT_CLIP_FILES with the list (see
+   below), taken when the agent asked; FILE_READ reads an entry of it.
+   Guest to host: FILES_BEGIN, a FILE_ADD per entry (directories before
+   what they hold) with FILE_WRITEs for a file's contents, FILES_END; on a
+   commit the host clipboard gets the entries without a '\' in their name. */
+#define GT_CMD_FILE_READ  0x06 /* req: u32 index, u64 offset, u32 bytes (<= GT_FILE_CHUNK)
+                                  reply: u32 status, u32 bytes, data */
+#define GT_CMD_FILES_BEGIN 0x07 /* req: u32 entries, u64 total bytes; reply: u32 status */
+#define GT_CMD_FILE_ADD   0x08 /* req: u32 flags, u64 size, u32 name bytes, name
+                                  reply: u32 status, u32 index */
+#define GT_CMD_FILE_WRITE 0x09 /* req: u32 index, u64 offset, u32 bytes, data; reply: u32 status */
+#define GT_CMD_FILES_END  0x0a /* req: u32 action (GT_FILES_*); reply: u32 status */
+
 /* Reply status. */
 #define GT_OK             0
 #define GT_ERR_COMMAND    1 /* unknown command */
 #define GT_ERR_REQUEST    2 /* request too short or malformed */
 #define GT_ERR_DISABLED   3 /* the feature is switched off on the host */
 #define GT_ERR_NO_AGENT   4 /* HELLO first */
+#define GT_ERR_TOO_BIG    5 /* more than GT_FILES_MAX_* */
+#define GT_ERR_IO         6 /* the host could not read or write a file */
 
 /* Guest operating systems (HELLO). */
 #define GT_OS_UNKNOWN     0
@@ -68,11 +83,13 @@
 /* Agent capabilities (HELLO). */
 #define GT_CAP_POINTER    0x0001 /* moves the guest pointer to the host's */
 #define GT_CAP_CLIPBOARD  0x0002 /* exchanges clipboard text */
+#define GT_CAP_FILES      0x0004 /* takes GT_CLIP_FILES, sends files */
 
 /* Host features (HELLO reply). */
 #define GT_FEAT_POINTER   0x0001 /* pointer integration is on */
 #define GT_FEAT_CLIP_IN   0x0002 /* host clipboard -> guest */
 #define GT_FEAT_CLIP_OUT  0x0004 /* guest clipboard -> host */
+#define GT_FEAT_FILES     0x0008 /* files go with the clipboard, both ways it is on */
 
 /* Agent state (POLL request). */
 #define GT_STATE_POINTER  0x0001 /* the agent follows the host pointer right now */
@@ -88,7 +105,21 @@
 /* Clipboard formats. */
 #define GT_CLIP_NONE      0
 #define GT_CLIP_TEXT      1 /* UTF-16LE, LF line ends, no terminator */
+#define GT_CLIP_FILES     2 /* u32 entries, then per entry: u32 flags, u64 size,
+                               u32 name bytes, name (UTF-16LE, a path relative to
+                               the copied items' folder, '\' between its parts) */
 #define GT_CLIP_MAX_BYTES (1024UL * 1024UL)
+
+/* File entries. */
+#define GT_FILE_DIR       0x0001
+
+#define GT_FILE_CHUNK     65536UL
+#define GT_FILES_MAX_ENTRIES 20000UL
+#define GT_FILES_MAX_BYTES   (2048ULL * 1024ULL * 1024ULL)
+
+/* FILES_END actions. */
+#define GT_FILES_CANCEL   0 /* drop what came */
+#define GT_FILES_CLIPBOARD 1 /* put it on the host clipboard */
 
 /* An agent that misses POLLs for this long is gone. */
 #define GT_AGENT_TIMEOUT_MS 2000

@@ -60,6 +60,31 @@ extern void guest_tools_host_clipboard_changed(void);
 extern void guest_tools_set_clipboard_handlers(void (*set_host)(const uint16_t *text, size_t chars),
                                                uint16_t *(*get_host)(size_t *chars));
 
+/* The UI's side of copying files, all called on the emulation thread.
+   Host to guest: list() takes a snapshot of the files on the host clipboard
+   and returns how many entries it has (-1: the clipboard holds no files);
+   entry() and read() work on that snapshot (read returns the bytes read,
+   -1 on failure). Guest to host: begin() starts an empty set (0 on
+   success), add() makes a directory or an empty file in it (its index, -1
+   on failure; name is checked by the UI), write() writes into an added file
+   (0 on success), end() puts the set on the host clipboard or drops it
+   (GT_FILES_*). Names are UTF-16, '\' between their parts. */
+typedef struct guest_tools_file_ops_t {
+    int (*list)(void);
+    int (*entry)(int index, uint32_t *flags, uint64_t *size, const uint16_t **name, size_t *chars);
+    int (*read)(int index, uint64_t offset, void *buf, uint32_t bytes);
+    int (*begin)(void);
+    int (*add)(uint32_t flags, uint64_t size, const uint16_t *name, size_t chars);
+    int (*write)(int index, uint64_t offset, const void *buf, uint32_t bytes);
+    int (*end)(int action);
+    /* debug_cmd "gt files": a stand-in host clipboard holding these files
+       (UTF-8, '|' between them); from then on the guest's files are logged,
+       not put on the host clipboard. */
+    void (*debug)(const char *paths);
+} guest_tools_file_ops_t;
+
+extern void guest_tools_set_file_ops(const guest_tools_file_ops_t *ops);
+
 /* The UI's Tools > Install 86Box Guest Tools, for debug_cmd's "gt insert"
    (called on the emulation thread; the UI runs it on its own). */
 extern void (*guest_tools_insert_media_hook)(void);

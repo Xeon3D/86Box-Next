@@ -50,6 +50,11 @@ typedef struct guest_tools_t {
     uint32_t clip_seq_delivered;
 
     uint32_t features;
+
+    /* Files from the guest: a set is open, its entries and declared bytes. */
+    int      upload;
+    uint32_t upload_entries;
+    uint64_t upload_bytes;
 } guest_tools_t;
 
 int guest_tools_ports_open = 0;
@@ -66,11 +71,13 @@ static atomic_uint gt_clip_seq;      /* bumped on every host clipboard change */
 
 static void (*gt_set_host_clipboard)(const uint16_t *text, size_t chars);
 static uint16_t *(*gt_get_host_clipboard)(size_t *chars);
+static const guest_tools_file_ops_t *gt_file_ops;
 
 /* debug_cmd's stand-in host clipboard (emulation thread only). */
 static uint16_t *gt_debug_clip;
 static size_t    gt_debug_clip_chars;
 static int       gt_debug;
+static int       gt_debug_files; /* "gt files" given: the stand-in clipboard holds files */
 
 #ifdef ENABLE_GUEST_TOOLS_LOG
 int guest_tools_do_log = ENABLE_GUEST_TOOLS_LOG;
@@ -145,6 +152,12 @@ guest_tools_set_clipboard_handlers(void (*set_host)(const uint16_t *text, size_t
     gt_get_host_clipboard = get_host;
 }
 
+void
+guest_tools_set_file_ops(const guest_tools_file_ops_t *ops)
+{
+    gt_file_ops = ops;
+}
+
 /* debug_cmd "gt ...": drive the device without the host's pointer or
    clipboard. Once used, the host clipboard is left alone until restart. */
 void
@@ -156,9 +169,18 @@ guest_tools_debug(const char *args)
     if (sscanf(args, "pointer %lf %lf", &x, &y) == 2) {
         guest_tools_host_pointer(x, y, x >= 0.0);
         always_log("Guest Tools: host pointer %.3f, %.3f\n", x, y);
+    } else if (!strncmp(args, "files ", 6)) {
+        if ((gt_file_ops != NULL) && (gt_file_ops->debug != NULL))
+            gt_file_ops->debug(args + 6);
+        gt_debug       = 1;
+        gt_debug_files = 1;
+        guest_tools_host_clipboard_changed();
+        always_log("Guest Tools: host clipboard files \"%s\"\n", args + 6);
     } else if (!strncmp(args, "clip ", 5)) {
         const char *text = args + 5;
         size_t      len  = strlen(text);
+
+        gt_debug_files = 0;
 
         free(gt_debug_clip);
         gt_debug_clip = malloc((len + 1) * sizeof(uint16_t));
@@ -191,7 +213,7 @@ guest_tools_debug(const char *args)
                    plat_get_ticks() - atomic_load(&gt_last_poll), guest_tools_pointer_active(),
                    pos >> 16, pos & 0xffff, atomic_load(&gt_pointer_inside), atomic_load(&gt_clip_seq));
     } else
-        always_log("Guest Tools: gt pointer x y | gt buttons mask | gt motion dx dy | gt clip text | gt state\n");
+        always_log("Guest Tools: gt pointer x y | gt buttons mask | gt motion dx dy | gt clip text | gt files a|b | gt state\n");
 }
 
 /* ---- Request and reply buffers ---------------------------------------- */
@@ -266,6 +288,22 @@ gt_get_u32(const uint8_t *p)
     return gt_get_u16(p) | ((uint32_t) gt_get_u16(p + 2) << 16);
 }
 
+static uint64_t
+gt_get_u64(const uint8_t *p)
+{
+    return gt_get_u32(p) | ((uint64_t) gt_get_u32(p + 4) << 32);
+}
+
+/* Patch a u32 already in the reply. */
+static void
+gt_reply_patch_u32(guest_tools_t *dev, uint32_t pos, uint32_t val)
+{
+    if ((pos + 4) > dev->reply_len)
+        return;
+    for (int b = 0; b < 4; b++)
+        dev->reply[pos + b] = (val >> (b * 8)) & 0xff;
+}
+
 /* ---- Commands --------------------------------------------------------- */
 
 static uint32_t
@@ -337,6 +375,41 @@ gt_cmd_clip_get(guest_tools_t *dev)
         return GT_ERR_NO_AGENT;
     if (!(dev->features & GT_FEAT_CLIP_IN))
         return GT_ERR_DISABLED;
+
+    /* Files on the host clipboard, for an agent that takes them. */
+    if ((dev->features & GT_FEAT_FILES) && (dev->agent_caps & GT_CAP_FILES) && (!gt_debug || gt_debug_files) && (gt_file_ops != NULL)) {
+        int count = gt_file_ops->list();
+
+        if (count >= 0) {
+            uint32_t len_pos;
+            uint32_t start;
+
+            dev->clip_seq_delivered = seq;
+            gt_reply_u32(dev, GT_OK);
+            gt_reply_u32(dev, GT_CLIP_FILES);
+            len_pos = dev->reply_len;
+            gt_reply_u32(dev, 0);
+            start = dev->reply_len;
+            gt_reply_u32(dev, (uint32_t) count);
+            for (int i = 0; i < count; i++) {
+                uint32_t        flags = 0;
+                uint64_t        size  = 0;
+                const uint16_t *name  = NULL;
+                size_t          nch   = 0;
+
+                gt_file_ops->entry(i, &flags, &size, &name, &nch);
+                gt_reply_u32(dev, flags);
+                gt_reply_u32(dev, (uint32_t) size);
+                gt_reply_u32(dev, (uint32_t) (size >> 32));
+                gt_reply_u32(dev, (uint32_t) nch * 2);
+                for (size_t c = 0; c < nch; c++)
+                    gt_reply_u16(dev, name[c]);
+            }
+            gt_reply_patch_u32(dev, len_pos, dev->reply_len - start);
+            guest_tools_log("Guest Tools: host files to guest, %d entries\n", count);
+            return GT_OK;
+        }
+    }
 
     if (gt_debug) {
         if (gt_debug_clip != NULL) {
@@ -413,6 +486,160 @@ gt_cmd_clip_set(guest_tools_t *dev)
     return GT_OK;
 }
 
+static uint32_t
+gt_cmd_file_read(guest_tools_t *dev)
+{
+    uint32_t index;
+    uint64_t offset;
+    uint32_t bytes;
+    int      got;
+
+    if (!dev->hello)
+        return GT_ERR_NO_AGENT;
+    if (!(dev->features & GT_FEAT_CLIP_IN) || !(dev->features & GT_FEAT_FILES) || (gt_file_ops == NULL))
+        return GT_ERR_DISABLED;
+    if (dev->req_len < 16)
+        return GT_ERR_REQUEST;
+
+    index  = gt_get_u32(dev->req);
+    offset = gt_get_u64(dev->req + 4);
+    bytes  = gt_get_u32(dev->req + 12);
+    if (bytes > GT_FILE_CHUNK)
+        bytes = GT_FILE_CHUNK;
+
+    gt_reply_u32(dev, GT_OK);
+    gt_reply_u32(dev, 0);
+    if (!gt_reply_reserve(dev, bytes))
+        return GT_ERR_IO;
+    got = gt_file_ops->read((int) index, offset, dev->reply + dev->reply_len, bytes);
+    if (got < 0)
+        return GT_ERR_IO;
+    dev->reply_len += (uint32_t) got;
+    gt_reply_patch_u32(dev, 4, (uint32_t) got);
+    return GT_OK;
+}
+
+static void
+gt_upload_cancel(guest_tools_t *dev)
+{
+    if (dev->upload && (gt_file_ops != NULL))
+        gt_file_ops->end(GT_FILES_CANCEL);
+    dev->upload = 0;
+}
+
+static uint32_t
+gt_cmd_files_begin(guest_tools_t *dev)
+{
+    uint32_t entries;
+    uint64_t total;
+
+    if (!dev->hello)
+        return GT_ERR_NO_AGENT;
+    if (!(dev->features & GT_FEAT_CLIP_OUT) || !(dev->features & GT_FEAT_FILES) || (gt_file_ops == NULL))
+        return GT_ERR_DISABLED;
+    if (dev->req_len < 12)
+        return GT_ERR_REQUEST;
+
+    entries = gt_get_u32(dev->req);
+    total   = gt_get_u64(dev->req + 4);
+    gt_upload_cancel(dev);
+    if ((entries > GT_FILES_MAX_ENTRIES) || (total > GT_FILES_MAX_BYTES))
+        return GT_ERR_TOO_BIG;
+    if (gt_file_ops->begin() != 0)
+        return GT_ERR_IO;
+    dev->upload         = 1;
+    dev->upload_entries = 0;
+    dev->upload_bytes   = 0;
+
+    guest_tools_log("Guest Tools: guest files to host, %u entries, %llu bytes\n",
+                    entries, (unsigned long long) total);
+    gt_reply_u32(dev, GT_OK);
+    return GT_OK;
+}
+
+static uint32_t
+gt_cmd_file_add(guest_tools_t *dev)
+{
+    uint32_t  flags;
+    uint64_t  size;
+    uint32_t  bytes;
+    uint16_t *name;
+    int       index;
+
+    if (!dev->hello)
+        return GT_ERR_NO_AGENT;
+    if (!dev->upload || (dev->req_len < 16))
+        return GT_ERR_REQUEST;
+
+    flags = gt_get_u32(dev->req);
+    size  = (flags & GT_FILE_DIR) ? 0 : gt_get_u64(dev->req + 4);
+    bytes = gt_get_u32(dev->req + 12);
+    if ((bytes == 0) || (bytes & 1) || (bytes > (dev->req_len - 16)) || (bytes > 4096))
+        return GT_ERR_REQUEST;
+    if ((dev->upload_entries >= GT_FILES_MAX_ENTRIES) || ((dev->upload_bytes + size) > GT_FILES_MAX_BYTES))
+        return GT_ERR_TOO_BIG;
+
+    name = malloc(bytes);
+    if (name == NULL)
+        return GT_ERR_IO;
+    for (uint32_t i = 0; i < (bytes / 2); i++)
+        name[i] = gt_get_u16(dev->req + 16 + (i * 2));
+    index = gt_file_ops->add(flags, size, name, bytes / 2);
+    free(name);
+    if (index < 0)
+        return GT_ERR_IO;
+
+    dev->upload_entries++;
+    dev->upload_bytes += size;
+    gt_reply_u32(dev, GT_OK);
+    gt_reply_u32(dev, (uint32_t) index);
+    return GT_OK;
+}
+
+static uint32_t
+gt_cmd_file_write(guest_tools_t *dev)
+{
+    uint32_t index;
+    uint64_t offset;
+    uint32_t bytes;
+
+    if (!dev->hello)
+        return GT_ERR_NO_AGENT;
+    if (!dev->upload || (dev->req_len < 16))
+        return GT_ERR_REQUEST;
+
+    index  = gt_get_u32(dev->req);
+    offset = gt_get_u64(dev->req + 4);
+    bytes  = gt_get_u32(dev->req + 12);
+    if ((bytes > GT_FILE_CHUNK) || (bytes > (dev->req_len - 16)))
+        return GT_ERR_REQUEST;
+    if (gt_file_ops->write((int) index, offset, dev->req + 16, bytes) != 0)
+        return GT_ERR_IO;
+
+    gt_reply_u32(dev, GT_OK);
+    return GT_OK;
+}
+
+static uint32_t
+gt_cmd_files_end(guest_tools_t *dev)
+{
+    uint32_t action;
+
+    if (!dev->hello)
+        return GT_ERR_NO_AGENT;
+    if (!dev->upload || (dev->req_len < 4))
+        return GT_ERR_REQUEST;
+
+    action      = gt_get_u32(dev->req);
+    dev->upload = 0;
+    guest_tools_log("Guest Tools: guest files done, action %u\n", action);
+    if (gt_file_ops->end((int) action) != 0)
+        return GT_ERR_IO;
+
+    gt_reply_u32(dev, GT_OK);
+    return GT_OK;
+}
+
 static void
 gt_command(guest_tools_t *dev, uint8_t cmd)
 {
@@ -436,7 +663,23 @@ gt_command(guest_tools_t *dev, uint8_t cmd)
         case GT_CMD_CLIP_SET:
             status = gt_cmd_clip_set(dev);
             break;
+        case GT_CMD_FILE_READ:
+            status = gt_cmd_file_read(dev);
+            break;
+        case GT_CMD_FILES_BEGIN:
+            status = gt_cmd_files_begin(dev);
+            break;
+        case GT_CMD_FILE_ADD:
+            status = gt_cmd_file_add(dev);
+            break;
+        case GT_CMD_FILE_WRITE:
+            status = gt_cmd_file_write(dev);
+            break;
+        case GT_CMD_FILES_END:
+            status = gt_cmd_files_end(dev);
+            break;
         case GT_CMD_BYE:
+            gt_upload_cancel(dev);
             dev->hello = 0;
             atomic_store(&gt_pointer_ready, 0);
             gt_reply_u32(dev, GT_OK);
@@ -544,6 +787,7 @@ guest_tools_reset(void *priv)
 {
     guest_tools_t *dev = (guest_tools_t *) priv;
 
+    gt_upload_cancel(dev);
     dev->hello        = 0;
     dev->req_len      = 0;
     dev->req_overflow = 0;
@@ -564,6 +808,8 @@ guest_tools_init(UNUSED(const device_t *info))
         dev->features |= GT_FEAT_CLIP_IN;
     if (clip & 2)
         dev->features |= GT_FEAT_CLIP_OUT;
+    if (clip && device_get_config_int("files"))
+        dev->features |= GT_FEAT_FILES;
 
     io_sethandler(GT_PORT_BASE, GT_PORT_COUNT,
                   gt_inb, gt_inw, gt_inl, gt_outb, gt_outw, gt_outl, dev);
@@ -582,6 +828,7 @@ guest_tools_close(void *priv)
 
     guest_tools_ports_open = 0;
     atomic_store(&gt_features, 0);
+    gt_upload_cancel(dev);
     atomic_store(&gt_pointer_ready, 0);
 
     io_removehandler(GT_PORT_BASE, GT_PORT_COUNT,
@@ -620,6 +867,17 @@ static const device_config_t guest_tools_config[] = {
             { .description = "Bidirectional",   .value = 3 },
             { .description = ""                            }
         },
+        .bios           = { { 0 } }
+    },
+    {
+        .name           = "files",
+        .description    = "Copy files through the clipboard",
+        .type           = CONFIG_BINARY,
+        .default_string = NULL,
+        .default_int    = 1,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = { { 0 } },
         .bios           = { { 0 } }
     },
     { .name = "", .description = "", .type = CONFIG_END }

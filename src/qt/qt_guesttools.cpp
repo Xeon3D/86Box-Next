@@ -8,11 +8,16 @@
  */
 #include "qt_guesttools.hpp"
 
+#include <QAbstractNativeEventFilter>
 #include <QApplication>
 #include <QClipboard>
 #include <QCryptographicHash>
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QStringList>
+#include <QUrl>
 #include <QMessageBox>
 #include <QMimeData>
 #include <QTimer>
@@ -22,9 +27,13 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
+#include <vector>
 
 #ifdef Q_OS_WINDOWS
 #    include <windows.h>
+
+static void installFocusFilter(bool on);
 #endif
 
 extern "C" {
@@ -46,6 +55,325 @@ lineFeeds(QString text)
     return text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
 }
 
+/* The local files and folders on the clipboard, if that is what it holds. */
+static QStringList
+localFiles(const QMimeData *data)
+{
+    QStringList files;
+
+    if ((data == nullptr) || !data->hasUrls())
+        return files;
+    for (const QUrl &url : data->urls()) {
+        if (!url.isLocalFile())
+            return QStringList();
+        files << QDir::cleanPath(url.toLocalFile());
+    }
+    return files;
+}
+
+/* ---- Files ------------------------------------------------------------------ */
+
+/* Emulation thread only: the host clipboard's files as the guest reads
+   them, and the files coming from the guest. */
+namespace {
+struct FileEntry {
+    QString  path; /* on the host */
+    QString  name; /* as the guest sees it, '\' between the parts */
+    uint32_t flags;
+    uint64_t size;
+};
+
+std::vector<FileEntry> snapshot;
+QFile                  readFile;
+int                    readIndex = -1;
+
+QString              uploadDir;
+std::vector<QString> uploadPaths;
+QFile                writeFile;
+int                  writeIndex = -1;
+int                  uploadCount = 0;
+
+/* debug_cmd "gt files": the host clipboard is left alone. */
+std::atomic<bool> debugFiles { false };
+}
+
+/* <global data dir>/guest-tools/clipboard: one folder per set from a guest,
+   named <process id>-<n>. */
+static QString
+stagingBase()
+{
+    char dir[1024];
+
+    plat_get_global_data_dir(dir, sizeof(dir));
+    return QDir(QString::fromUtf8(dir)).filePath(QStringLiteral("guest-tools/clipboard"));
+}
+
+static QString
+stagingPrefix()
+{
+    return QString::number(QCoreApplication::applicationPid()) + QLatin1Char('-');
+}
+
+static void
+addEntries(const QString &path, const QString &name)
+{
+    if (snapshot.size() >= GT_FILES_MAX_ENTRIES)
+        return;
+
+    QFileInfo info(path);
+    if (info.isDir()) {
+        snapshot.push_back({ path, name, GT_FILE_DIR, 0 });
+        if (info.isSymLink())
+            return;
+        const QFileInfoList list = QDir(path).entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
+                                                            QDir::Name | QDir::DirsFirst);
+        for (const QFileInfo &child : list)
+            addEntries(child.filePath(), name + QLatin1Char('\\') + child.fileName());
+    } else if (info.isFile())
+        snapshot.push_back({ path, name, 0, static_cast<uint64_t>(info.size()) });
+}
+
+int
+GuestTools::filesList()
+{
+    QStringList files;
+
+    if (instance == nullptr)
+        return -1;
+    {
+        QMutexLocker lock(&instance->mutex);
+        files = instance->hostFiles;
+    }
+    if (files.isEmpty())
+        return -1;
+
+    snapshot.clear();
+    readFile.close();
+    readIndex = -1;
+    for (const QString &path : files)
+        addEntries(path, QFileInfo(path).fileName());
+    return static_cast<int>(snapshot.size());
+}
+
+int
+GuestTools::filesEntry(int index, uint32_t *flags, uint64_t *size, const uint16_t **name, size_t *chars)
+{
+    if ((index < 0) || (index >= static_cast<int>(snapshot.size())))
+        return -1;
+
+    const FileEntry &e = snapshot[index];
+    *flags             = e.flags;
+    *size              = e.size;
+    *name              = reinterpret_cast<const uint16_t *>(e.name.utf16());
+    *chars             = e.name.size();
+    return 0;
+}
+
+int
+GuestTools::filesRead(int index, uint64_t offset, void *buf, uint32_t bytes)
+{
+    if ((index < 0) || (index >= static_cast<int>(snapshot.size())) || (snapshot[index].flags & GT_FILE_DIR))
+        return -1;
+    if (index != readIndex) {
+        readFile.close();
+        readFile.setFileName(snapshot[index].path);
+        readIndex = readFile.open(QIODevice::ReadOnly) ? index : -1;
+        if (readIndex < 0)
+            return -1;
+    }
+    if (!readFile.seek(static_cast<qint64>(offset)))
+        return -1;
+    const qint64 got = readFile.read(static_cast<char *>(buf), bytes);
+    return (got < 0) ? -1 : static_cast<int>(got);
+}
+
+/* A guest's name for something, as a path under the set's folder; empty
+   if it would leave the folder or has no name. */
+static QString
+safeName(const QString &name)
+{
+    static const QString bad = QStringLiteral("<>:\"/|?*");
+    QStringList          parts;
+
+    for (QString part : name.split(QLatin1Char('\\'))) {
+        QString clean;
+
+        for (const QChar c : part) {
+            if ((c.unicode() >= 0x20) && !bad.contains(c))
+                clean += c;
+        }
+        /* Windows drops trailing dots and spaces. */
+        while (clean.endsWith(QLatin1Char('.')) || clean.endsWith(QLatin1Char(' ')))
+            clean.chop(1);
+        if (clean.isEmpty())
+            return QString();
+        parts << clean;
+    }
+    return parts.join(QLatin1Char('/'));
+}
+
+/* Drop the sets this process made, but the one on the clipboard. */
+static void
+removeStaging(const QString &keep)
+{
+    QDir base(stagingBase());
+
+    for (const QString &dir : base.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        const QString path = base.filePath(dir);
+        if (dir.startsWith(stagingPrefix()) && (path != keep))
+            QDir(path).removeRecursively();
+    }
+}
+
+int
+GuestTools::filesBegin()
+{
+    QString keep;
+
+    if (instance == nullptr)
+        return -1;
+    {
+        QMutexLocker lock(&instance->mutex);
+        if (!instance->ownFiles.isEmpty() && (instance->ownFiles == instance->hostFiles))
+            keep = QFileInfo(instance->ownFiles.first()).path();
+    }
+    filesEnd(GT_FILES_CANCEL);
+    removeStaging(keep);
+
+    uploadDir = QDir(stagingBase()).filePath(stagingPrefix() + QString::number(++uploadCount));
+    QDir(uploadDir).removeRecursively();
+    if (!QDir().mkpath(uploadDir)) {
+        uploadDir.clear();
+        return -1;
+    }
+    return 0;
+}
+
+int
+GuestTools::filesAdd(uint32_t flags, uint64_t size, const uint16_t *name, size_t chars)
+{
+    (void) size;
+    if (uploadDir.isEmpty())
+        return -1;
+
+    const QString rel = safeName(QString::fromUtf16(reinterpret_cast<const char16_t *>(name), static_cast<int>(chars)));
+    if (rel.isEmpty())
+        return -1;
+    const QString path = QDir(uploadDir).filePath(rel);
+
+    if (flags & GT_FILE_DIR) {
+        if (!QDir().mkpath(path))
+            return -1;
+    } else {
+        QFile file(path);
+
+        QDir().mkpath(QFileInfo(path).path());
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            return -1;
+    }
+    uploadPaths.push_back(path);
+    return static_cast<int>(uploadPaths.size()) - 1;
+}
+
+int
+GuestTools::filesWrite(int index, uint64_t offset, const void *buf, uint32_t bytes)
+{
+    if ((index < 0) || (index >= static_cast<int>(uploadPaths.size())))
+        return -1;
+    if (index != writeIndex) {
+        writeFile.close();
+        writeFile.setFileName(uploadPaths[index]);
+        writeIndex = writeFile.open(QIODevice::ReadWrite) ? index : -1;
+        if (writeIndex < 0)
+            return -1;
+    }
+    if (!writeFile.seek(static_cast<qint64>(offset)))
+        return -1;
+    return (writeFile.write(static_cast<const char *>(buf), bytes) == bytes) ? 0 : -1;
+}
+
+int
+GuestTools::filesEnd(int action)
+{
+    QStringList top;
+
+    writeFile.close();
+    writeIndex = -1;
+    if (uploadDir.isEmpty())
+        return (action == GT_FILES_CANCEL) ? 0 : -1;
+
+    if (action == GT_FILES_CLIPBOARD) {
+        const QDir dir(uploadDir);
+        for (const QString &path : uploadPaths) {
+            if (QFileInfo(path).path() == dir.path())
+                top << QDir::cleanPath(path);
+        }
+    }
+    if (top.isEmpty())
+        QDir(uploadDir).removeRecursively();
+    uploadDir.clear();
+    uploadPaths.clear();
+
+    if (!top.isEmpty() && debugFiles) {
+        for (const QString &path : top)
+            pclog("Guest Tools: guest file for the host clipboard: %s\n", path.toUtf8().constData());
+        return 0;
+    }
+    if (!top.isEmpty() && (instance != nullptr))
+        QMetaObject::invokeMethod(instance, [top] {
+            if (instance != nullptr)
+                instance->setHostFiles(top);
+        }, Qt::QueuedConnection);
+    return 0;
+}
+
+void
+GuestTools::filesDebug(const char *paths)
+{
+    if (instance == nullptr)
+        return;
+    debugFiles = true;
+
+    QStringList files;
+    for (const QString &path : QString::fromUtf8(paths).split(QLatin1Char('|'), Qt::SkipEmptyParts))
+        files << QDir::cleanPath(path.trimmed());
+    QMutexLocker lock(&instance->mutex);
+    instance->hostFiles = files;
+}
+
+static const guest_tools_file_ops_t fileOps = {
+    GuestTools::filesList,
+    GuestTools::filesEntry,
+    GuestTools::filesRead,
+    GuestTools::filesBegin,
+    GuestTools::filesAdd,
+    GuestTools::filesWrite,
+    GuestTools::filesEnd,
+    GuestTools::filesDebug,
+};
+
+/* The guest's files on the host clipboard, as a file manager's copy. */
+void
+GuestTools::setHostFiles(const QStringList &files)
+{
+    QList<QUrl> urls;
+    auto       *data = new QMimeData;
+
+    for (const QString &path : files)
+        urls << QUrl::fromLocalFile(path);
+    data->setUrls(urls);
+#ifdef Q_OS_WINDOWS
+    /* Explorer: a copy, not a move. */
+    data->setData(QStringLiteral("application/x-qt-windows-mime;value=\"Preferred DropEffect\""),
+                  QByteArray("\x01\x00\x00\x00", 4));
+#endif
+    {
+        QMutexLocker lock(&mutex);
+        ownFiles = files;
+    }
+    QApplication::clipboard()->setMimeData(data);
+}
+
 GuestTools::GuestTools(QObject *parent)
     : QObject(parent)
 {
@@ -54,16 +382,22 @@ GuestTools::GuestTools(QObject *parent)
     const QMimeData *data = QApplication::clipboard()->mimeData();
     hostHasText           = data && data->hasText();
     hostText              = hostHasText ? lineFeeds(data->text()) : QString();
+    hostFiles             = localFiles(data);
     guest_tools_host_clipboard_changed();
 
     connect(QApplication::clipboard(), &QClipboard::dataChanged, this, &GuestTools::hostClipboardChanged);
     guest_tools_set_clipboard_handlers(setHostHandler, getHostHandler);
+    guest_tools_set_file_ops(&fileOps);
     guest_tools_insert_media_hook = [] {
         if (instance != nullptr)
             QMetaObject::invokeMethod(instance, [] {
                 insertMedia(qobject_cast<QWidget *>(instance->parent()));
             }, Qt::QueuedConnection);
     };
+
+#ifdef Q_OS_WINDOWS
+    installFocusFilter(true);
+#endif
 
     timer = new QTimer(this);
     connect(timer, &QTimer::timeout, this, &GuestTools::poll);
@@ -72,7 +406,16 @@ GuestTools::GuestTools(QObject *parent)
 
 GuestTools::~GuestTools()
 {
+#ifdef Q_OS_WINDOWS
+    installFocusFilter(false);
+#endif
     guest_tools_set_clipboard_handlers(nullptr, nullptr);
+    guest_tools_set_file_ops(nullptr);
+    {
+        /* Our files stay while the clipboard still offers them. */
+        QMutexLocker lock(&mutex);
+        removeStaging((!ownFiles.isEmpty() && (ownFiles == hostFiles)) ? QFileInfo(ownFiles.first()).path() : QString());
+    }
     guest_tools_insert_media_hook = nullptr;
     instance                      = nullptr;
 }
@@ -81,16 +424,23 @@ void
 GuestTools::hostClipboardChanged()
 {
     const QMimeData *data = QApplication::clipboard()->mimeData();
-    bool             has  = data && data->hasText();
-    QString          text = has ? lineFeeds(data->text()) : QString();
+    bool             has   = data && data->hasText();
+    QString          text  = has ? lineFeeds(data->text()) : QString();
+    QStringList      files = localFiles(data);
 
+    if (debugFiles)
+        return;
     {
         QMutexLocker lock(&mutex);
         /* Our own copy of the guest's text coming back: nothing new. */
-        if ((has == hostHasText) && (text == hostText))
+        if ((has == hostHasText) && (text == hostText) && (files == hostFiles))
             return;
         hostHasText = has;
         hostText    = text;
+        hostFiles   = files;
+        /* The guest's own files: it has them already. */
+        if (!files.isEmpty() && (files == ownFiles))
+            return;
     }
     guest_tools_host_clipboard_changed();
 }
@@ -104,6 +454,7 @@ GuestTools::setHostClipboard(const QString &text)
             return;
         hostHasText = true;
         hostText    = text;
+        hostFiles.clear();
     }
     QApplication::clipboard()->setText(text);
 }
@@ -126,13 +477,66 @@ processExeName(DWORD pid)
     return name;
 }
 
+/* Asks another machine's window to take the focus without coming to the
+   front. */
+static UINT
+focusMessage()
+{
+    static UINT msg = RegisterWindowMessageW(L"86Box-Next.GuestTools.TakeFocus");
+    return msg;
+}
+
+/* Until then (GetTickCount), the machine's own window takes the focus
+   without changing its place in the Z order. */
+static DWORD noRaiseUntil = 0;
+
+/* The machine's side of focusMessage(): the activation that follows would
+   bring the window to the top, so WM_WINDOWPOSCHANGING keeps its Z order. */
+class FocusFilter : public QAbstractNativeEventFilter {
+public:
+#    if QT_VERSION_MAJOR >= 6
+    bool nativeEventFilter(const QByteArray &eventType, void *message, qintptr *) override
+#    else
+    bool nativeEventFilter(const QByteArray &eventType, void *message, long *) override
+#    endif
+    {
+        if (eventType != "windows_generic_MSG")
+            return false;
+
+        MSG *msg = static_cast<MSG *>(message);
+        if ((msg->message == focusMessage()) && (focusMessage() != 0)) {
+            noRaiseUntil = GetTickCount() + 250;
+            SetForegroundWindow(msg->hwnd);
+            return true;
+        }
+        if ((msg->message == WM_WINDOWPOSCHANGING) && (static_cast<LONG>(noRaiseUntil - GetTickCount()) > 0))
+            reinterpret_cast<WINDOWPOS *>(msg->lParam)->flags |= SWP_NOZORDER;
+        return false;
+    }
+};
+
+static void
+installFocusFilter(bool on)
+{
+    static FocusFilter filter;
+
+    if (on)
+        qApp->installNativeEventFilter(&filter);
+    else
+        qApp->removeNativeEventFilter(&filter);
+}
+
 /* Integrated, the keyboard follows the pointer from one machine's window to
    another's: while this machine has the focus and the pointer is over
-   another 86Box-Next window on top, that window gets the focus. (Only
-   between machines: other programs still take the focus on a click.) */
+   another 86Box-Next window, that window takes the focus where it is,
+   covered or not -- it is not raised. (Only between machines: other
+   programs still take the focus on a click.) */
 static void
 handFocusToMachineUnderPointer()
 {
+    static HWND  lastTarget = nullptr;
+    static DWORD lastAsked  = 0;
+
     HWND  fg  = GetForegroundWindow();
     DWORD pid = 0;
     POINT pt;
@@ -158,7 +562,15 @@ handFocusToMachineUnderPointer()
     if (processExeName(target_pid) != processExeName(pid))
         return;
 
-    SetForegroundWindow(target);
+    /* Asked already: the poll comes every 100 ms, the answer a little later. */
+    if ((target == lastTarget) && ((GetTickCount() - lastAsked) < 500))
+        return;
+    lastTarget = target;
+    lastAsked  = GetTickCount();
+
+    /* The foreground process lets the other one take the focus itself. */
+    AllowSetForegroundWindow(target_pid);
+    PostMessageW(target, focusMessage(), 0, 0);
 }
 #endif
 
