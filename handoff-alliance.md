@@ -27,8 +27,11 @@ Read this first; keep it current as the work moves.
 
 ## Open items, in order of value
 
-1. The AT3D's second video window design is in (see below); untested parts: window 2
-   (only X.org uses it), the filter bit (XR82 bit 12).
+1. The AT3D's second video window design is in and verified (see below), both windows.
+   Not modelled: the filter bit (XR82/92 bit 12, VC2_FILTER). Alliance's driver sets it
+   with every stretch, X.org never; the AT3D manual mentions a "downscaling filter", but
+   the driver refuses to shrink an overlay (UpdateOverlay returns 80070057), so there is
+   nothing to compare against. Left as is.
 2. 24 bpp: AT3D engine depth 4 is in; no BIOS or Windows mode uses 24 bpp, so untested.
 3. VC_NOFLICKER (XR82 bit 11, set by STB's build) is not modelled (a TV flicker filter).
 4. Not planned: the AT3D's 3D engine (its driver offers Direct3D; DxDiag says Enabled, but
@@ -175,7 +178,10 @@ Mouse: `mouse 0 5 0` steps of 5 move ~2 px; bigger steps accelerate.
 - Two windows: XR82 and XR92 control (format 3 = YUY2 here -- Alliance's 2072 driver; X.org
   writes 6 for YUY2; bit 8 YUV->RGB, 9 stretch, 10/11 horizontal/vertical interpolation,
   12 filter), +2 pitch in dwords, +4/+8 scale (source/destination x 4096, 0 = 1:1), +6/+0Ah
-  phase. The scale accumulator runs over screen positions from the phase.
+  phase. The scale accumulator runs over screen positions from the phase: vertically
+  phase + scale * y, horizontally phase + scale * (x - 1) (the driver's phase uses
+  left - 1 and its tile addresses take the ceiling; only that way do tiles starting
+  mid-window line up -- fixed in 0e310f205).
 - Tiles at XR200-2BF, 16 bytes (STB physical.h TILEREGS): control (bits 1:0 window, 0 = none;
   10h = last tile of a band), left, right (exclusive), bottom (the band's last line,
   inclusive), source width, 24-bit source address (the tile's top-left pixel). A band starts
@@ -192,6 +198,10 @@ Mouse: `mouse 0 5 0` steps of 5 move ~2 px; bigger steps accelerate.
   moved over its middle gives three bands with two tiles in one -- all correct after
   40e9d3f96 (packed YUV pairs by absolute address: a tile can start on an odd pixel).
   Media Player itself drops the overlay when covered and draws frames in software.
+- Window 2: the driver offers two overlays with NumberOfOverlays = "2" (a string) in
+  HKLM\SOFTWARE\Alliance Semiconductor\Driver\Miscellaneous (C:\OVL2.REG on work-pmat3d,
+  already imported). "OVTEST 400 300 60 120" and "OVTEST 400 300 300 260" (client size,
+  position) overlap; both stacking orders are right (0e310f205).
 
 ## History of the hard bugs (so they are not re-chased)
 
