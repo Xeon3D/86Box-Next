@@ -113,6 +113,7 @@
      <addaction name="actionSound_gain"/>
     </widget>
     <addaction name="actionSettings"/>
+    <addaction name="actionInstall_Guest_Tools"/>
     <addaction name="actionUpdate_status_bar_icons"/>
     <addaction name="separator"/>
     <addaction name="actionEnable_Discord_integration"/>
@@ -387,6 +388,14 @@
    </property>
    <property name="menuRole">
     <enum>QAction::QuitRole</enum>
+   </property>
+  </action>
+  <action name="actionInstall_Guest_Tools">
+   <property name="text">
+    <string>Install 86Box &amp;Guest Tools…</string>
+   </property>
+   <property name="toolTip">
+    <string>Insert the 86Box Guest Tools CD (or floppy) into the machine</string>
    </property>
   </action>
   <action name="actionSettings">

@@ -67,6 +67,7 @@
 #include <86box/softpower.h>
 #include <86box/ibm5140_power.h>
 #include <86box/novell_cardkey.h>
+#include <86box/guest_tools.h>
 #include <86box/mcamem.h>
 #include <86box/isamem.h>
 #include <86box/isarom.h>
@@ -177,6 +178,7 @@ int      bugger_enabled                         = 0;              /* (C) enable 
 int      novell_keycard_enabled                 = 0;              /* (C) enable Novell NetWare 2.x key card emulation. */
 int      postcard_enabled                       = 0;              /* (C) enable POST card */
 int      unittester_enabled                     = 0;              /* (C) enable unit tester device */
+int      guest_tools_enabled                    = 0;              /* (C) enable 86Box Guest Tools */
 int      softpower_enabled                      = 0;              /* (C) enable PC Convertible-style soft power card */
 int      gameport_type[GAMEPORT_MAX]            = { 0, 0 };       /* (C) enable gameports */
 int      mcamem_type[MCAMEM_MAX]                = { 0, 0, 0, 0 }; /* (C) enable MCA mem cards */
@@ -1938,6 +1940,8 @@ pc_reset_hard_init(void)
         device_add(&postcard_device);
     if (unittester_enabled)
         device_add(&unittester_device);
+    if (guest_tools_enabled)
+        device_add(&guest_tools_device);
     if (softpower_enabled && (machines[machine].init != machine_ibm5140_init))
         device_add(&softpower_device);
 

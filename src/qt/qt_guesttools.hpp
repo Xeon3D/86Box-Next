@@ -1,0 +1,89 @@
+/*
+ * 86Box-Next  A fork of 86Box with extra features.
+ *
+ *             86Box Guest Tools, the UI side: the host clipboard for the
+ *             guest agent, leaving pointer integration's mouse alone, and
+ *             the install media built into the emulator.
+ *
+ *             Released under the GNU General Public License version 2 or
+ *             later.  See COPYING for more information.
+ */
+#ifndef QT_GUESTTOOLS_HPP
+#define QT_GUESTTOOLS_HPP
+
+#include <QMutex>
+#include <QObject>
+#include <QString>
+#include <QStringList>
+
+#include <cstddef>
+#include <cstdint>
+
+class QAction;
+class QTimer;
+class QWidget;
+
+class GuestTools : public QObject {
+    Q_OBJECT
+
+public:
+    explicit GuestTools(QObject *parent = nullptr);
+    ~GuestTools() override;
+
+    /* Tools > Install 86Box Guest Tools: put the built-in CD (or floppy)
+       into the machine, turning the tools on first if need be. */
+    static void insertMedia(QWidget *parent);
+
+    /* "1.1.3" from a GT_TOOLS_VERSION ("1.0" for agents that send none). */
+    static QString versionString(unsigned int version);
+    /* Tools > Install / Update 86Box Guest Tools, for the agent's version
+       (0: none running). */
+    static void updateInstallAction(QAction *action, unsigned int version);
+
+    /* guest_tools_file_ops_t, on the emulation thread. */
+    static int filesList(int source);
+    static int filesEntry(int source, int index, uint32_t *flags, uint64_t *size, const uint16_t **name, size_t *chars);
+    static int filesRead(int source, int index, uint64_t offset, void *buf, uint32_t bytes);
+    static int filesBegin();
+    static int filesAdd(uint32_t flags, uint64_t size, const uint16_t *name, size_t chars);
+    static int filesWrite(int index, uint64_t offset, const void *buf, uint32_t bytes);
+    static int filesEnd(int action);
+    static void filesDebug(const char *paths);
+
+    /* A host drag of these files entered the guest display (UI thread). */
+    static void hostDragEnter(const QStringList &files);
+
+    static QStringList waitDragOutFiles();
+
+signals:
+    /* The agent's version changed (guest_tools_agent_version()). */
+    void agentVersionChanged(unsigned int version);
+
+private:
+    void hostClipboardChanged();
+    void setHostClipboard(const QString &text);
+    void setHostFiles(const QStringList &files);
+    void poll();
+    void startHostDrag();
+
+    static void      setHostHandler(const uint16_t *text, size_t chars);
+    static uint16_t *getHostHandler(size_t *chars);
+
+    static GuestTools *instance;
+
+    QMutex  mutex;
+    QString     hostText;  /* the host clipboard as the guest last saw or set it */
+    QStringList hostFiles; /* the host clipboard's local files, if it holds files */
+    QStringList ownFiles;  /* the files the guest last put there */
+    QStringList dragFiles; /* the host drag over the display */
+    QStringList dragOutFiles; /* the guest drag the host carries on, once sent */
+    bool        dragOutDone  = false;
+    bool        dragOut      = false; /* the agent caught a guest drag leaving */
+    bool        hostDragging = false;
+    unsigned int agentVersion = 0;
+    bool    hostHasText   = false;
+    bool    pointerActive = false;
+    QTimer *timer         = nullptr;
+};
+
+#endif

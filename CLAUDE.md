@@ -281,6 +281,93 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   rebuilds the status bar. A new icon group needs a key there and a name in `iconGroupName()`.
   Preferences OK replaces `MachineStatus`; `adoptMenus()` carries the PC Card/USB/modem/Sound
   Canvas hooks over (they were lost before).
+- 86Box Guest Tools (Settings > Other peripherals, `guest_tools_enabled` in `[Other peripherals]`,
+  any machine, hard reset; device `guest_tools` with `pointer` and `clipboard` options): our own
+  VMware Tools-like integration -- no VMware backdoor. `src/device/guest_tools.c` is a two-port channel
+  at 86B0h (`guest_tools_proto.h`, shared with the agents: command port reads "86BX", the data port is
+  a byte stream, any access width so 8088 DOS code can use it too; every reply starts with a status;
+  HELLO / POLL / CLIP_GET / CLIP_SET / BYE). `check_io_perm` (`386_common.h`) lets every privilege
+  level reach those ports while the device is in (`guest_tools_io_bypass()`), so agents need no
+  kernel driver, NT included. Pointer integration: the agent polls the host pointer (0-65535 across
+  the guest display, from `RendererStack::guestToolsPointerMoved()`) and moves the guest's own
+  pointer; while it does (`guest_tools_pointer_active()`: features on, the agent's last POLL under
+  2 s old, mouse input mode 0) the UI never captures (`GuestTools::poll()` lets go of a capture),
+  hides the host pointer over the display and feeds only buttons and the wheel to the machine's
+  mouse (PS/2, serial...); `guest_tools_keyboard()` counts as capture for "Keyboard requires
+  capture". The keyboard follows the pointer: off the guest's display (`guest_tools_keyboard_outside()`)
+  `keyboard_input()` drops new presses (releases of keys down in the guest still pass), the Windows
+  low-level hook and the Qt key filter let the host have the keys, and `GuestTools::poll()` hands
+  the focus to another 86Box-Next window (same exe name) under the pointer -- only between machines,
+  and without raising it: it posts that window a registered message ("86Box-Next.GuestTools.TakeFocus")
+  after AllowSetForegroundWindow, and the window's `FocusFilter` (a native event filter) takes the
+  foreground itself while adding SWP_NOZORDER to its WM_WINDOWPOSCHANGING for 250 ms. Clipboard: UTF-16 text, LF line ends, 1 MB; `src/qt/qt_guesttools.cpp` keeps a
+  snapshot of the host clipboard for the emulation thread and drops its own echoes. Agents in
+  `guest-tools/` (built in WSL: `wsl -e sh guest-tools/build.sh` -> `guest-tools/out/`
+  86BOXGT.EXE, a 1.44 MB floppy image and an ISO): `windows/gtagent.c`, one Win32 exe for
+  Windows 95 / NT 4.0 and later, no C runtime (KERNEL32/USER32/ADVAPI32/SHELL32/WINMM only,
+  subsystem 4.0), tray icon, `/install` (copies itself to the Windows directory + Run key) /
+  `/uninstall` / `/quiet`; stops following when a program confines the pointer (ClipCursor).
+  Tools > "Install 86Box Guest Tools..." (`GuestTools::insertMedia()`): the images are built in
+  (`src/qt/guesttools.qrc` from `guest-tools/images/`, committed: build.sh writes them with fixed
+  dates/serial so they only change with the tools; Q_INIT_RESOURCE is needed -- `ui` is a static
+  library), written to `<global data dir>/guest-tools/86box-guest-tools-<md5 prefix>.iso|img`
+  and mounted in the first CD-ROM drive (else the first floppy, write-protected); off tools get
+  turned on first (hard reset, as Settings does). The CD carries AUTORUN.INF (open=86BOXGT.EXE).
+  Installing from a disk: the Win32 agent stops a running agent and waits for its process, clears
+  the read-only bit a CD copy carries, copies, then starts the installed copy and exits; GTWIN keeps
+  running itself (Windows 3.x would take the installed copy for a second instance of the disk's
+  module), with code and icon PRELOAD FIXED so the disk can go. debug_cmd `gt insert` runs it.
+  `mkicon.py` makes its BMP-format icon (Windows 95 reads no PNG icons; `--win16`: one 32x32
+  16-colour image). `win16/gtwin.c`: GTWIN.EXE for Windows 3.1 / WfW 3.11 (Open Watcom, WATCOM
+  defaults to WSL's ~/ow), 16-bit port I/O, an icon window with the toggles in its window menu,
+  Windows-1252 clipboard text (16000 chars), `/install` copies it to the Windows directory and adds
+  it to WIN.INI `load=`; polls on a 55 ms timer and from the message loop (PeekMessage) for 1 s
+  after a move. Tested in Windows 95, 98 SE, NT 4.0, 2000 and WfW 3.11 (pointer, clicks, both
+  clipboard directions, autostart). A DOS agent was tried and shelved at the owner's request
+  (source kept outside the repo, `F:\Claude\86Box-Next\guest-tools-dos-wip`; notes: INT 33h
+  function 04h raises no motion event, so event-driven programs like EDIT need a real motion
+  packet; a hook must `iret`, not `retf 2`, or the caller keeps interrupts off). debug_cmd
+  `gt pointer x y` / `gt buttons mask` / `gt motion dx dy` / `gt clip text` (`|` = new line;
+  switches to a stand-in host clipboard and logs the guest's) / `gt state`.
+  Files (device option `files`, on; follows the clipboard's directions; `GT_FEAT_FILES`, agent cap
+  `GT_CAP_FILES`): host to guest, CLIP_GET answers `GT_CLIP_FILES` (u32 count, then flags/u64
+  size/name per entry, names relative with '\', folders before their contents) when the host
+  clipboard holds local files (`hostFiles`, from `QMimeData::urls()`); `FILE_READ` reads 64 KB
+  chunks from a snapshot taken at that moment (`GuestTools::filesList()`, emulation thread). The
+  Win32 agent offers CF_HDROP with delayed rendering and only copies the files into
+  `%TEMP%\86BOXGT\<tick>` on WM_RENDERFORMAT (the previous copy is deleted then; the folder is
+  emptied at agent start); names are made safe there (no `..`, bad characters -> `_`). Guest to
+  host: a CF_HDROP on the guest clipboard starts an upload thread (FILES_BEGIN / FILE_ADD / FILE_WRITE
+  with REP OUTSD / FILES_END) into `<global data dir>/guest-tools/clipboard/<pid>-<n>` (the UI checks
+  every name, `safeName()`), and FILES_END `GT_FILES_CLIPBOARD` puts the top-level entries on the
+  host clipboard as URLs + "Preferred DropEffect" copy; `ownFiles` keeps that from coming back to the
+  same guest, other machines see it as host files (machine to machine). Limits 20000 entries / 2 GB.
+  The agent uses the W file APIs only through GetProcAddress on NT (Windows 95 has stubs), ANSI on
+  9x. Drag and drop (same option): host to guest, `RendererStack` accepts drops of local files from
+  outside the program while integrated (`guestToolsDragFiles()`; the OpenGL/Vulkan windows forward
+  drag events in `eventDelegate`), feeds the pointer from the drag positions and sets
+  `guest_tools_host_drag()` 1/2/0; POLL says `GT_POLL_DRAG`/`GT_POLL_DROP` with a drag seq, the agent
+  takes the list with DRAG_GET and runs `DoDragDrop` with its own IDataObject (CF_HDROP, rendered on
+  GetData with `GT_FILE_DRAG_INDEX` reads) and an IDropSource whose QueryContinueDrag follows the
+  host (drop / cancel); the poll thread wiggles the cursor when the host's state changes so the drag
+  loop sees it. Guest to host: POLL says `GT_POLL_DRAG_OUT` while the host pointer is off the display
+  with the guest's left button down; the agent opens a 3x3 topmost drop target under the guest
+  pointer ("catcher"), a guest drag of files entering it uploads them (FILES_END `GT_FILES_DRAG`) and
+  reports `GT_STATE_DRAG_OUT` once FILES_BEGIN went through; the UI (`GuestTools::poll()`, 50 ms)
+  then lets go of the guest's left button (the guest drops on the catcher, copy) and starts a QDrag
+  whose `GuestDragData` waits in `retrieveData()` (`waitDragOutFiles()`, a nested event loop) until
+  the upload is done. OLE32 + uuid are linked into the agent. `GT_CMD_LOG` writes an agent's line to
+  the emulator log (`gt_log()` in the agent). debug_cmd `gt files a|b` (stand-in host clipboard
+  files; the guest's files are logged, not put on the host clipboard), `gt drag a|b` / `gt drop` /
+  `gt dragleave`; a drag out in debug mode logs the files instead of starting a QDrag.
+  Versions: `src/include/86box/guest_tools_version.h` (1.1.<revision>, shared by both agents and the
+  emulator); `guest-tools/bump-revision.py`, run by build.sh, raises the revision when the agents'
+  sources hash differently from `guest-tools/images/SOURCES` (commit both with the images). The
+  version is in each EXE's VERSIONINFO, the About box and the tray tooltip, and goes in HELLO (u32
+  after the caps; older agents send none -> 1); `guest_tools_agent_version()` gives it to the UI,
+  which names the Tools menu item "Install 86Box Guest Tools 1.1.N..." or, for an older agent,
+  "Update 86Box Guest Tools (old -> new)..." (`GuestTools::updateInstallAction()`); `gt state`
+  logs it. Raise the minor version by hand for new features.
 - STB video cards from STB's own release BIOSes (in `ROMS-EXTRA`, not the 86Box ROM set):
   - S3 ViRGE/MX (86C260, 5333:8C01), STB Symmetry 3D (`vid_s3_virge.c`, `S3_VIRGEMX`: the GX2
     core, 4 MB SGRAM, ROM `video/s3virge/stb_symmetry3d_m5_17_14.rom`). The datasheet's paired

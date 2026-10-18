@@ -28,6 +28,7 @@
 #include <86box/device.h>
 #include <86box/keyboard.h>
 #include <86box/plat.h>
+#include <86box/guest_tools.h>
 
 #include "cpu.h"
 
@@ -319,6 +320,12 @@ keyboard_input(int down, uint16_t scan)
                            means we then use the scan code as is, and need to
                            make sure we do not accidentally strip that upper byte */
 
+    /* 86Box Guest Tools: the host pointer is off the guest's display, so the
+       keys are the host's. A key let go out there that went down in here
+       still reaches the machine, so none stays stuck. */
+    if (guest_tools_keyboard_outside() && (down || !recv_key[scan & 0x1ff]))
+        return;
+
     if (recv_key[scan & 0x1ff] ^ down) {
         if (down) {
             switch (scan & 0x1ff) {
@@ -398,7 +405,7 @@ keyboard_input(int down, uint16_t scan)
     /* kbc_at_log("Received scan code: %03X (%s)\n", scan & 0x1ff, down ? "down" : "up"); */
     recv_key_ui[scan & 0x1ff] = down;
 
-    if (override_capture || mouse_capture || !kbd_req_capture || (video_fullscreen && !fullscreen_ui_visible)) {
+    if (override_capture || mouse_capture || guest_tools_keyboard() || !kbd_req_capture || (video_fullscreen && !fullscreen_ui_visible)) {
         recv_key[scan & 0x1ff] = down;
         key_process(scan & 0x1ff, down);
     }

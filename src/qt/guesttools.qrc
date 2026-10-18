@@ -1,0 +1,7 @@
+<RCC>
+    <!-- 86Box Guest Tools media, built by guest-tools/build.sh (Tools > Install 86Box Guest Tools). -->
+    <qresource prefix="/guesttools">
+        <file alias="86box-guest-tools.iso">../../guest-tools/images/86box-guest-tools.iso</file>
+        <file alias="86box-guest-tools.img">../../guest-tools/images/86box-guest-tools.img</file>
+    </qresource>
+</RCC>

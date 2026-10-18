@@ -79,6 +79,7 @@ add_library(dev OBJECT
     mouse_upc.c
     nec_mate_unk.c
     novell_cardkey.c
+    guest_tools.c
     pci_bridge.c
     phoenix_486_jumper.c
     postcard.c

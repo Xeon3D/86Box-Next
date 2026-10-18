@@ -124,6 +124,9 @@ add_library(ui STATIC
     qt_ioboard_controls.hpp
     qt_usb_manager.cpp
     qt_usb_manager.hpp
+    qt_guesttools.cpp
+    qt_guesttools.hpp
+    guesttools.qrc
     qt_mainwindow.hpp
     qt_mainwindow.ui
     qt_machinestatus.cpp

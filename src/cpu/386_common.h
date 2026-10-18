@@ -21,6 +21,7 @@
 
 #include <stddef.h>
 #include <inttypes.h>
+#include <86box/guest_tools.h>
 
 #ifdef OPS_286_386
 #    define readmemb_n(s, a, b)     readmembl_no_mmut_2386((s) + (a), b)
@@ -206,8 +207,11 @@
         do_mmutranslate((s) + (a), b, 4, 1)
 #endif
 
+/* 86Box Guest Tools' ports are open to every privilege level, so guest
+   agents need no kernel driver (see guest_tools_proto.h). */
 #define check_io_perm(port, size)                                    \
-    if (msw & 1 && ((CPL > IOPL) || (cpu_state.eflags & VM_FLAG))) { \
+    if (msw & 1 && ((CPL > IOPL) || (cpu_state.eflags & VM_FLAG)) && \
+        !guest_tools_io_bypass(port)) {                              \
         int tempi = checkio(port, (1 << size) - 1);                  \
         if (cpu_state.abrt)                                          \
             return 1;                                                \

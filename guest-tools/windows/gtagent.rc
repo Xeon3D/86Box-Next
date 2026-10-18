@@ -1,0 +1,31 @@
+#include <windows.h>
+#include "gtagent.h"
+#include "guest_tools_version.h"
+
+IDI_AGENT ICON "gtagent.ico"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     GT_TOOLS_VERSION_MAJOR, GT_TOOLS_VERSION_MINOR, GT_TOOLS_REVISION, 0
+PRODUCTVERSION  GT_TOOLS_VERSION_MAJOR, GT_TOOLS_VERSION_MINOR, GT_TOOLS_REVISION, 0
+FILEOS          VOS__WINDOWS32
+FILETYPE        VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904E4"
+        BEGIN
+            VALUE "CompanyName",      "86Box-Next"
+            VALUE "FileDescription",  "86Box Guest Tools agent"
+            VALUE "FileVersion",      GT_TOOLS_VERSION_STR
+            VALUE "InternalName",     "86BOXGT"
+            VALUE "LegalCopyright",   "Copyright 2026 Marcos Alves. GNU GPL v2 or later."
+            VALUE "OriginalFilename", "86BOXGT.EXE"
+            VALUE "ProductName",      "86Box Guest Tools"
+            VALUE "ProductVersion",   GT_TOOLS_VERSION_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1252
+    END
+END

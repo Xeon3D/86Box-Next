@@ -17,6 +17,12 @@
  *          Copyright 2021-2022 Cacodemon345
  */
 #include "qt_rendererstack.hpp"
+#include "qt_guesttools.hpp"
+
+#include <QDir>
+#include <QDragEnterEvent>
+#include <QMimeData>
+#include <QUrl>
 #include "ui_qt_rendererstack.h"
 
 #include "qt_openglrenderer.hpp"
@@ -78,6 +84,7 @@ extern "C" {
 #include <86box/path.h>
 #include <86box/plat.h>
 #include <86box/video.h>
+#include <86box/guest_tools.h>
 #include <86box/mouse.h>
 }
 
@@ -119,6 +126,9 @@ RendererStack::RendererStack(QWidget *parent, int monitor_index)
     ui->setupUi(this);
 
     m_monitor_index = monitor_index;
+
+    /* Guest Tools: files dragged from the host drop into the guest. */
+    setAcceptDrops(monitor_index < 1);
 
     if (monitor_index >= 1) {
         QTimer *frameRateTimer = new QTimer(this);
@@ -222,12 +232,18 @@ RendererStack::mouseReleaseEvent(QMouseEvent *event)
 #endif
 
     event->accept();
+    if (guestToolsPointer()) {
+        mouse_set_buttons_ex(mouse_get_buttons_ex() & ~event->button());
+        isMouseDown &= ~1;
+        return;
+    }
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     if (!dopause && this->geometry().contains(m_monitor_index >= 1 ? event->globalPosition().toPoint() : event->position().toPoint()) &&
 #else
     if (!dopause && this->geometry().contains(m_monitor_index >= 1 ? event->globalPos() : event->pos()) &&
 #endif
-        (event->button() == Qt::LeftButton) && !mouse_capture && (isMouseDown & 1) && (kbd_req_capture || (mouse_get_buttons() != 0)) && (mouse_input_mode == 0)) {
+        (event->button() == Qt::LeftButton) && !mouse_capture && (isMouseDown & 1) && (kbd_req_capture || (mouse_get_buttons() != 0)) && (mouse_input_mode == 0) &&
+        !guestToolsPointer()) {
         plat_mouse_capture(1);
         this->setCursor(Qt::BlankCursor);
         if (!ignoreNextMouseEvent)
@@ -276,6 +292,11 @@ void
 RendererStack::mousePressEvent(QMouseEvent *event)
 {
     isMouseDown |= 1;
+    if (guestToolsPointer()) {
+        mouse_set_buttons_ex(mouse_get_buttons_ex() | event->button());
+        event->accept();
+        return;
+    }
     /* A button that releases the capture is consumed, not sent to the guest. */
     if (mouse_capture && (event->button() & mouse_get_release_buttons())) {
         event->accept();
@@ -308,6 +329,13 @@ RendererStack::mousePressEvent(QMouseEvent *event)
 void
 RendererStack::wheelEvent(QWheelEvent *event)
 {
+    /* Integrated, the host's raw input does not feed the wheel: Qt does. */
+    if (guestToolsPointer()) {
+        mouse_set_z(event->angleDelta().y());
+        mouse_set_w(event->angleDelta().x());
+        event->accept();
+        return;
+    }
     if (!mouse_capture) {
         event->ignore();
         return;
@@ -380,10 +408,142 @@ RendererStack::enterEvent(QEvent *event)
         QApplication::setOverrideCursor(Qt::CrossCursor);
 }
 
+bool
+RendererStack::guestToolsPointer() const
+{
+    return (m_monitor_index < 1) && !mouse_capture && guest_tools_pointer_active();
+}
+
+/* Tell Guest Tools where the host pointer is over the guest's display, and
+   hide the host's own pointer there while the guest's follows it. */
+void
+RendererStack::guestToolsPointerMoved(QMouseEvent *event)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    guestToolsPointerAt(event->position());
+#else
+    guestToolsPointerAt(event->localPos());
+#endif
+}
+
+void
+RendererStack::guestToolsPointerAt(const QPointF &pos)
+{
+    if (rendererWindow == nullptr)
+        return;
+
+    const QRectF &dest = rendererWindow->destinationF;
+    double        x;
+    double        y;
+    bool          inside;
+    bool          hide;
+
+    if ((width() <= 0) || (height() <= 0) || (dest.width() <= 0) || (dest.height() <= 0))
+        return;
+
+    x      = ((pos.x() / width()) - dest.left()) / dest.width();
+    y      = ((pos.y() / height()) - dest.top()) / dest.height();
+    inside = (x >= 0.0) && (x <= 1.0) && (y >= 0.0) && (y <= 1.0);
+    guest_tools_host_pointer(x, y, inside);
+
+    hide = inside && guestToolsPointer();
+    if (hide != gtCursorHidden) {
+        gtCursorHidden = hide;
+        if (hide)
+            setCursor(Qt::BlankCursor);
+        else
+            unsetCursor();
+    }
+}
+
+/* The local files a drag from outside 86Box-Next carries; empty if it is
+   anything else, or Guest Tools cannot take it now. */
+QStringList
+RendererStack::guestToolsDragFiles(const QDropEvent *event) const
+{
+    QStringList files;
+
+    if ((m_monitor_index >= 1) || (event->source() != nullptr) || !guestToolsPointer() || !guest_tools_files_enabled() ||
+        !event->mimeData()->hasUrls()) {
+        if (m_monitor_index < 1)
+            pclog("Guest Tools: drag refused: own %d, integrated %d, files on %d, urls %d\n", event->source() != nullptr,
+                  guestToolsPointer(), guest_tools_files_enabled(), event->mimeData()->hasUrls());
+        return files;
+    }
+    for (const QUrl &url : event->mimeData()->urls()) {
+        if (!url.isLocalFile())
+            return QStringList();
+        files << QDir::cleanPath(url.toLocalFile());
+    }
+    return files;
+}
+
+void
+RendererStack::dragEnterEvent(QDragEnterEvent *event)
+{
+    const QStringList files = guestToolsDragFiles(event);
+
+    if (files.isEmpty()) {
+        event->ignore();
+        return;
+    }
+    pclog("Guest Tools: host drag of %d files entered\n", static_cast<int>(files.size()));
+    GuestTools::hostDragEnter(files);
+    guest_tools_host_drag(1);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    guestToolsPointerAt(event->position());
+#else
+    guestToolsPointerAt(event->posF());
+#endif
+    event->setDropAction(Qt::CopyAction);
+    event->accept();
+}
+
+void
+RendererStack::dragMoveEvent(QDragMoveEvent *event)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    guestToolsPointerAt(event->position());
+#else
+    guestToolsPointerAt(event->posF());
+#endif
+    event->setDropAction(Qt::CopyAction);
+    event->accept();
+}
+
+void
+RendererStack::dragLeaveEvent(QDragLeaveEvent *event)
+{
+    guest_tools_host_drag(0);
+    guest_tools_host_pointer(0.0, 0.0, 0);
+    event->accept();
+}
+
+void
+RendererStack::dropEvent(QDropEvent *event)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    guestToolsPointerAt(event->position());
+#else
+    guestToolsPointerAt(event->posF());
+#endif
+    /* The agent drops them where the guest's pointer is now. */
+    pclog("Guest Tools: host drop\n");
+    guest_tools_host_drag(2);
+    event->setDropAction(Qt::CopyAction);
+    event->accept();
+}
+
 void
 RendererStack::leaveEvent(QEvent *event)
 {
     mousedata.mouse_tablet_in_proximity = 0;
+    if (m_monitor_index < 1)
+        guest_tools_host_pointer(0.0, 0.0, 0);
+    if (gtCursorHidden) {
+        gtCursorHidden = false;
+        unsetCursor();
+    }
 
     if (mouse_input_mode >= 1 && QApplication::overrideCursor()) {
         while (QApplication::overrideCursor())
@@ -607,6 +767,9 @@ RendererStack::event(QEvent *event)
 {
     if (event->type() == QEvent::MouseMove) {
         QMouseEvent *mouse_event = (QMouseEvent *) event;
+
+        if (m_monitor_index < 1)
+            guestToolsPointerMoved(mouse_event);
 
         if (m_monitor_index >= 1) {
             if (mouse_input_mode >= 1) {

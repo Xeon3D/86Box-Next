@@ -33,6 +33,7 @@
 #include <86box/video.h>
 #include <86box/plat.h>
 #include <86box/plat_unused.h>
+#include <86box/guest_tools.h>
 
 #if defined(__APPLE__)
 #define WHEEL_DELTA 1
@@ -186,6 +187,14 @@ int
 mouse_both_enabled(void)
 {
     return mouse_type && tablet_type;
+}
+
+/* The host's mouse drives the machine's: captured, or (86Box-Next) 86Box
+   Guest Tools' pointer integration, which sends buttons and the wheel. */
+int
+mouse_live(void)
+{
+    return mouse_capture || guest_tools_pointer_active();
 }
 
 void

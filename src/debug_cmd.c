@@ -25,6 +25,11 @@
  *                 pci bus dev fn   the device's 256-byte configuration space (hex), read
  *                                  through configuration mechanism #1
  *                 pciw bus dev fn reg byte   a configuration write of one byte
+ *                 gt args          86Box Guest Tools: "pointer x y" (0-1, x < 0 = left the
+ *                                  display), "clip text" (a stand-in host clipboard; the
+ *                                  guest's text is logged), "buttons mask" (1 left, 2 right),
+ *                                  "files a|b" / "drag a|b" / "drop" / "dragleave"
+ *                                  (stand-in host files), "state"
  *
  *               Each command is logged ("debug_cmd: ..."), so a test can wait
  *               for the file to vanish and then read the log.
@@ -39,6 +44,7 @@
 #include <86box/mouse.h>
 #include <86box/video.h>
 #include <86box/debug_cmd.h>
+#include <86box/guest_tools.h>
 #include <86box/mem.h>
 #include <86box/cdrom.h>
 #include <86box/agpgart.h>
@@ -522,6 +528,8 @@ debug_cmd_run(char *line)
         debug_cmd_pci(arg);
     else if (!strcmp(line, "pciw"))
         debug_cmd_pciw(arg);
+    else if (!strcmp(line, "gt"))
+        guest_tools_debug(arg);
     else if (!strcmp(line, "log"))
         always_log("debug_cmd: %s\n", arg);
     else if (line[0])

@@ -1,0 +1,85 @@
+#!/bin/sh
+# Build 86Box Guest Tools and pack them as a floppy image and a CD image.
+#
+# Needs (Debian/Ubuntu, e.g. WSL): gcc-mingw-w64-i686, binutils-mingw-w64-i686,
+# mtools, xorriso, python3-pil, and Open Watcom (WATCOM, default ~/ow).
+#
+#   guest-tools/build.sh            -> guest-tools/out/
+#
+# From Windows: wsl -e sh guest-tools/build.sh
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+out="$here/out"
+obj="$out/obj"
+proto="$here/../src/include/86box"
+icon="$here/../src/qt/icons/86Box-green.ico"
+cross=${CROSS:-i686-w64-mingw32-}
+
+mkdir -p "$out" "$obj"
+
+# A new revision whenever the sources changed (bump-revision.py).
+version=$(python3 "$here/bump-revision.py")
+echo "86Box Guest Tools $version"
+
+# ---- Windows agent (Windows 95 / NT 4.0 and later) ----
+python3 "$here/windows/mkicon.py" "$icon" "$obj/gtagent.ico"
+cp "$here/windows/gtagent.rc" "$here/windows/gtagent.h" "$obj/"
+"${cross}windres" -I"$obj" -I"$proto" -O coff -o "$obj/gtagent_res.o" "$obj/gtagent.rc"
+
+"${cross}gcc" -std=gnu99 -Os -march=i386 -mtune=i686 -Wall -Wextra -Wno-unused-parameter \
+    -ffreestanding -fno-builtin -fno-tree-loop-distribute-patterns \
+    -fno-stack-protector -fno-asynchronous-unwind-tables -fno-ident \
+    -I"$proto" -I"$here/windows" \
+    -nostdlib -mwindows \
+    -Wl,-e,_entry -Wl,--subsystem,windows:4.0 \
+    -Wl,--major-os-version,4 -Wl,--minor-os-version,0 \
+    -Wl,--disable-dynamicbase -Wl,--disable-nxcompat -Wl,--no-insert-timestamp \
+    -s -o "$out/86BOXGT.EXE" \
+    "$here/windows/gtagent.c" "$obj/gtagent_res.o" \
+    -lkernel32 -luser32 -ladvapi32 -lshell32 -lwinmm -lole32 -luuid -lgcc
+
+# ---- Windows 3.x agent (Open Watcom; WATCOM defaults to ~/ow) ----
+WATCOM=${WATCOM:-$HOME/ow}
+export WATCOM
+PATH="$WATCOM/binl64:$WATCOM/binl:$PATH"
+INCLUDE="$WATCOM/h:$WATCOM/h/win"
+export PATH INCLUDE
+python3 "$here/windows/mkicon.py" "$icon" "$obj/gtwin.ico" --win16
+cp "$here/win16/gtwin.rc" "$obj/"
+wcc -q -bt=windows -zW -ms -2 -os -s -wx -we -i="$proto" -fo="$obj/gtwin.obj" "$here/win16/gtwin.c"
+(cd "$obj" && wrc -q -r -bt=windows -i="$proto" -fo=gtwin.res gtwin.rc)
+wlink option quiet system windows name "$out/GTWIN.EXE" file "$obj/gtwin.obj" \
+    option resource="$obj/gtwin.res" option stack=8k option heapsize=4k \
+    segment class "'CODE'" preload fixed
+
+# ---- Disk images ----
+# Fixed dates and serial: the same files give the same images, so the copies
+# the emulator embeds (images/, committed) change only when the tools do.
+stamp="2026-01-01 00:00:00"
+export SOURCE_DATE_EPOCH=1767225600
+
+readme="$obj/README.TXT"
+sed 's/$/\r/' "$here/README.TXT" > "$readme"
+autorun="$obj/AUTORUN.INF"
+printf '[autorun]\r\nopen=86BOXGT.EXE\r\nicon=86BOXGT.EXE\r\nlabel=86Box Guest Tools\r\n' > "$autorun"
+files="$out/86BOXGT.EXE $out/GTWIN.EXE $readme"
+touch -d "$stamp" $files "$autorun"
+
+rm -f "$out/86box-guest-tools.img"
+mformat -C -f 1440 -v GUESTTOOLS -N 86B00001 -i "$out/86box-guest-tools.img" ::
+mcopy -m -i "$out/86box-guest-tools.img" $files ::
+
+rm -f "$out/86box-guest-tools.iso"
+rm -rf "$obj/iso"
+mkdir -p "$obj/iso"
+cp -p $files "$autorun" "$obj/iso/"
+touch -d "$stamp" "$obj/iso"
+xorriso -as mkisofs -quiet -iso-level 1 -J -V GUESTTOOLS \
+    --modification-date=2026010100000000 \
+    -o "$out/86box-guest-tools.iso" "$obj/iso"
+
+mkdir -p "$here/images"
+cp "$out/86box-guest-tools.img" "$out/86box-guest-tools.iso" "$here/images/"
+
+ls -l "$out/86BOXGT.EXE" "$out/GTWIN.EXE" "$here/images/"
