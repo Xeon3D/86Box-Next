@@ -801,6 +801,81 @@ pm_port_writel(UNUSED(uint32_t addr), uint32_t val, void *priv)
 /* key on this design: the window covers its rectangle.                      */
 /* ------------------------------------------------------------------------- */
 
+/* ------------------------------------------------------------------------- */
+/* Video windows, the second design (AT24/6424 and later; here the AT3D)     */
+/*                                                                           */
+/* Two windows: XR82 and XR92 control (bits as on the first design, but      */
+/* format 3 is YUY2; 9 stretch, 10/11 horizontal/vertical interpolation,     */
+/* 12 filter), +2 source pitch in dwords, +4/+8 horizontal/vertical scale     */
+/* (source / destination in 1/4096ths, 0 = 1:1), +6/+0Ah the scale            */
+/* accumulators' start phase. Where video shows is a list of tiles at         */
+/* XR200-XR2BF, 16 bytes each (STB's TILEREGS, X.org's ReputImage): control   */
+/* (bits 1:0 the window, 0 = none; bit 4 the last tile of a band), left,      */
+/* right (exclusive), bottom (the band's last line), source width, and the    */
+/* 24-bit source address of the tile's top left pixel. Bands run down the     */
+/* screen, each from the line below the previous band's bottom. A tile        */
+/* whose control is 0 ends the list. No colour key: the tiles are the clip.   */
+/* ------------------------------------------------------------------------- */
+
+#define PM_V2_TILES 12
+
+typedef struct {
+    int      ctl;
+    int      left;
+    int      right;
+    int      bottom;
+    int      width;
+    uint32_t addr;
+} pm_tile_t;
+
+static void
+pm_v2_tile(pm_t *pm, int i, pm_tile_t *t)
+{
+    const uint8_t *r = &pm->xr[0x200 + (i << 4)];
+
+    t->ctl    = r[0] | (r[1] << 8);
+    t->left   = (r[2] | (r[3] << 8)) & 0xfff;
+    t->right  = (r[4] | (r[5] << 8)) & 0xfff;
+    t->bottom = (r[6] | (r[7] << 8)) & 0xfff;
+    t->width  = (r[8] | (r[9] << 8)) & 0xfff;
+    t->addr   = r[10] | (r[11] << 8) | (r[12] << 16);
+}
+
+/* Where the second design's video shows: the tiles' bounding box. */
+static void
+pm_update_overlay_v2(pm_t *pm)
+{
+    svga_t   *svga = &pm->svga;
+    int       top  = 0;
+    int       x0   = 0xfff;
+    int       y0   = 0xfff;
+    int       x1   = -1;
+    int       y1   = -1;
+    pm_tile_t t;
+
+    for (int i = 0; i < PM_V2_TILES; i++) {
+        pm_v2_tile(pm, i, &t);
+        if (!t.ctl)
+            break;
+        if ((t.ctl & 3) && (pm->xr[(t.ctl & 2) ? 0x92 : 0x82] & 0x01) && (t.right > t.left) &&
+            (t.bottom >= top)) {
+            x0 = MIN(x0, t.left);
+            x1 = MAX(x1, t.right - 1);
+            y0 = MIN(y0, top);
+            y1 = MAX(y1, t.bottom);
+        }
+        if (t.ctl & 0x10)
+            top = t.bottom + 1;
+    }
+    svga->overlay.ena       = (x1 >= x0) && (y1 >= y0) && (pm->sr[0x1c - 8] & 0x04);
+    svga->overlay.x         = x0;
+    svga->overlay.y         = y0;
+    svga->overlay.cur_xsize = x1 - x0 + 1;
+    svga->overlay.cur_ysize = y1 - y0 + 1;
+    svga->overlay.xoff      = 0;
+    svga->overlay.yoff      = 0;
+}
+
 static void
 pm_update_overlay(pm_t *pm)
 {
@@ -811,6 +886,10 @@ pm_update_overlay(pm_t *pm)
     const int      r    = pm_xr16(pm, 0x8c) & 0xfff;
     const int      b    = pm_xr16(pm, 0x8e) & 0xfff;
 
+    if (pm->chip >= PM_AT3D) {
+        pm_update_overlay_v2(pm);
+        return;
+    }
     svga->overlay.ena       = (ctl & 0x0001) && (r >= l) && (b >= t) && (pm->sr[0x1c - 8] & 0x04);
     svga->overlay.x         = l;
     svga->overlay.y         = t;
@@ -844,6 +923,18 @@ pm_overlay_pixel(pm_t *pm, uint16_t ctl, uint32_t line, int sx)
     const uint32_t mask = pm->vram_mask;
 
     switch ((ctl >> 4) & 7) {
+        case 3: /* YUY2 */
+        case 6: {
+            const uint32_t a = line + (sx & ~1) * 2;
+            const int      y = vram[(a + ((sx & 1) ? 2 : 0)) & mask];
+            const int      u = vram[(a + 1) & mask];
+            const int      v = vram[(a + 3) & mask];
+
+            if (!(ctl & 0x0100))
+                return (y << 16) | (u << 8) | v;
+            return pm_yuv_rgb(y, u, v);
+        }
+
         case 4: /* UYVY */
         case 5: /* YYVU */
         case 7: { /* Y */
@@ -899,6 +990,86 @@ pm_overlay_pixel(pm_t *pm, uint16_t ctl, uint32_t line, int sx)
     }
 }
 
+static uint32_t
+pm_blend(uint32_t a, uint32_t b, int f)
+{
+    uint32_t out = 0;
+
+    for (int s = 0; s < 24; s += 8)
+        out |= (uint32_t) (((((a >> s) & 0xff) * (256 - f)) + (((b >> s) & 0xff) * f)) >> 8) << s;
+    return out;
+}
+
+/* One source coordinate: the scale accumulator runs over screen positions
+   from the window's start phase; a tile's address is its first position's
+   source, so count the steps since then. f gets the fraction (8 bits). */
+static int
+pm_v2_step(int scale, int phase, int from, int to, int *f)
+{
+    if (!scale) {
+        *f = 0;
+        return to - from;
+    }
+    {
+        const uint32_t a = phase + (uint32_t) to * scale;
+
+        *f = (a & 0xfff) >> 4;
+        return (int) ((a >> 12) - ((phase + (uint32_t) from * scale) >> 12));
+    }
+}
+
+static void
+pm_overlay_draw_v2(svga_t *svga, pm_t *pm, uint32_t *p)
+{
+    const int y   = svga->overlay_latch.y + svga->overlay_latch.cur_ysize - svga->overlay_on;
+    int       top = 0;
+    pm_tile_t t;
+
+    for (int i = 0; i < PM_V2_TILES; i++) {
+        pm_v2_tile(pm, i, &t);
+        if (!t.ctl)
+            break;
+        if ((t.ctl & 3) && (y >= top) && (y <= t.bottom)) {
+            const int      base  = (t.ctl & 2) ? 0x92 : 0x82;
+            const uint16_t ctl   = pm_xr16(pm, base);
+            const uint32_t pitch = pm_xr16(pm, base + 2) * 4;
+            const int      hs    = (ctl & 0x0200) ? (pm_xr16(pm, base + 4) & 0x1fff) : 0;
+            const int      vs    = (ctl & 0x0200) ? (pm_xr16(pm, base + 8) & 0x1fff) : 0;
+            int            fy;
+            const int      sy    = pm_v2_step(vs, pm_xr16(pm, base + 10) & 0xfff, top, y, &fy);
+            const uint32_t line  = t.addr + sy * pitch;
+            const uint32_t line2 = ((ctl & 0x0800) && fy) ? (line + pitch) : line;
+
+            if (!(ctl & 0x0001))
+                goto next;
+            for (int x = t.left; (x < t.right) && (x < svga->hdisp); x++) {
+                int      fx;
+                int      sx = pm_v2_step(hs, pm_xr16(pm, base + 6) & 0xfff, t.left, x, &fx);
+                int      sx2;
+                uint32_t c;
+
+                if (t.width && (sx >= t.width))
+                    sx = t.width - 1;
+                sx2 = (t.width && (sx + 1 >= t.width)) ? sx : (sx + 1);
+                c   = pm_overlay_pixel(pm, ctl, line, sx);
+                if ((ctl & 0x0400) && fx)
+                    c = pm_blend(c, pm_overlay_pixel(pm, ctl, line, sx2), fx);
+                if (line2 != line) {
+                    uint32_t c2 = pm_overlay_pixel(pm, ctl, line2, sx);
+
+                    if ((ctl & 0x0400) && fx)
+                        c2 = pm_blend(c2, pm_overlay_pixel(pm, ctl, line2, sx2), fx);
+                    c = pm_blend(c, c2, fy);
+                }
+                p[x] = c;
+            }
+        }
+next:
+        if (t.ctl & 0x10)
+            top = t.bottom + 1;
+    }
+}
+
 static void
 pm_overlay_draw(svga_t *svga, int displine)
 {
@@ -913,6 +1084,10 @@ pm_overlay_draw(svga_t *svga, int displine)
     uint32_t       line;
     int            sy;
 
+    if (pm->chip >= PM_AT3D) {
+        pm_overlay_draw_v2(svga, pm, p);
+        return;
+    }
     if (ctl & 0x0200) {
         sw = (pm_xr16(pm, 0x98) & 0xfff) + 1;
         sh = (pm_xr16(pm, 0x9c) & 0xfff) + 1;
@@ -1028,6 +1203,10 @@ pm_xr_read(pm_t *pm, uint32_t addr)
                 ret |= 0x01; /* the blit port wants data */
             if (pm->blt.rd_pos < pm->blt.rd_len)
                 ret |= 0x02; /* screen-to-host data ready */
+            /* Bit 11 (AT3D): vertical retrace -- X.org waits for it before
+               it rewrites the video window tiles. */
+            if ((pm->chip >= PM_AT3D) && (pm->svga.cgastat & 0x08))
+                ret |= 0x08;
             break;
         case XR_STATUS + 2:
             /* The DDC lines: bit 16 SDA, bit 17 SCL. */
@@ -1131,7 +1310,12 @@ pm_xr_write(pm_t *pm, uint32_t addr, uint8_t val)
             pm_update_cursor(pm);
             break;
         case 0x82 ... 0x9f:
+        case 0xa0 ... 0xa1:
             pm_update_overlay(pm);
+            break;
+        case 0x200 ... 0x2bf:
+            if (pm->chip >= PM_AT3D)
+                pm_update_overlay(pm);
             break;
         case 0x1ff:
             /* Abort. */
