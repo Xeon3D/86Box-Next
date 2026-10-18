@@ -1270,7 +1270,14 @@ pm_at3d_decode(pm_t *pm, uint32_t addr, uint32_t *off)
         *off = addr & 0x3ff;
         return 2;
     }
-    if ((addr >= 0x3f8000) && (addr < 0x400000) && (pm->sr[0x1b - 8] & 0x38))
+    /* SR1B as on the older chips, in the first 4 MB: bits 2:0 = 4 put the
+       registers in its last 2 KB (the 6422 drivers, e.g. the NT 4 1.410
+       miniport, look there), bits 5:3 = 4 the blit port below them. */
+    if ((addr >= 0x3ff800) && (addr < 0x400000) && ((pm->sr[0x1b - 8] & 0x07) == 0x04)) {
+        *off = addr - 0x3ff800;
+        return 1;
+    }
+    if ((addr >= 0x3f8000) && (addr < 0x400000) && ((pm->sr[0x1b - 8] & 0x38) == 0x20))
         return 3;
     if ((addr < 0x400000) || ((addr >= 0x800000) && (addr < 0xc00000))) {
         *off = addr & 0x3fffff;
