@@ -464,8 +464,12 @@ RendererStack::guestToolsDragFiles(const QDropEvent *event) const
     QStringList files;
 
     if ((m_monitor_index >= 1) || (event->source() != nullptr) || !guestToolsPointer() || !guest_tools_files_enabled() ||
-        !event->mimeData()->hasUrls())
+        !event->mimeData()->hasUrls()) {
+        if (m_monitor_index < 1)
+            pclog("Guest Tools: drag refused: own %d, integrated %d, files on %d, urls %d\n", event->source() != nullptr,
+                  guestToolsPointer(), guest_tools_files_enabled(), event->mimeData()->hasUrls());
         return files;
+    }
     for (const QUrl &url : event->mimeData()->urls()) {
         if (!url.isLocalFile())
             return QStringList();
@@ -483,6 +487,7 @@ RendererStack::dragEnterEvent(QDragEnterEvent *event)
         event->ignore();
         return;
     }
+    pclog("Guest Tools: host drag of %d files entered\n", static_cast<int>(files.size()));
     GuestTools::hostDragEnter(files);
     guest_tools_host_drag(1);
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
@@ -523,6 +528,7 @@ RendererStack::dropEvent(QDropEvent *event)
     guestToolsPointerAt(event->posF());
 #endif
     /* The agent drops them where the guest's pointer is now. */
+    pclog("Guest Tools: host drop\n");
     guest_tools_host_drag(2);
     event->setDropAction(Qt::CopyAction);
     event->accept();

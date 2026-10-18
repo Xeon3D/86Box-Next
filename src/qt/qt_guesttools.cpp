@@ -397,8 +397,13 @@ GuestTools::waitDragOutFiles()
     while (instance != nullptr) {
         {
             QMutexLocker lock(&instance->mutex);
-            if (instance->dragOutDone)
+            if (instance->dragOutDone) {
+                if (cursor)
+                    QApplication::restoreOverrideCursor();
+                pclog("Guest Tools: guest drag files ready (%d) after %d ms\n",
+                      static_cast<int>(instance->dragOutFiles.size()), static_cast<int>(waited.elapsed()));
                 return instance->dragOutFiles;
+            }
         }
         /* The agent went away, or the guest stopped sending. */
         if (!guest_tools_pointer_active() && (waited.elapsed() > 5000))
@@ -415,6 +420,7 @@ GuestTools::waitDragOutFiles()
     }
     if (cursor)
         QApplication::restoreOverrideCursor();
+    pclog("Guest Tools: guest drag files never came\n");
     return QStringList();
 }
 
@@ -463,7 +469,9 @@ GuestTools::startHostDrag()
 
     drag->setMimeData(new GuestDragData);
     hostDragging = true;
-    drag->exec(Qt::CopyAction, Qt::CopyAction);
+    pclog("Guest Tools: host drag of the guest's files starts\n");
+    const Qt::DropAction action = drag->exec(Qt::CopyAction, Qt::CopyAction);
+    pclog("Guest Tools: host drag of the guest's files ended, action %d\n", static_cast<int>(action));
     hostDragging = false;
 }
 
@@ -720,9 +728,17 @@ GuestTools::poll()
        carries it on with the host's button, still down. */
     const bool out = guest_tools_drag_out();
     if (out && !dragOut) {
+        bool held = QApplication::mouseButtons() & Qt::LeftButton;
+
+#ifdef Q_OS_WINDOWS
+        /* Qt only knows about buttons pressed over its own windows. */
+        held = held || (GetAsyncKeyState(GetSystemMetrics(SM_SWAPBUTTON) ? VK_RBUTTON : VK_LBUTTON) & 0x8000);
+#endif
         dragOut = true;
         mouse_set_buttons_ex(mouse_get_buttons_ex() & ~1);
-        if (!debugFiles && !hostDragging && (QApplication::mouseButtons() & Qt::LeftButton))
+        pclog("Guest Tools: guest drag out, host button %s%s\n", held ? "held" : "up",
+              debugFiles ? " (debug: no host drag)" : (hostDragging ? " (host drag running)" : ""));
+        if (!debugFiles && !hostDragging && held)
             QTimer::singleShot(0, this, &GuestTools::startHostDrag);
     } else if (!out && !hostDragging)
         dragOut = false;
