@@ -2,7 +2,7 @@
 
 Read this first; keep it current as the work moves.
 
-## Where things stand (2026-10-16, f584ee9a8)
+## Where things stand (2026-10-18, c9f9af681)
 
 - Branch `alliance`, worktree `F:\Claude\86Box-Next\wt-alliance` (build with `build-static`
   there). **Not merged, not pushed** -- the owner said "don't merge yet". Never PR upstream.
@@ -16,25 +16,29 @@ Read this first; keep it current as the work moves.
   | `pm_at3d_pci` | ProMotion AT3D/AT25, 1142:643D | Stingray 128/3D 4.35 (default) / 2.30, GA-RUSH6 | 2D done |
 
 - Works: POST and VESA modes on all three; drawing engine; hardware cursor; DDC lines; video
-  window (overlay, first design); Win95 OSR2, Win98 SE and NT 4 with Alliance's drivers
-  (accelerated, full mode lists, live mode switching); DirectDraw on the 6422.
+  window (overlay, first design, with horizontal interpolation); Win95 OSR2, Win98 SE and
+  NT 4 with Alliance's drivers (accelerated, full mode lists, live mode switching);
+  DirectDraw (DxDiag's three tests) on the 6422 with Alliance's 1600 build and STB's build,
+  and on the AT3D with Alliance's 2072 driver; the AT3D under NT 4 (4.00.1005 and 1.410).
 - Before merging (owner's call): the ROMs into the Xeon3D/roms fork (they are only in
   ROMS-EXTRA now), a README / CLAUDE.md "Fork additions" entry. Logging is already off by
   default (`pm_do_log = 0`).
 
 ## Open items, in order of value
 
-1. AT3D DirectDraw: PROMDD32.DLL from the 2072 driver, untested (DxDiag on work-pmat3d).
-2. AT3D under NT 4: `G:\Old OS\Drivers\video\alliance\AT3D-AT25\WinNT4.zip` (also
-   `at3d\winnt.zip`, NT 3.5x and 4.0), untested. work-pmnt4 can be switched to `pm_at3d_pci`.
-3. STB's source build of the Win95 driver: its DirectDraw HAL does not come up (the
-   Alliance 1600 build's does). Cause unknown.
-4. Video window: interpolation (VC_INTERP, bit 10) is not modelled (nearest neighbour);
-   the second overlay design (tiles, XR200 on; 6424/GXM and later) is not on these chips.
-5. 24 bpp: AT3D engine depth 4 is in; no BIOS or Windows mode uses 24 bpp, so untested.
-6. Not planned: the AT3D's 3D engine, Voodoo Rush boards (AT25 + 3Dfx).
-7. Interlace (XRD2 bit 0, the drivers' 1024x768 "43 Hz" mode) is shown progressive at the
+1. The AT3D's video window: it has the second design (two windows XR80/XR90 + tiles
+   XR200-2BF, X.org apm_video.c ReputImage; the 2072 driver writes 55h to XR202 to detect
+   it). The registers keep their values now, but nothing displays from them, so an
+   overlay through the 2072 driver cannot show (not tried in a guest yet).
+2. 24 bpp: AT3D engine depth 4 is in; no BIOS or Windows mode uses 24 bpp, so untested.
+3. VC_NOFLICKER (XR82 bit 11, set by STB's build) is not modelled (a TV flicker filter).
+4. Not planned: the AT3D's 3D engine (its driver offers Direct3D; DxDiag says Enabled, but
+   nothing would draw), Voodoo Rush boards (AT25 + 3Dfx).
+5. Interlace (XRD2 bit 0, the drivers' 1024x768 "43 Hz" mode) is shown progressive at the
    frame rate the CRTC holds -- same picture; left as is.
+
+Done 2026-10-18: AT3D DirectDraw (92bc9574b), AT3D NT 4 (5562a576a), STB build's
+DirectDraw (packaging only, see below), video window interpolation (c9f9af681).
 
 ## Test VMs and tools
 
@@ -45,10 +49,10 @@ All in `F:\Claude\86Box-Next\`. Each has its own `86Box-Next.exe`, `86box.cfg` a
 | VM | Guest | Card now | Notes |
 |---|---|---|---|
 | work-pmdos | DOS 6.22, tc430hx, P200 | `pm_at3d_pci` (4.35) | VBETEST.EXE + UNIVBE in C:\ |
-| work-pmw98 | Win98 SE, p55tvp4, P55C 233 | `pm6422_pci` | STB source build of the driver installed (1600 files in C:\PMBAK); C:\GDITEST.EXE |
-| work-pmat3d | Win98 SE (copy of work-pmw98) | `pm_at3d_pci` (4.35) | Alliance AT3D/AT25 driver 2072 from at3ddrv.iso; 1024x768x32 now |
+| work-pmw98 | Win98 SE, p55tvp4, P55C 233 | `pm6422_pci` | STB source build installed with STBALL16/32.DLL (1600 files in C:\PMBAK); C:\GDITEST.EXE; CD video2.iso |
+| work-pmat3d | Win98 SE (copy of work-pmw98) | `pm_at3d_pci` (4.35) | Alliance AT3D/AT25 driver 2072 from at3ddrv.iso; 1024x768x16 now |
 | work-pmw95 | Win95 OSR2, p54tp4xe | `pm6422_pci` | 1600 driver from pmdrv.iso |
-| work-pmnt4 | NT 4 WS, p6bap, Celeron 233, SCSI | `pm6410_pci` | Administrator, blank password; US keyboard |
+| work-pmnt4 | NT 4 WS, p6bap, Celeron 233, SCSI | `pm_at3d_pci` (4.35) | AT3D NT driver 4.00.1005 (at3dnt.iso), 1024x768x16; Administrator, blank password; US keyboard |
 
 Scripts (`tools/alliance/`, `PM_DIR=/f/Claude/86Box-Next/<vm>` selects the VM, default
 work-pmdos):
@@ -63,6 +67,12 @@ work-pmdos):
   line fan); build in WSL with the command in its header comment (`-nostdlib`, entry
   `_entry@0`: Win98's msvcrt lacks what mingw-w64's start-up needs).
   The AT3D and the 6422 draw it identically.
+
+Finding a Win9x driver's code (debug_cmd, added 2026-10-18): `findp <hex bytes>` searches
+RAM for code bytes from the file (avoid bytes with relocations), `bpp <phys> [n]` breaks
+there (logs CS and registers), `sel <selector>` gives a selector's base (the driver's DS is
+`ds` in a bp line; its far pointers are DS-relative). scratchpad ne.py/segdis.py/segs.py/
+xref.py disassemble NE segments and find immediates.
 
 Debug command file: `dev` dumps SR/CR/XR, CRTC, pixel clock/refresh, cursor; `dev log N`:
 1 = extended register writes and every engine command as `PM: BLT ctrl rop src dst dim fg
@@ -144,6 +154,22 @@ Mouse: `mouse 0 5 0` steps of 5 move ~2 px; bigger steps accelerate.
   compare holds); line compare bit 10 is `split += 400h` (the core already added 1).
 - Video window V1: XR82-XR9F, UYVY/YUV->RGB, stretch, flips through XR90; no colour key.
   Verified with Media Player MPEG-1 on the 6422 (work-pmw98\video2.iso).
+
+## AT3D DirectDraw and NT 4 (2026-10-18)
+
+- XR1F0 bit 30 (read as XR1F3 bit 6 after the driver writes XRDB = 4) = no Voodoo Rush.
+  Clear, the 2072 driver gives DirectDraw VG96DD32.DLL (the Rush's, not installed) as its
+  32-bit driver, DriverInit never runs, DDHAL_SetInfo fails: "DirectDraw not available".
+- SR1B bits 5:3 = 3 put the blit port at B8000h (32 KB): the 2072 driver sends glyphs there
+  once DirectDraw owns off-screen memory (host mono blit 24003A08, contiguous rows = byte
+  padded). 4 = end of the first 4 MB; bits 2:0 = 4 the registers in its last 2 KB (the NT
+  1.410 miniport polls status there -- it hung at logon before).
+- Start address: the SVGA core shifts memaddr_latch left by 2, so the extended start is in
+  dwords. It was in bytes, so every nonzero start (DirectDraw flips, VBETest scrolling)
+  showed 4x too far, on all three chips.
+- STB's build asks DirectDraw for STBALL32.DLL (and loads STBALL16.DLL): its build.bat copies
+  promdd32.dll/promdd16.dll to those names. With them in C:\WINDOWS\SYSTEM its DirectDraw
+  passes too (it was never an emulation bug).
 
 ## History of the hard bugs (so they are not re-chased)
 
