@@ -78,6 +78,7 @@ typedef struct pm_t {
 
     mem_mapping_t lfb_mapping; /* PCI BAR 0 */
     mem_mapping_t xr_mapping;  /* extended registers in the A0000h window */
+    mem_mapping_t port_mapping; /* the blit port at B8000h (SR1B bits 5:3 = 3) */
 
     int      chip;
     void    *ramdac;
@@ -138,6 +139,7 @@ pm_log(const char *fmt, ...)
 }
 
 static void pm_recalc_mappings(pm_t *pm);
+static int  pm_ext_bpp(pm_t *pm);
 
 /* ------------------------------------------------------------------------- */
 /* Extended registers                                                        */
@@ -673,8 +675,14 @@ pm_blt_start(pm_t *pm)
             break;
 
         case BLT_OP_MS:
-            /* Rows come through the blit port, each padded to a dword. */
-            if (ctrl & BLT_SRC_MONO) {
+            /* Rows come through the blit port, each padded to a dword --
+               or, with a contiguous mono source, to a byte (the AT3D
+               driver's glyphs: (w + 7) / 8 * h bytes, the whole padded to a
+               dword). */
+            if ((ctrl & BLT_SRC_MONO) && (ctrl & BLT_SRC_CONTIG)) {
+                pm->blt.host_skip      = pm->xr[0x50] & 7;
+                pm->blt.host_row_bytes = (pm->blt.host_skip + pm->blt.w + 7) >> 3;
+            } else if (ctrl & BLT_SRC_MONO) {
                 pm->blt.host_skip      = pm->xr[0x50] & 0x1f;
                 pm->blt.host_row_bytes = ((pm->blt.host_skip + pm->blt.w + 31) >> 5) << 2;
             } else {
@@ -733,6 +741,54 @@ pm_blt_port_read(pm_t *pm)
     return 0xff;
 }
 
+static void pm_xr_access_done(pm_t *pm);
+
+/* The blit port in the B8000h window (SR1B bits 5:3 = 3, the AT3D driver's
+   choice; 4 puts it at the end of the aperture). Any address there is the
+   port. */
+static uint8_t
+pm_port_readb(UNUSED(uint32_t addr), void *priv)
+{
+    return pm_blt_port_read((pm_t *) priv);
+}
+
+static uint16_t
+pm_port_readw(UNUSED(uint32_t addr), void *priv)
+{
+    pm_t *pm = (pm_t *) priv;
+
+    return pm_blt_port_read(pm) | (pm_blt_port_read(pm) << 8);
+}
+
+static uint32_t
+pm_port_readl(UNUSED(uint32_t addr), void *priv)
+{
+    pm_t *pm = (pm_t *) priv;
+
+    return pm_port_readw(addr, pm) | (pm_port_readw(addr, pm) << 16);
+}
+
+static void
+pm_port_writeb(UNUSED(uint32_t addr), uint8_t val, void *priv)
+{
+    pm_blt_port_write((pm_t *) priv, val, 1);
+    pm_xr_access_done((pm_t *) priv);
+}
+
+static void
+pm_port_writew(UNUSED(uint32_t addr), uint16_t val, void *priv)
+{
+    pm_blt_port_write((pm_t *) priv, val, 2);
+    pm_xr_access_done((pm_t *) priv);
+}
+
+static void
+pm_port_writel(UNUSED(uint32_t addr), uint32_t val, void *priv)
+{
+    pm_blt_port_write((pm_t *) priv, val, 4);
+    pm_xr_access_done((pm_t *) priv);
+}
+
 /* ------------------------------------------------------------------------- */
 /* Video window (XR82-XR9F, the first ProMotion design: one window)          */
 /*                                                                           */
@@ -745,6 +801,81 @@ pm_blt_port_read(pm_t *pm)
 /* key on this design: the window covers its rectangle.                      */
 /* ------------------------------------------------------------------------- */
 
+/* ------------------------------------------------------------------------- */
+/* Video windows, the second design (AT24/6424 and later; here the AT3D)     */
+/*                                                                           */
+/* Two windows: XR82 and XR92 control (bits as on the first design, but      */
+/* format 3 is YUY2; 9 stretch, 10/11 horizontal/vertical interpolation,     */
+/* 12 filter), +2 source pitch in dwords, +4/+8 horizontal/vertical scale     */
+/* (source / destination in 1/4096ths, 0 = 1:1), +6/+0Ah the scale            */
+/* accumulators' start phase. Where video shows is a list of tiles at         */
+/* XR200-XR2BF, 16 bytes each (STB's TILEREGS, X.org's ReputImage): control   */
+/* (bits 1:0 the window, 0 = none; bit 4 the last tile of a band), left,      */
+/* right (exclusive), bottom (the band's last line), source width, and the    */
+/* 24-bit source address of the tile's top left pixel. Bands run down the     */
+/* screen, each from the line below the previous band's bottom. A tile        */
+/* whose control is 0 ends the list. No colour key: the tiles are the clip.   */
+/* ------------------------------------------------------------------------- */
+
+#define PM_V2_TILES 12
+
+typedef struct {
+    int      ctl;
+    int      left;
+    int      right;
+    int      bottom;
+    int      width;
+    uint32_t addr;
+} pm_tile_t;
+
+static void
+pm_v2_tile(pm_t *pm, int i, pm_tile_t *t)
+{
+    const uint8_t *r = &pm->xr[0x200 + (i << 4)];
+
+    t->ctl    = r[0] | (r[1] << 8);
+    t->left   = (r[2] | (r[3] << 8)) & 0xfff;
+    t->right  = (r[4] | (r[5] << 8)) & 0xfff;
+    t->bottom = (r[6] | (r[7] << 8)) & 0xfff;
+    t->width  = (r[8] | (r[9] << 8)) & 0xfff;
+    t->addr   = r[10] | (r[11] << 8) | (r[12] << 16);
+}
+
+/* Where the second design's video shows: the tiles' bounding box. */
+static void
+pm_update_overlay_v2(pm_t *pm)
+{
+    svga_t   *svga = &pm->svga;
+    int       top  = 0;
+    int       x0   = 0xfff;
+    int       y0   = 0xfff;
+    int       x1   = -1;
+    int       y1   = -1;
+    pm_tile_t t;
+
+    for (int i = 0; i < PM_V2_TILES; i++) {
+        pm_v2_tile(pm, i, &t);
+        if (!t.ctl)
+            break;
+        if ((t.ctl & 3) && (pm->xr[(t.ctl & 2) ? 0x92 : 0x82] & 0x01) && (t.right > t.left) &&
+            (t.bottom >= top)) {
+            x0 = MIN(x0, t.left);
+            x1 = MAX(x1, t.right - 1);
+            y0 = MIN(y0, top);
+            y1 = MAX(y1, t.bottom);
+        }
+        if (t.ctl & 0x10)
+            top = t.bottom + 1;
+    }
+    svga->overlay.ena       = (x1 >= x0) && (y1 >= y0) && (pm->sr[0x1c - 8] & 0x04);
+    svga->overlay.x         = x0;
+    svga->overlay.y         = y0;
+    svga->overlay.cur_xsize = x1 - x0 + 1;
+    svga->overlay.cur_ysize = y1 - y0 + 1;
+    svga->overlay.xoff      = 0;
+    svga->overlay.yoff      = 0;
+}
+
 static void
 pm_update_overlay(pm_t *pm)
 {
@@ -755,6 +886,10 @@ pm_update_overlay(pm_t *pm)
     const int      r    = pm_xr16(pm, 0x8c) & 0xfff;
     const int      b    = pm_xr16(pm, 0x8e) & 0xfff;
 
+    if (pm->chip >= PM_AT3D) {
+        pm_update_overlay_v2(pm);
+        return;
+    }
     svga->overlay.ena       = (ctl & 0x0001) && (r >= l) && (b >= t) && (pm->sr[0x1c - 8] & 0x04);
     svga->overlay.x         = l;
     svga->overlay.y         = t;
@@ -788,10 +923,25 @@ pm_overlay_pixel(pm_t *pm, uint16_t ctl, uint32_t line, int sx)
     const uint32_t mask = pm->vram_mask;
 
     switch ((ctl >> 4) & 7) {
+        /* The packed YUV formats pair pixels in aligned dwords of video
+           memory: a tile of the second design can start on an odd pixel. */
+        case 3: /* YUY2 */
+        case 6: {
+            const uint32_t a = (line + sx * 2) & ~3;
+            const int      y = vram[(a + (((line + sx * 2) & 2) ? 2 : 0)) & mask];
+            const int      u = vram[(a + 1) & mask];
+            const int      v = vram[(a + 3) & mask];
+
+            if (!(ctl & 0x0100))
+                return (y << 16) | (u << 8) | v;
+            return pm_yuv_rgb(y, u, v);
+        }
+
         case 4: /* UYVY */
         case 5: /* YYVU */
         case 7: { /* Y */
-            const uint32_t a  = line + (sx & ~1) * 2;
+            const uint32_t a  = (line + sx * 2) & ~3;
+            const int      od = !!((line + sx * 2) & 2);
             const uint8_t  b0 = vram[a & mask];
             const uint8_t  b1 = vram[(a + 1) & mask];
             const uint8_t  b2 = vram[(a + 2) & mask];
@@ -805,11 +955,11 @@ pm_overlay_pixel(pm_t *pm, uint16_t ctl, uint32_t line, int sx)
                 return (y << 16) | (y << 8) | y;
             }
             if (((ctl >> 4) & 7) == 5) {
-                y = (sx & 1) ? b1 : b0;
+                y = od ? b1 : b0;
                 v = b2;
                 u = b3;
             } else {
-                y = (sx & 1) ? b3 : b1;
+                y = od ? b3 : b1;
                 u = b0;
                 v = b2;
             }
@@ -843,6 +993,92 @@ pm_overlay_pixel(pm_t *pm, uint16_t ctl, uint32_t line, int sx)
     }
 }
 
+static uint32_t
+pm_blend(uint32_t a, uint32_t b, int f)
+{
+    uint32_t out = 0;
+
+    for (int s = 0; s < 24; s += 8)
+        out |= (uint32_t) (((((a >> s) & 0xff) * (256 - f)) + (((b >> s) & 0xff) * f)) >> 8) << s;
+    return out;
+}
+
+/* One source coordinate: the scale accumulator runs over screen positions
+   from the window's start phase; a tile's address is its first position's
+   source, so count the steps since then. f gets the fraction (8 bits). */
+static int
+pm_v2_step(int scale, int phase, int from, int to, int *f)
+{
+    if (!scale) {
+        *f = 0;
+        return to - from;
+    }
+    {
+        /* Signed: a tile at column 0 counts from -1. */
+        const int64_t a = phase + (int64_t) to * scale;
+        const int64_t b = phase + (int64_t) from * scale;
+
+        *f = (int) ((a & 0xfff) >> 4);
+        return (int) ((a >> 12) - (b >> 12));
+    }
+}
+
+static void
+pm_overlay_draw_v2(svga_t *svga, pm_t *pm, uint32_t *p)
+{
+    const int y   = svga->overlay_latch.y + svga->overlay_latch.cur_ysize - svga->overlay_on;
+    int       top = 0;
+    pm_tile_t t;
+
+    for (int i = 0; i < PM_V2_TILES; i++) {
+        pm_v2_tile(pm, i, &t);
+        if (!t.ctl)
+            break;
+        if ((t.ctl & 3) && (y >= top) && (y <= t.bottom)) {
+            const int      base  = (t.ctl & 2) ? 0x92 : 0x82;
+            const uint16_t ctl   = pm_xr16(pm, base);
+            const uint32_t pitch = pm_xr16(pm, base + 2) * 4;
+            const int      hs    = (ctl & 0x0200) ? (pm_xr16(pm, base + 4) & 0x1fff) : 0;
+            const int      vs    = (ctl & 0x0200) ? (pm_xr16(pm, base + 8) & 0x1fff) : 0;
+            int            fy;
+            const int      sy    = pm_v2_step(vs, pm_xr16(pm, base + 10) & 0xfff, top, y, &fy);
+            const uint32_t line  = t.addr + sy * pitch;
+            const uint32_t line2 = ((ctl & 0x0800) && fy) ? (line + pitch) : line;
+
+            if (!(ctl & 0x0001))
+                goto next;
+            for (int x = t.left; (x < t.right) && (x < svga->hdisp); x++) {
+                int      fx;
+                /* Horizontally the accumulator for column x is phase +
+                   scale * (x - 1): Alliance's driver sets the phase from
+                   left - 1 and starts each tile's data at the ceiling of
+                   its source position, which only line up this way. */
+                int      sx = pm_v2_step(hs, pm_xr16(pm, base + 6) & 0xfff, t.left - 1, x - 1, &fx);
+                int      sx2;
+                uint32_t c;
+
+                if (t.width && (sx >= t.width))
+                    sx = t.width - 1;
+                sx2 = (t.width && (sx + 1 >= t.width)) ? sx : (sx + 1);
+                c   = pm_overlay_pixel(pm, ctl, line, sx);
+                if ((ctl & 0x0400) && fx)
+                    c = pm_blend(c, pm_overlay_pixel(pm, ctl, line, sx2), fx);
+                if (line2 != line) {
+                    uint32_t c2 = pm_overlay_pixel(pm, ctl, line2, sx);
+
+                    if ((ctl & 0x0400) && fx)
+                        c2 = pm_blend(c2, pm_overlay_pixel(pm, ctl, line2, sx2), fx);
+                    c = pm_blend(c, c2, fy);
+                }
+                p[x] = c;
+            }
+        }
+next:
+        if (t.ctl & 0x10)
+            top = t.bottom + 1;
+    }
+}
+
 static void
 pm_overlay_draw(svga_t *svga, int displine)
 {
@@ -857,6 +1093,10 @@ pm_overlay_draw(svga_t *svga, int displine)
     uint32_t       line;
     int            sy;
 
+    if (pm->chip >= PM_AT3D) {
+        pm_overlay_draw_v2(svga, pm, p);
+        return;
+    }
     if (ctl & 0x0200) {
         sw = (pm_xr16(pm, 0x98) & 0xfff) + 1;
         sh = (pm_xr16(pm, 0x9c) & 0xfff) + 1;
@@ -871,7 +1111,22 @@ pm_overlay_draw(svga_t *svga, int displine)
 
         if (x >= svga->hdisp)
             break;
-        p[x] = pm_overlay_pixel(pm, ctl, line, (i * sw) / dw);
+        if ((ctl & 0x0400) && (sw < dw)) {
+            /* VC_INTERP (bit 10): a stretched window blends neighbouring
+               source pixels horizontally (the second design calls the same
+               bit VC2_HOR_INTERP). */
+            const int      pos = (i * sw * 256) / dw;
+            const int      sx  = pos >> 8;
+            const int      f   = pos & 0xff;
+            const uint32_t c0  = pm_overlay_pixel(pm, ctl, line, sx);
+            const uint32_t c1  = f ? pm_overlay_pixel(pm, ctl, line, (sx + 1 < sw) ? (sx + 1) : sx) : c0;
+            uint32_t       out = 0;
+
+            for (int s = 0; s < 24; s += 8)
+                out |= (uint32_t) (((((c0 >> s) & 0xff) * (256 - f)) + (((c1 >> s) & 0xff) * f)) >> 8) << s;
+            p[x] = out;
+        } else
+            p[x] = pm_overlay_pixel(pm, ctl, line, (i * sw) / dw);
     }
 }
 
@@ -957,6 +1212,10 @@ pm_xr_read(pm_t *pm, uint32_t addr)
                 ret |= 0x01; /* the blit port wants data */
             if (pm->blt.rd_pos < pm->blt.rd_len)
                 ret |= 0x02; /* screen-to-host data ready */
+            /* Bit 11 (AT3D): vertical retrace -- X.org waits for it before
+               it rewrites the video window tiles. */
+            if ((pm->chip >= PM_AT3D) && (pm->svga.cgastat & 0x08))
+                ret |= 0x08;
             break;
         case XR_STATUS + 2:
             /* The DDC lines: bit 16 SDA, bit 17 SCL. */
@@ -969,6 +1228,12 @@ pm_xr_read(pm_t *pm, uint32_t addr)
             /* The PCI vendor and device IDs (the NT 4 miniport checks for
                1142h here before it accepts the card). */
             ret = pm->pci_regs[addr & 3];
+            break;
+        case 0x1f3:
+            /* Bit 30 of XR1F0: no Voodoo Rush on the board. Alliance's AT3D
+               driver checks it (after XRDB = 4) and otherwise hands
+               DirectDraw the Rush's VG96DD32.DLL, which fails to load. */
+            ret = pm->xr[addr] | ((pm->chip >= PM_AT3D) ? 0x40 : 0x00);
             break;
         case 0x1f4 ... 0x1f7:
             /* The AT3D's SST status (Voodoo Rush): idle. */
@@ -1003,7 +1268,7 @@ pm_xr_write(pm_t *pm, uint32_t addr, uint8_t val)
        design (XR200 on) and XR40 bit 16 (24 bpp). The drivers write them
        to tell the generations apart (STB's Detect_Overlay_Hardware_Version
        and Detect_2D_Hardware_Version). */
-    if ((addr >= 0x200) && (addr < 0x2c0))
+    if ((addr >= 0x200) && (addr < 0x2c0) && (pm->chip < PM_AT3D))
         return;
     if ((addr == 0x42) && (pm->chip < PM_AT3D))
         val &= ~0x01;
@@ -1054,7 +1319,12 @@ pm_xr_write(pm_t *pm, uint32_t addr, uint8_t val)
             pm_update_cursor(pm);
             break;
         case 0x82 ... 0x9f:
+        case 0xa0 ... 0xa1:
             pm_update_overlay(pm);
+            break;
+        case 0x200 ... 0x2bf:
+            if (pm->chip >= PM_AT3D)
+                pm_update_overlay(pm);
             break;
         case 0x1ff:
             /* Abort. */
@@ -1208,7 +1478,14 @@ pm_at3d_decode(pm_t *pm, uint32_t addr, uint32_t *off)
         *off = addr & 0x3ff;
         return 2;
     }
-    if ((addr >= 0x3f8000) && (addr < 0x400000) && (pm->sr[0x1b - 8] & 0x38))
+    /* SR1B as on the older chips, in the first 4 MB: bits 2:0 = 4 put the
+       registers in its last 2 KB (the 6422 drivers, e.g. the NT 4 1.410
+       miniport, look there), bits 5:3 = 4 the blit port below them. */
+    if ((addr >= 0x3ff800) && (addr < 0x400000) && ((pm->sr[0x1b - 8] & 0x07) == 0x04)) {
+        *off = addr - 0x3ff800;
+        return 1;
+    }
+    if ((addr >= 0x3f8000) && (addr < 0x400000) && ((pm->sr[0x1b - 8] & 0x38) == 0x20))
         return 3;
     if ((addr < 0x400000) || ((addr >= 0x800000) && (addr < 0xc00000))) {
         *off = addr & 0x3fffff;
@@ -1356,6 +1633,7 @@ pm_recalc_mappings(pm_t *pm)
         mem_mapping_disable(&svga->mapping);
         mem_mapping_disable(&pm->lfb_mapping);
         mem_mapping_disable(&pm->xr_mapping);
+        mem_mapping_disable(&pm->port_mapping);
         return;
     }
 
@@ -1389,6 +1667,11 @@ pm_recalc_mappings(pm_t *pm)
         mem_mapping_set_addr(&pm->xr_mapping, 0xa0000, 0x10000);
     else
         mem_mapping_disable(&pm->xr_mapping);
+
+    if ((pm->sr[0x1b - 8] & 0x38) == 0x18)
+        mem_mapping_set_addr(&pm->port_mapping, 0xb8000, 0x8000);
+    else
+        mem_mapping_disable(&pm->port_mapping);
 
     pm->lfb_base = (pm->pci_regs[0x13] << 24) | (pm->pci_regs[0x12] << 16);
     pm->lfb_base &= ~(pm->lfb_size - 1);
@@ -1509,8 +1792,14 @@ pm_out(uint16_t addr, uint8_t val, void *priv)
             if (old != val) {
                 if ((svga->crtcreg < 0x0e) || (svga->crtcreg > 0x10)) {
                     if ((svga->crtcreg == 0x0c) || (svga->crtcreg == 0x0d)) {
-                        svga->fullchange    = 3;
-                        svga->memaddr_latch = ((svga->crtc[0xc] << 8) | svga->crtc[0xd]) + ((svga->crtc[8] & 0x60) >> 5);
+                        svga->fullchange = 3;
+                        /* Extended modes: CR1C bits 3:0 above, as in
+                           pm_recalctimings (a DirectDraw flip writes all
+                           three). In dwords: the core makes it bytes. */
+                        if (pm_ext_bpp(pm))
+                            svga->memaddr_latch = (((pm->cr[0x1c] & 0x0f) << 16) | (svga->crtc[0x0c] << 8) | svga->crtc[0x0d]);
+                        else
+                            svga->memaddr_latch = ((svga->crtc[0xc] << 8) | svga->crtc[0xd]) + ((svga->crtc[8] & 0x60) >> 5);
                     } else {
                         svga->fullchange = svga->monitor->mon_changeframecount;
                         svga_recalctimings(svga);
@@ -1688,7 +1977,7 @@ pm_recalctimings(svga_t *svga)
        hold in the AT3D's 1600x1200 modes; show extended modes with plain
        borders. */
     svga->hoverride      = 1;
-    svga->memaddr_latch  = (((pm->cr[0x1c] & 0x0f) << 16) | (svga->crtc[0x0c] << 8) | svga->crtc[0x0d]) << 2;
+    svga->memaddr_latch  = (((pm->cr[0x1c] & 0x0f) << 16) | (svga->crtc[0x0c] << 8) | svga->crtc[0x0d]); /* dwords: the core shifts it */
     svga->rowoffset      = svga->crtc[0x13] | ((pm->cr[0x1c] & 0xf0) << 4);
     svga->lowres         = 0;
 
@@ -1964,8 +2253,13 @@ pm_init(const device_t *info)
                     pm_xr_readb, pm_xr_readw, pm_xr_readl,
                     pm_xr_writeb, pm_xr_writew, pm_xr_writel,
                     NULL, MEM_MAPPING_EXTERNAL, pm);
+    mem_mapping_add(&pm->port_mapping, 0, 0,
+                    pm_port_readb, pm_port_readw, pm_port_readl,
+                    pm_port_writeb, pm_port_writew, pm_port_writel,
+                    NULL, MEM_MAPPING_EXTERNAL, pm);
     mem_mapping_disable(&pm->lfb_mapping);
     mem_mapping_disable(&pm->xr_mapping);
+    mem_mapping_disable(&pm->port_mapping);
 
     pm->i2c = i2c_gpio_init("ddc_alliance_promotion");
     pm->ddc = ddc_init(i2c_gpio_get_bus(pm->i2c));
