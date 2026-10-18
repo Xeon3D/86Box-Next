@@ -2,7 +2,7 @@
 
 Read this first; keep it current as the work moves.
 
-## Where things stand (2026-10-18, c9f9af681)
+## Where things stand (2026-10-18, 275c11c11)
 
 - Branch `alliance`, worktree `F:\Claude\86Box-Next\wt-alliance` (build with `build-static`
   there). **Not merged, not pushed** -- the owner said "don't merge yet". Never PR upstream.
@@ -16,7 +16,8 @@ Read this first; keep it current as the work moves.
   | `pm_at3d_pci` | ProMotion AT3D/AT25, 1142:643D | Stingray 128/3D 4.35 (default) / 2.30, GA-RUSH6 | 2D done |
 
 - Works: POST and VESA modes on all three; drawing engine; hardware cursor; DDC lines; video
-  window (overlay, first design, with horizontal interpolation); Win95 OSR2, Win98 SE and
+  window (first design on the 6410/6422, with horizontal interpolation; the second design --
+  two windows and tiles -- on the AT3D); Win95 OSR2, Win98 SE and
   NT 4 with Alliance's drivers (accelerated, full mode lists, live mode switching);
   DirectDraw (DxDiag's three tests) on the 6422 with Alliance's 1600 build and STB's build,
   and on the AT3D with Alliance's 2072 driver; the AT3D under NT 4 (4.00.1005 and 1.410).
@@ -26,10 +27,9 @@ Read this first; keep it current as the work moves.
 
 ## Open items, in order of value
 
-1. The AT3D's video window: it has the second design (two windows XR80/XR90 + tiles
-   XR200-2BF, X.org apm_video.c ReputImage; the 2072 driver writes 55h to XR202 to detect
-   it). The registers keep their values now, but nothing displays from them, so an
-   overlay through the 2072 driver cannot show (not tried in a guest yet).
+1. The AT3D's second video window design is in (see below); untested parts: window 2,
+   more than one band of tiles (Media Player drops the overlay and draws frames itself
+   once another window covers the video), the filter bit (XR82 bit 12).
 2. 24 bpp: AT3D engine depth 4 is in; no BIOS or Windows mode uses 24 bpp, so untested.
 3. VC_NOFLICKER (XR82 bit 11, set by STB's build) is not modelled (a TV flicker filter).
 4. Not planned: the AT3D's 3D engine (its driver offers Direct3D; DxDiag says Enabled, but
@@ -170,6 +170,23 @@ Mouse: `mouse 0 5 0` steps of 5 move ~2 px; bigger steps accelerate.
 - STB's build asks DirectDraw for STBALL32.DLL (and loads STBALL16.DLL): its build.bat copies
   promdd32.dll/promdd16.dll to those names. With them in C:\WINDOWS\SYSTEM its DirectDraw
   passes too (it was never an emulation bug).
+
+## Second video window design (AT3D, 2026-10-18, 275c11c11)
+
+- Two windows: XR82 and XR92 control (format 3 = YUY2 here -- Alliance's 2072 driver; X.org
+  writes 6 for YUY2; bit 8 YUV->RGB, 9 stretch, 10/11 horizontal/vertical interpolation,
+  12 filter), +2 pitch in dwords, +4/+8 scale (source/destination x 4096, 0 = 1:1), +6/+0Ah
+  phase. The scale accumulator runs over screen positions from the phase.
+- Tiles at XR200-2BF, 16 bytes (STB physical.h TILEREGS): control (bits 1:0 window, 0 = none;
+  10h = last tile of a band), left, right (exclusive), bottom (the band's last line,
+  inclusive), source width, 24-bit source address (the tile's top-left pixel). A band starts
+  on the line below the previous band's bottom; control 0 ends the list (the 2072 driver
+  clears the unused tiles; X.org also writes the length to XR8E). The 2072 driver writes a
+  dummy band (window 0, left FFFh) down to the line above the video, then one tile per band,
+  and flips by rewriting the tile's address (triple-buffered).
+- XR1FC bit 11 = vertical retrace (X.org waits on it).
+- Verified: Media Player 6.4 + test.mpg (work-pmat3d\video2.iso) at 1024x768x16, 1:1 and
+  maximised (stretched). The 6422 (first design) unchanged.
 
 ## History of the hard bugs (so they are not re-chased)
 
