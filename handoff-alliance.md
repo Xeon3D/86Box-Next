@@ -27,9 +27,8 @@ Read this first; keep it current as the work moves.
 
 ## Open items, in order of value
 
-1. The AT3D's second video window design is in (see below); untested parts: window 2,
-   more than one band of tiles (Media Player drops the overlay and draws frames itself
-   once another window covers the video), the filter bit (XR82 bit 12).
+1. The AT3D's second video window design is in (see below); untested parts: window 2
+   (only X.org uses it), the filter bit (XR82 bit 12).
 2. 24 bpp: AT3D engine depth 4 is in; no BIOS or Windows mode uses 24 bpp, so untested.
 3. VC_NOFLICKER (XR82 bit 11, set by STB's build) is not modelled (a TV flicker filter).
 4. Not planned: the AT3D's 3D engine (its driver offers Direct3D; DxDiag says Enabled, but
@@ -187,6 +186,12 @@ Mouse: `mouse 0 5 0` steps of 5 move ~2 px; bigger steps accelerate.
 - XR1FC bit 11 = vertical retrace (X.org waits on it).
 - Verified: Media Player 6.4 + test.mpg (work-pmat3d\video2.iso) at 1024x768x16, 1:1 and
   maximised (stretched). The 6422 (first design) unchanged.
+- Covered video: tools/alliance/ovtest (C:\OVTEST.EXE on work-pmat3d) shows a YUY2 overlay
+  with a clipper and calls UpdateOverlay five times a second; the driver builds tiles from
+  the clip list. Its window opens where the Start menu covers its lower left; Calculator
+  moved over its middle gives three bands with two tiles in one -- all correct after
+  40e9d3f96 (packed YUV pairs by absolute address: a tile can start on an odd pixel).
+  Media Player itself drops the overlay when covered and draws frames in software.
 
 ## History of the hard bugs (so they are not re-chased)
 
