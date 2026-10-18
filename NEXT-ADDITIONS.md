@@ -43,6 +43,7 @@ issues · 🧪 experimental / not tried in a guest · ⛔ not in this release (u
 | **isp-server** (submodule: virtual ISP + telephone exchange, web status page and browser phone; Windows/Linux/macOS/Docker) | ✅ | The browser phone's microphone needs a secure context (localhost or HTTPS). MS-CHAPv1 + MPPE can't be checked against Linux's pppd (pppd's own bug). |
 | **Roland Sound Canvas MIDI out** (88emu, 24 boards, front panel; replaces MUNT and the CLAP device) | ✅ | Builds with it are GPLv3. Upstream changes to its CMake/`midi.h` blocks can conflict on sync. Needs the owner's ROM dumps. |
 | **x87 EMMS fix** (old dynarec) | ✅ new in 2.1.5 | After MMX code the FPU tags were left "valid"; WHQL's DCT reported "corrupted floating point state". Fixed for every card (765b2e726). |
+| **86Box Guest Tools** (Settings > Other peripherals; Tools > Install/Update 86Box Guest Tools: built-in CD/floppy; agents 86BOXGT.EXE for Windows 95/NT 4.0 and later, GTWIN.EXE for Windows 3.x; version 1.1.x): mouse integration without capture, keyboard follows the pointer between machine windows (without raising them), shared clipboard text, files through the clipboard and drag and drop both ways (host, guest, guest to guest) | 🟡 new | Files and drag and drop: Win32 agent only (Windows 95, 98 SE, NT 4.0, 2000 tested), not Windows 3.x. Up to 20000 entries / 2 GB per copy; files from a guest are copied to the host in the background as soon as the guest copies them, into `<data dir>/guest-tools/clipboard`. No DOS, Linux or OS/2 agents. A drag out of a guest waits at the drop for the files to arrive. |
 
 ## Video cards
 
@@ -67,6 +68,5 @@ issues · 🧪 experimental / not tried in a guest · ⛔ not in this release (u
 
 | Branch | What | Status |
 |---|---|---|
-| `guest-tools` | 86Box Guest Tools: mouse integration and shared clipboard (Win32 and Win16 agents, built-in install media) | ⛔ 🧪 experimental; DOS agent shelved, Linux/OS2 agents only ideas. |
 | `isdn-fritz` | AVM FRITZ!Card PnP ISDN adapter | ⛔ 🧪 passes only a host-side harness with AVM's driver library; not tried in a guest. Its rig (`AVM-ISDN-RIG`) keeps the branch build. |
 | upstream-PR branches (`nv3-riva128-*`, `speedstar24x-*`, `txp4x-*`, `via-apollo-vpx-tests`, `agp-fixes`) | Work prepared for upstream submissions | ⛔ kept for reference. |
