@@ -240,7 +240,11 @@ MainWindow::MainWindow(QWidget *parent)
     status->setUsbManager(usbManager);
     /* 86Box-Next: 86Box Guest Tools' clipboard and pointer integration,
        and its install media (Tools menu). */
-    new GuestTools(this);
+    auto *guestTools = new GuestTools(this);
+    GuestTools::updateInstallAction(ui->actionInstall_Guest_Tools, 0);
+    connect(guestTools, &GuestTools::agentVersionChanged, this, [this](unsigned int version) {
+        GuestTools::updateInstallAction(ui->actionInstall_Guest_Tools, version);
+    });
     connect(ui->actionInstall_Guest_Tools, &QAction::triggered, this, [this] {
         GuestTools::insertMedia(this);
     });

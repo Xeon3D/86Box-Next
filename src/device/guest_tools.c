@@ -71,6 +71,7 @@ static atomic_uint gt_clip_seq;      /* bumped on every host clipboard change */
 static atomic_int  gt_drag_state;    /* host drag over the display: 0 none, 1 over, 2 dropped */
 static atomic_uint gt_drag_seq;      /* bumped on every host drag that enters */
 static atomic_int  gt_drag_out;      /* the agent caught a guest drag leaving */
+static atomic_uint gt_agent_version; /* GT_TOOLS_VERSION of the agent, 1 if it sent none, 0 without one */
 
 static void (*gt_set_host_clipboard)(const uint16_t *text, size_t chars);
 static uint16_t *(*gt_get_host_clipboard)(size_t *chars);
@@ -178,6 +179,15 @@ guest_tools_host_drag(int state)
     atomic_store(&gt_drag_state, state);
 }
 
+unsigned int
+guest_tools_agent_version(void)
+{
+    /* An agent that stopped polling is gone. */
+    if ((uint32_t) (plat_get_ticks() - atomic_load(&gt_last_poll)) >= GT_AGENT_TIMEOUT_MS)
+        return 0;
+    return atomic_load(&gt_agent_version);
+}
+
 int
 guest_tools_drag_out(void)
 {
@@ -248,10 +258,11 @@ guest_tools_debug(const char *args)
         uint32_t pos = atomic_load(&gt_pointer);
 
         always_log("Guest Tools: features %X, agent ready %d, last poll %u ms ago, pointer active %d, "
-                   "host pointer %u,%u inside %d, clip seq %u\n",
+                   "host pointer %u,%u inside %d, clip seq %u, agent version %08X\n",
                    atomic_load(&gt_features), atomic_load(&gt_pointer_ready),
                    plat_get_ticks() - atomic_load(&gt_last_poll), guest_tools_pointer_active(),
-                   pos >> 16, pos & 0xffff, atomic_load(&gt_pointer_inside), atomic_load(&gt_clip_seq));
+                   pos >> 16, pos & 0xffff, atomic_load(&gt_pointer_inside), atomic_load(&gt_clip_seq),
+                   guest_tools_agent_version());
     } else
         always_log("Guest Tools: gt pointer x y | gt buttons mask | gt motion dx dy | gt clip text | gt files a|b | gt drag a|b | gt drop | gt dragleave | gt state\n");
 }
@@ -354,6 +365,7 @@ gt_cmd_hello(guest_tools_t *dev)
 
     dev->agent_os   = gt_get_u16(dev->req + 2);
     dev->agent_caps = gt_get_u32(dev->req + 4);
+    atomic_store(&gt_agent_version, (dev->req_len >= 12) ? gt_get_u32(dev->req + 8) : 1);
     dev->hello      = 1;
     /* Hand the agent the host clipboard as it is now. */
     dev->clip_seq_delivered = atomic_load(&gt_clip_seq) - 1;
@@ -780,6 +792,7 @@ gt_command(guest_tools_t *dev, uint8_t cmd)
                 break;
             }
         case GT_CMD_BYE:
+            atomic_store(&gt_agent_version, 0);
             gt_upload_cancel(dev);
             dev->hello = 0;
             atomic_store(&gt_pointer_ready, 0);
@@ -890,6 +903,7 @@ guest_tools_reset(void *priv)
 
     gt_upload_cancel(dev);
     atomic_store(&gt_drag_out, 0);
+    atomic_store(&gt_agent_version, 0);
     dev->hello        = 0;
     dev->req_len      = 0;
     dev->req_overflow = 0;

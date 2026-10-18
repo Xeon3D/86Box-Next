@@ -18,10 +18,14 @@ cross=${CROSS:-i686-w64-mingw32-}
 
 mkdir -p "$out" "$obj"
 
+# A new revision whenever the sources changed (bump-revision.py).
+version=$(python3 "$here/bump-revision.py")
+echo "86Box Guest Tools $version"
+
 # ---- Windows agent (Windows 95 / NT 4.0 and later) ----
 python3 "$here/windows/mkicon.py" "$icon" "$obj/gtagent.ico"
 cp "$here/windows/gtagent.rc" "$here/windows/gtagent.h" "$obj/"
-"${cross}windres" -I"$obj" -O coff -o "$obj/gtagent_res.o" "$obj/gtagent.rc"
+"${cross}windres" -I"$obj" -I"$proto" -O coff -o "$obj/gtagent_res.o" "$obj/gtagent.rc"
 
 "${cross}gcc" -std=gnu99 -Os -march=i386 -mtune=i686 -Wall -Wextra -Wno-unused-parameter \
     -ffreestanding -fno-builtin -fno-tree-loop-distribute-patterns \
@@ -44,7 +48,7 @@ export PATH INCLUDE
 python3 "$here/windows/mkicon.py" "$icon" "$obj/gtwin.ico" --win16
 cp "$here/win16/gtwin.rc" "$obj/"
 wcc -q -bt=windows -zW -ms -2 -os -s -wx -we -i="$proto" -fo="$obj/gtwin.obj" "$here/win16/gtwin.c"
-(cd "$obj" && wrc -q -r -bt=windows -fo=gtwin.res gtwin.rc)
+(cd "$obj" && wrc -q -r -bt=windows -i="$proto" -fo=gtwin.res gtwin.rc)
 wlink option quiet system windows name "$out/GTWIN.EXE" file "$obj/gtwin.obj" \
     option resource="$obj/gtwin.res" option stack=8k option heapsize=4k \
     segment class "'CODE'" preload fixed

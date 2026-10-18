@@ -1,4 +1,32 @@
 #include <windows.h>
+#include "guest_tools_version.h"
 
 /* Preloaded and fixed: the agent may run from a disk that gets ejected. */
 1 ICON PRELOAD FIXED "gtwin.ico"
+
+/* VS_VERSION_INFO, VOS_DOS_WINDOWS16 and VFT_APP, without ver.h. */
+1 VERSIONINFO
+FILEVERSION     GT_TOOLS_VERSION_MAJOR, GT_TOOLS_VERSION_MINOR, GT_TOOLS_REVISION, 0
+PRODUCTVERSION  GT_TOOLS_VERSION_MAJOR, GT_TOOLS_VERSION_MINOR, GT_TOOLS_REVISION, 0
+FILEOS          0x00010001L
+FILETYPE        1
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904E4"
+        BEGIN
+            VALUE "CompanyName",      "86Box-Next\0"
+            VALUE "FileDescription",  "86Box Guest Tools agent for Windows 3.x\0"
+            VALUE "FileVersion",      GT_TOOLS_VERSION_STR "\0"
+            VALUE "InternalName",     "GTWIN\0"
+            VALUE "LegalCopyright",   "Copyright 2026 Marcos Alves. GNU GPL v2 or later.\0"
+            VALUE "OriginalFilename", "GTWIN.EXE\0"
+            VALUE "ProductName",      "86Box Guest Tools\0"
+            VALUE "ProductVersion",   GT_TOOLS_VERSION_STR "\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1252
+    END
+END

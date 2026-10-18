@@ -21,6 +21,7 @@
 #include <string.h>
 
 #include "guest_tools_proto.h"
+#include "guest_tools_version.h"
 
 #define AGENT_TITLE "86Box Guest Tools"
 #define AGENT_CLASS "GT86Box"
@@ -133,6 +134,7 @@ gt_hello(void)
     put_word(GT_PROTO_VERSION);
     put_word(GT_OS_WIN16);
     put_dword(GT_CAP_POINTER | GT_CAP_CLIPBOARD);
+    put_dword(GT_TOOLS_VERSION);
     if (command(GT_CMD_HELLO) != GT_OK)
         return 0;
     get_dword();
@@ -490,7 +492,7 @@ about(void)
     char text[400];
 
     wsprintf(text,
-             AGENT_TITLE " 1.0 for Windows 3.x\n\n"
+             AGENT_TITLE " " GT_TOOLS_VERSION_STR " for Windows 3.x\n\n"
              "Mouse integration: %s\n"
              "Clipboard, host to guest: %s\n"
              "Clipboard, guest to host: %s\n\n"

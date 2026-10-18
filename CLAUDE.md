@@ -360,6 +360,14 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   the emulator log (`gt_log()` in the agent). debug_cmd `gt files a|b` (stand-in host clipboard
   files; the guest's files are logged, not put on the host clipboard), `gt drag a|b` / `gt drop` /
   `gt dragleave`; a drag out in debug mode logs the files instead of starting a QDrag.
+  Versions: `src/include/86box/guest_tools_version.h` (1.1.<revision>, shared by both agents and the
+  emulator); `guest-tools/bump-revision.py`, run by build.sh, raises the revision when the agents'
+  sources hash differently from `guest-tools/images/SOURCES` (commit both with the images). The
+  version is in each EXE's VERSIONINFO, the About box and the tray tooltip, and goes in HELLO (u32
+  after the caps; older agents send none -> 1); `guest_tools_agent_version()` gives it to the UI,
+  which names the Tools menu item "Install 86Box Guest Tools 1.1.N..." or, for an older agent,
+  "Update 86Box Guest Tools (old -> new)..." (`GuestTools::updateInstallAction()`); `gt state`
+  logs it. Raise the minor version by hand for new features.
 - Upstream's CI workflows and Dependabot are disabled/removed in this repo; only
   `sync-upstream.yml` runs.
 - Build number in the title bar / About box: `.build-number` (git-ignored, repo root)

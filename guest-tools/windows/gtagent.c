@@ -24,9 +24,10 @@
 #include <stdint.h>
 
 #include "guest_tools_proto.h"
+#include "guest_tools_version.h"
 #include "gtagent.h"
 
-#define AGENT_VERSION     "1.0"
+#define AGENT_VERSION     GT_TOOLS_VERSION_STR
 #define AGENT_TITLE       "86Box Guest Tools"
 #define AGENT_CLASS       "86BoxGuestToolsAgent"
 #define AGENT_MUTEX       "86BoxGuestToolsAgentMutex"
@@ -255,6 +256,7 @@ gt_hello(void)
     gt_outw(GT_PORT_DATA, GT_PROTO_VERSION);
     gt_outw(GT_PORT_DATA, is_nt ? GT_OS_WINNT : GT_OS_WIN9X);
     gt_outl(GT_PORT_DATA, GT_CAP_POINTER | GT_CAP_CLIPBOARD | GT_CAP_FILES);
+    gt_outl(GT_PORT_DATA, GT_TOOLS_VERSION);
     status = gt_command(GT_CMD_HELLO);
     if (status == GT_OK) {
         gt_inl(GT_PORT_DATA); /* protocol version, reserved */
@@ -2069,7 +2071,7 @@ tray_icon(DWORD message)
     nid.uFlags           = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     nid.uCallbackMessage = WM_TRAY;
     nid.hIcon            = agent_icon(16);
-    lstrcpynA(nid.szTip, AGENT_TITLE, sizeof(nid.szTip));
+    lstrcpynA(nid.szTip, AGENT_TITLE " " AGENT_VERSION, sizeof(nid.szTip));
     Shell_NotifyIconA(message, (PNOTIFYICONDATAA) &nid);
 }
 

@@ -101,6 +101,10 @@ extern void guest_tools_host_drag(int state);
    go of the guest's button and carries the drag on (UI thread). */
 extern int  guest_tools_drag_out(void);
 
+/* The running agent's version (GT_TOOLS_VERSION form), 1 for an agent too
+   old to say, 0 when no agent runs. */
+extern unsigned int guest_tools_agent_version(void);
+
 /* The UI's Tools > Install 86Box Guest Tools, for debug_cmd's "gt insert"
    (called on the emulation thread; the UI runs it on its own). */
 extern void (*guest_tools_insert_media_hook)(void);

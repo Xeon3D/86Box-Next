@@ -41,7 +41,8 @@
 #define GT_PROTO_VERSION  1
 
 /* Commands (written to GT_PORT_CMD). */
-#define GT_CMD_HELLO      0x01 /* req: u16 proto, u16 os, u32 agent caps
+#define GT_CMD_HELLO      0x01 /* req: u16 proto, u16 os, u32 agent caps[, u32 agent version
+                                  (guest_tools_version.h: 8.8.16 bits; older agents send none)]
                                   reply: u32 status, u16 proto, u16 0, u32 host features */
 #define GT_CMD_POLL       0x02 /* req: u32 agent state
                                   reply: u32 status, u32 flags, u16 x, u16 y, u32 clip seq */

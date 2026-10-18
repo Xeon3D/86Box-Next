@@ -9,6 +9,7 @@
 #include "qt_guesttools.hpp"
 
 #include <QAbstractNativeEventFilter>
+#include <QAction>
 #include <QApplication>
 #include <QClipboard>
 #include <QDrag>
@@ -48,6 +49,7 @@ extern "C" {
 #include <86box/plat.h>
 #include <86box/mouse.h>
 #include <86box/guest_tools.h>
+#include <86box/guest_tools_version.h>
 }
 
 GuestTools *GuestTools::instance = nullptr;
@@ -726,6 +728,13 @@ GuestTools::poll()
     /* The agent caught a guest drag of files leaving the display: the guest
        drops it on the agent (let go of the guest's button) and the host
        carries it on with the host's button, still down. */
+    /* Tell the window which tools the guest runs (Tools menu). */
+    const unsigned int version = guest_tools_agent_version();
+    if (version != agentVersion) {
+        agentVersion = version;
+        emit agentVersionChanged(version);
+    }
+
     const bool out = guest_tools_drag_out();
     if (out && !dragOut) {
         bool held = QApplication::mouseButtons() & Qt::LeftButton;
@@ -821,6 +830,33 @@ mediaFile(const QString &ext)
     if (!out.open(QIODevice::WriteOnly) || (out.write(data) != data.size()))
         return QString();
     return path;
+}
+
+QString
+GuestTools::versionString(unsigned int version)
+{
+    if (version <= 1)
+        return QStringLiteral("1.0");
+    return QStringLiteral("%1.%2.%3").arg(version >> 24).arg((version >> 16) & 0xff).arg(version & 0xffff);
+}
+
+/* The Tools menu item says which tools the guest runs, and whether the
+   built-in ones are newer. */
+void
+GuestTools::updateInstallAction(QAction *action, unsigned int version)
+{
+    const QString builtIn = QStringLiteral(GT_TOOLS_VERSION_STR);
+
+    if ((version != 0) && (version < GT_TOOLS_VERSION)) {
+        action->setText(tr("Update 86Box &Guest Tools (%1 \u2192 %2)\u2026").arg(versionString(version), builtIn));
+        action->setToolTip(tr("The guest runs 86Box Guest Tools %1; this build has %2. "
+                              "Inserts the CD (or floppy) with them.").arg(versionString(version), builtIn));
+    } else {
+        action->setText(tr("Install 86Box &Guest Tools %1\u2026").arg(builtIn));
+        action->setToolTip((version != 0) ? tr("The guest runs 86Box Guest Tools %1. Inserts the CD (or floppy) with %2.")
+                                                .arg(versionString(version), builtIn)
+                                          : tr("Insert the 86Box Guest Tools %1 CD (or floppy) into the machine").arg(builtIn));
+    }
 }
 
 void

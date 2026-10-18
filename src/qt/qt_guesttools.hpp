@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 
+class QAction;
 class QTimer;
 class QWidget;
 
@@ -32,6 +33,12 @@ public:
     /* Tools > Install 86Box Guest Tools: put the built-in CD (or floppy)
        into the machine, turning the tools on first if need be. */
     static void insertMedia(QWidget *parent);
+
+    /* "1.1.3" from a GT_TOOLS_VERSION ("1.0" for agents that send none). */
+    static QString versionString(unsigned int version);
+    /* Tools > Install / Update 86Box Guest Tools, for the agent's version
+       (0: none running). */
+    static void updateInstallAction(QAction *action, unsigned int version);
 
     /* guest_tools_file_ops_t, on the emulation thread. */
     static int filesList(int source);
@@ -47,6 +54,10 @@ public:
     static void hostDragEnter(const QStringList &files);
 
     static QStringList waitDragOutFiles();
+
+signals:
+    /* The agent's version changed (guest_tools_agent_version()). */
+    void agentVersionChanged(unsigned int version);
 
 private:
     void hostClipboardChanged();
@@ -69,6 +80,7 @@ private:
     bool        dragOutDone  = false;
     bool        dragOut      = false; /* the agent caught a guest drag leaving */
     bool        hostDragging = false;
+    unsigned int agentVersion = 0;
     bool    hostHasText   = false;
     bool    pointerActive = false;
     QTimer *timer         = nullptr;
