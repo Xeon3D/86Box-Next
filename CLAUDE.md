@@ -9,6 +9,14 @@ A fork of [86Box/86Box](https://github.com/86Box/86Box) with extra features.
   explicitly asks for that specific submission. All PRs target `Xeon3D/86Box-Next`.
 
 ## Fork additions
+- The old recompiler ("ODR") is kept and is the default (`NEW_DYNAREC=OFF`); upstream removed it
+  (f50f8cdf7) and moved the new one from `src/codegen_new` to `src/codegen`. Ours lives in
+  fork-only files: `src/codegen_old/` and `src/cpu/386_dynarec_odr.h` (its `exec386_dynarec_dyn()`,
+  included by `386_dynarec.c` in place of upstream's). The shared CPU/memory code (`x86_flags.h`,
+  `x86_ops_*.h`, `x86seg.c`, `x87*`, `mem.c`, `cpu.h`, ...) keeps its `#ifdef USE_NEW_DYNAREC`
+  branches; on a sync conflict there, take upstream's change on the NDR side and keep the ODR side.
+  New upstream code that only the new recompiler has (e.g. block linking) must stay behind
+  `USE_NEW_DYNAREC`. Check a sync with both builds: `build-static` (ODR) and a `-DNEW_DYNAREC=ON` tree.
 - Elo TouchSystems SmartSet serial touchscreen (`src/device/mouse_elo_touchscreen.c`),
   ported from [PeepeeBox](https://github.com/Xeon3D/PeepeeBox).
 - Branded "86Box-Next" via `EMU_DISPLAY_NAME`; `EMU_NAME` stays "86Box" for paths

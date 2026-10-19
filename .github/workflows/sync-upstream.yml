@@ -7,6 +7,12 @@ name: Sync with upstream
 # (KEEP_DELETED).  On a conflict or a failed push it opens (or updates) an issue in this
 # repository instead.
 #
+# The old recompiler ("ODR"), which upstream removed (f50f8cdf7), lives on in
+# fork-only files that upstream never touches (src/codegen_old,
+# src/cpu/386_dynarec_odr.h); the shared CPU and memory code keeps its
+# #ifdef USE_NEW_DYNAREC branches.  A conflict there is resolved by hand: keep
+# upstream's change on the USE_NEW_DYNAREC side and the old code on the other.
+#
 # Pushing a merge that touches upstream's .github/workflows needs a token with
 # the "workflows" permission, which the built-in GITHUB_TOKEN cannot have.  Add
 # a personal access token (Contents + Workflows: read/write on this repo) as the

@@ -34,9 +34,11 @@
 #include <86box/gdbstub.h>
 #ifdef USE_DYNAREC
 #    include "codegen.h"
-#    include "codegen_backend.h"
-#    ifdef CODEGEN_BACKEND_HAS_BLOCK_LINK
-#        include "codegen_link.h"
+#    ifdef USE_NEW_DYNAREC
+#        include "codegen_backend.h"
+#        ifdef CODEGEN_BACKEND_HAS_BLOCK_LINK
+#            include "codegen_link.h"
+#        endif
 #    endif
 #endif
 
@@ -571,6 +573,7 @@ block_ended:
     cpu_end_block_after_ins = 0;
 }
 
+#ifdef USE_NEW_DYNAREC
 #if defined(__linux__) && !defined(__clang__)
 static inline void __attribute__((optimize("O2")))
 #else
@@ -983,6 +986,9 @@ exec386_dynarec_dyn(void)
         cpu_state.oldpc = cpu_state.pc;
 
 }
+#else
+#    include "386_dynarec_odr.h" /* 86Box-Next: the old recompiler */
+#endif
 
 void
 exec386_dynarec(int32_t cycs)
@@ -1008,6 +1014,12 @@ exec386_dynarec(int32_t cycs)
             cpu_halted      = 0;
             oldcs           = CS;
             oldcpl          = CPL;
+#    ifndef USE_NEW_DYNAREC
+            cpu_state.oldpc = cpu_state.pc;
+            cpu_state.op32  = use32;
+
+            cycdiff = 0;
+#    endif
             oldcyc = oldcyc2 = cycles;
             cycles_old       = cycles;
             oldtsc           = tsc;
@@ -1046,6 +1058,9 @@ exec386_dynarec(int32_t cycs)
                     int second_abrt = cpu_state.abrt & ABRT_MASK;
                     cpu_state.abrt = 0;
                     cpu_state.pc   = cpu_state.oldpc;
+#    ifndef USE_NEW_DYNAREC
+                    CS = oldcs;
+#    endif
                     x86_fault_in_delivery(tempi, second_abrt);
                     if (cpu_state.abrt) {
                         cpu_state.abrt = 0;
@@ -1375,6 +1390,10 @@ exec386(int32_t cycs)
             cpu_state.oldpc = cpu_state.pc;
             cpu_state.op32  = use32;
 
+#ifndef USE_NEW_DYNAREC
+            x86_was_reset = 0;
+#endif
+
             cpu_state.ea_seg = &cpu_state.seg_ds;
             cpu_state.ssegs  = 0;
 
@@ -1457,6 +1476,9 @@ block_ended:
                     int second_abrt = cpu_state.abrt & ABRT_MASK;
                     x386_dynarec_log("Double fault - %02X\n", oop);
                     cpu_state.abrt = 0;
+#ifndef USE_NEW_DYNAREC
+                    CS = oldcs;
+#endif
                     cpu_state.pc = cpu_state.oldpc;
                     x386_dynarec_log("Double fault\n");
                     x86_fault_in_delivery(tempi, second_abrt);

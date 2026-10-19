@@ -122,6 +122,12 @@ UpdateDetails::visitDownloadPage(const UpdateCheck::UpdateChannel &channel)
 #elif defined(__x86_64) || defined(__x86_64__) || defined(__amd64) || defined(_M_X64)
                                            "64"
 #endif
+
+#ifdef USE_NEW_DYNAREC
+                                           "ndr"
+#else
+                                           "odr"
+#endif
                                            ));
             break;
     }

@@ -40,7 +40,11 @@ About::About(QWidget *parent)
     versioninfo = QString(" [%1]").arg(EMU_GIT_HASH);
 #endif
 #ifdef USE_DYNAREC
-#    define DYNAREC_STR "dynarec"
+#    ifdef USE_NEW_DYNAREC
+#        define DYNAREC_STR "new dynarec"
+#    else
+#        define DYNAREC_STR "old dynarec"
+#    endif
 #else
 #    define DYNAREC_STR "no dynarec"
 #endif
