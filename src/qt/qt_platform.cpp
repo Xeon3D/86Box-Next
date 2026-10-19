@@ -153,9 +153,6 @@ extern "C" {
 #include <86box/hdc_ide.h>
 #include <86box/hdd.h>
 #include <86box/ui.h>
-#ifdef DISCORD
-#    include <86box/discord.h>
-#endif
 
 #include "../cpu/cpu.h"
 #include <86box/plat.h>
@@ -789,16 +786,21 @@ plat_pause(int p)
     QString pausedText = QObject::tr(" - PAUSED");
     emit main_window->setTitle(p ? title.append(pausedText) : title.left(title.indexOf(pausedText)));
 
-#ifdef DISCORD
-    discord_update_activity(dopause);
-#endif
-
     QTimer::singleShot(0, main_window, &MainWindow::updateUiPauseState);
 
 #ifdef Q_OS_WINDOWS
     if (source_hwnd)
         PostMessage((HWND) (uintptr_t) source_hwnd, WM_SENDSTATUS, (WPARAM) !!p, (LPARAM) (HWND) main_window->winId());
 #endif
+}
+
+extern "C" bool fast_forward; /* qt_main.cpp */
+
+void
+plat_fast_forward(int on)
+{
+    fast_forward = !!on;
+    QTimer::singleShot(0, main_window, &MainWindow::updateUiFastForwardState);
 }
 
 void

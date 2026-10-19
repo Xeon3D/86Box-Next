@@ -49,9 +49,6 @@ extern "C" {
 #include <86box/keyboard.h>
 #include <86box/plat.h>
 #include <86box/ui.h>
-#ifdef DISCORD
-#    include <86box/discord.h>
-#endif
 #include <86box/device.h>
 #include <86box/video.h>
 #include <86box/mouse.h>
@@ -336,9 +333,6 @@ MainWindow::MainWindow(QWidget *parent)
     statusBar()->setStyleSheet("QStatusBar::item {border: None; } QStatusBar QLabel { margin-right: 2px; margin-bottom: 1px; }");
     this->centralWidget()->setStyleSheet("background-color: black;");
     ui->toolBar->setVisible(!hide_tool_bar);
-#ifdef _WIN32
-    ui->toolBar->setBackgroundRole(QPalette::Light);
-#endif
     renderers[0].reset(nullptr);
 
     auto toolbar_label_widget = new QWidget();
@@ -582,17 +576,10 @@ MainWindow::MainWindow(QWidget *parent)
     ui->actionHide_tool_bar->setChecked(hide_tool_bar);
     ui->actionShow_non_primary_monitors->setChecked(show_second_monitors);
     ui->actionUpdate_status_bar_icons->setChecked(update_icons);
-    ui->actionEnable_Discord_integration->setChecked(enable_discord);
     ui->actionApply_fullscreen_stretch_mode_when_maximized->setChecked(video_fullscreen_scale_maximized);
 
 #ifdef Q_OS_MACOS
     ui->actionApply_fullscreen_stretch_mode_when_maximized->setVisible(false);
-#endif
-
-#ifndef DISCORD
-    ui->actionEnable_Discord_integration->setVisible(false);
-#else
-    ui->actionEnable_Discord_integration->setEnabled(discord_loaded);
 #endif
 
     if ((QApplication::platformName().contains("eglfs") || QApplication::platformName() == "haiku")) {
@@ -2560,6 +2547,13 @@ MainWindow::updateUiPauseState()
     emit vmmRunningStateChanged(static_cast<VMManagerProtocol::RunningState>(window_blocked ? (dopause ? VMManagerProtocol::RunningState::PausedWaiting : VMManagerProtocol::RunningState::RunningWaiting) : (VMManagerProtocol::RunningState) dopause));
 }
 
+/* The menu's check follows fast forward set from elsewhere (automation). */
+void
+MainWindow::updateUiFastForwardState()
+{
+    ui->actionFast_forward->setChecked(fast_forward);
+}
+
 void
 MainWindow::updateStatusEmptyIcons()
 {
@@ -2588,23 +2582,6 @@ MainWindow::on_actionPreferences_triggered()
         case QDialog::Rejected:
             break;
     }
-}
-
-void
-MainWindow::on_actionEnable_Discord_integration_triggered(bool checked)
-{
-    enable_discord = checked;
-#ifdef DISCORD
-    if (enable_discord) {
-        discord_init();
-        discord_update_activity(dopause);
-        discordupdate.start(1000);
-    } else {
-        discord_close();
-        discordupdate.stop();
-    }
-#endif
-    config_save();
 }
 
 void

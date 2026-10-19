@@ -108,6 +108,11 @@
 #include <86box/version.h>
 #include <86box/gdbstub.h>
 #include <86box/automation.h>
+#ifdef USE_AUTOMATION
+#    define AUTOMATION_ACTIVE (automation_path[0] != '\0')
+#else
+#    define AUTOMATION_ACTIVE 0
+#endif
 #include <86box/machine_status.h>
 #include <86box/acpi.h>
 #include <86box/nv/vid_nv_rivatimer.h>
@@ -211,7 +216,6 @@ int      confirm_save                           = 1;              /* (G) enable 
 int      chd_precache_level                     = 0;              /* (G) CHD precache level */
 int      soundcanvas_hide_panel                 = 0;              /* (G) 86Box-Next: don't open the Sound Canvas panel when its board starts */
 char     status_icon_order[256]                 = { 0 };          /* (G) 86Box-Next: status bar icon groups, in order */
-int      enable_discord                         = 0;              /* (C) enable Discord integration */
 int      pit_mode                               = -1;             /* (C) force setting PIT mode */
 int      fm_driver                              = 0;              /* (C) select FM sound driver */
 int      open_dir_usr_path                      = 0;              /* (G) default file open dialog directory
@@ -230,6 +234,7 @@ int      jumpered_internal_ecp_dma              = 0;              /* (C) Jumpere
 int      inhibit_multimedia_keys;                                 /* (G) Inhibit multimedia keys on Windows. */
 int      force_10ms;                                              /* (C) Force 10ms CPU frame intervals. */
 int      vmm_disabled                           = 1;              /* (G) disable built-in manager */
+int      discord_presence                       = 0;              /* (G) Discord status: off, name and hardware, hardware only, no details */
 char     vmm_path_cfg[1024]                     = { '\0' };       /* (G) VMs path (unless -E is used)*/
 
 int      other_ide_present = 0;                                   /* IDE controllers from non-IDE cards are
@@ -545,6 +550,11 @@ fatal(const char *fmt, ...)
 
     do_pause(2);
 
+    /* A connected automation client would wait forever on a machine that has
+       stopped, behind a dialog it can't answer: close its connection now, so
+       it knows. The message is in the log. */
+    automation_close();
+
     ui_msgbox(MBX_ERROR | MBX_FATAL, temp);
 
     /* Cleanly terminate all of the emulator's components so as
@@ -590,6 +600,11 @@ fatal_ex(const char *fmt, va_list ap)
 
     do_pause(2);
 
+    /* A connected automation client would wait forever on a machine that has
+       stopped, behind a dialog it can't answer: close its connection now, so
+       it knows. The message is in the log. */
+    automation_close();
+
     ui_msgbox(MBX_ERROR | MBX_FATAL, temp);
 
     /* Cleanly terminate all of the emulator's components so as
@@ -633,7 +648,11 @@ warning(const char *fmt, ...)
 
     do_pause(2);
 
-    ui_msgbox(MBX_WARNING, temp);
+    /* With an automation client, nobody may be there to dismiss the dialog,
+       and while it's up the machine and the socket are stuck (headless, for
+       good). The message is in the log; carry on. */
+    if (!AUTOMATION_ACTIVE)
+        ui_msgbox(MBX_WARNING, temp);
 
     fflush(stdlog);
     free(temp);
@@ -669,7 +688,11 @@ warning_ex(const char *fmt, va_list ap)
 
     do_pause(2);
 
-    ui_msgbox(MBX_WARNING, temp);
+    /* With an automation client, nobody may be there to dismiss the dialog,
+       and while it's up the machine and the socket are stuck (headless, for
+       good). The message is in the log; carry on. */
+    if (!AUTOMATION_ACTIVE)
+        ui_msgbox(MBX_WARNING, temp);
 
     fflush(stdlog);
     free(temp);
@@ -777,6 +800,8 @@ pc_show_usage(void)
             "--automation-hold\t\t- start with the machine held for automation\n"
             "--automation-token-file path\t- TCP: write the access token to 'path'\n"
             "--automation-allow-remote\t- TCP: allow a non-loopback listen address\n"
+            "--automation-insecure\t\t- TCP: accept clients without a token (any local process,\n"
+            "\t\t\t\t  or with --automation-allow-remote anyone, controls the machine)\n"
 #endif
             "-A or --assetpath path\t\t- set 'path' to be asset path\n"
 #ifdef SHOW_EXTRA_PARAMS
@@ -980,6 +1005,8 @@ usage:
             snprintf(automation_token_file, sizeof(automation_token_file), "%s", argv[++c]);
         } else if (!strcasecmp(argv[c], "--automation-allow-remote")) {
             automation_allow_remote = 1;
+        } else if (!strcasecmp(argv[c], "--automation-insecure")) {
+            automation_insecure = 1;
 #endif
         } else if (!strcasecmp(argv[c], "--fullscreen") || !strcasecmp(argv[c], "-F")) {
             start_in_fullscreen = 1;

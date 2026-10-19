@@ -44,7 +44,8 @@ Q_IMPORT_PLUGIN(QICOPlugin)
 #    ifdef Q_OS_WINDOWS
 Q_IMPORT_PLUGIN(QWindowsIntegrationPlugin)
 #        if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-Q_IMPORT_PLUGIN(QModernWindowsStylePlugin) /* Qt 6.7 renamed the Vista style */
+/* Qt 6.7 renamed the windowsvista style plugin */
+Q_IMPORT_PLUGIN(QModernWindowsStylePlugin)
 #        else
 Q_IMPORT_PLUGIN(QWindowsVistaStylePlugin)
 #        endif
@@ -57,9 +58,6 @@ extern "C" {
 #include <86box/plat.h>
 #include <86box/ui.h>
 #include <86box/video.h>
-#ifdef DISCORD
-#    include <86box/discord.h>
-#endif
 #include <86box/gdbstub.h>
 #include <86box/version.h>
 #include <86box/renderdefs.h>
@@ -535,6 +533,9 @@ main_thread_fn()
             if (dopause)
                 ack_pause();
 
+            /* Keep answering a GDB client while the machine isn't running. */
+            gdbstub_poll();
+
             plat_delay_ms(1);
         }
     }
@@ -552,9 +553,7 @@ main_thread_fn()
 
 static std::thread *main_thread;
 
-QTimer discordupdate;
-
-#ifdef Q_OS_WINDOWS
+#ifdef USE_QDARKSTYLE
 WindowsDarkModeFilter *vmm_dark_mode_filter = nullptr;
 #endif
 
@@ -562,7 +561,9 @@ int
 main(int argc, char *argv[])
 {
 #ifdef Q_OS_WINDOWS
+#    ifdef USE_QDARKSTYLE
     bool wasDarkTheme = false;
+#    endif
     /* Check if Windows supports UTF-8 */
     if (GetACP() == CP_UTF8)
         acp_utf8 = 1;
@@ -595,11 +596,13 @@ main(int argc, char *argv[])
     setlocale(LC_NUMERIC, "C");
 
 #ifdef Q_OS_WINDOWS
-    Q_INIT_RESOURCE(darkstyle);
     if (QFile(QApplication::applicationDirPath() + "/opengl32.dll").exists()) {
         qputenv("QT_OPENGL_DLL", QFileInfo(QApplication::applicationDirPath() + "/opengl32.dll").absoluteFilePath().toUtf8());
     }
+#endif
 
+#ifdef USE_QDARKSTYLE
+    Q_INIT_RESOURCE(darkstyle);
     if (!util::isWindowsLightTheme()) {
         QFile f(":qdarkstyle/dark/darkstyle.qss");
 
@@ -641,7 +644,7 @@ main(int argc, char *argv[])
         return 0;
     }
 
-#ifdef Q_OS_WINDOWS
+#ifdef USE_QDARKSTYLE
     if (util::isWindowsLightTheme() && wasDarkTheme) {
         qApp->setStyleSheet("");
         QPalette palette(qApp->palette());
@@ -649,6 +652,9 @@ main(int argc, char *argv[])
         palette.setColor(QPalette::LinkVisited, Qt::magenta);
         qApp->setPalette(palette);
     }
+#elif defined(Q_OS_WINDOWS)
+    /* The configuration is loaded now, so apply the color scheme from it */
+    util::applyColorScheme();
 #endif
 
     if (!start_vmm)
@@ -690,7 +696,7 @@ main(int argc, char *argv[])
         // QApplication::setApplicationDisplayName("86Box VM Manager");
         // vmm.show();
         // vmm.exec();
-#ifdef Q_OS_WINDOWS
+#ifdef USE_QDARKSTYLE
         auto darkModeFilter = std::unique_ptr<WindowsDarkModeFilter>(new WindowsDarkModeFilter());
         if (darkModeFilter) {
             qApp->installNativeEventFilter(darkModeFilter.get());
@@ -700,7 +706,7 @@ main(int argc, char *argv[])
         QTimer::singleShot(0, [] {
 #endif
             const auto vmm_main_window = new VMManagerMainWindow();
-#ifdef Q_OS_WINDOWS
+#ifdef USE_QDARKSTYLE
             darkModeFilter.get()->setWindow(vmm_main_window);
             // HACK
             vmm_dark_mode_filter = darkModeFilter.get();
@@ -791,10 +797,6 @@ main(int argc, char *argv[])
         if (warningbox.result() == QDialog::Accepted)
             return 0;
     }
-
-#ifdef DISCORD
-    discord_load();
-#endif
 
 #ifdef Q_OS_MACOS
     exit_pause();
@@ -915,6 +917,10 @@ main(int argc, char *argv[])
         QObject::connect(main_window, &MainWindow::vmmConfigurationChanged, &manager_socket, &VMManagerClientSocket::configurationChanged);
         QObject::connect(main_window, &MainWindow::vmmGlobalConfigurationChanged, &manager_socket, &VMManagerClientSocket::globalConfigurationChanged);
         main_window->installEventFilter(&manager_socket);
+        QObject::connect(&app, &QGuiApplication::applicationStateChanged, &manager_socket, [&manager_socket](Qt::ApplicationState state) {
+            if (state == Qt::ApplicationActive)
+                manager_socket.windowActivated();
+        });
 
         manager_socket.sendWinIdMessage(main_window->winId());
     }
@@ -928,29 +934,11 @@ main(int argc, char *argv[])
     onesec.setTimerType(Qt::PreciseTimer);
     onesec.start(1000);
 
-#ifdef DISCORD
-    if (discord_loaded) {
-        QTimer::singleShot(1000, &app, [] {
-            if (enable_discord) {
-                discord_init();
-                discord_update_activity(dopause);
-            } else
-                discord_close();
-        });
-        QObject::connect(&discordupdate, &QTimer::timeout, &app, [] {
-            discord_run_callbacks();
-        });
-        discordupdate.setInterval(1000);
-        if (enable_discord)
-            discordupdate.start(1000);
-    }
-#endif
-
     /* Initialize the rendering window, or fullscreen. */
     QTimer::singleShot(0, &app, [] {
         plat_set_thread_name(nullptr, "qt_thread");
 
-#ifdef Q_OS_WINDOWS
+#ifdef USE_QDARKSTYLE
         extern bool NewDarkMode;
         NewDarkMode = util::isWindowsLightTheme();
 #endif

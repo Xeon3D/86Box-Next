@@ -100,10 +100,6 @@ if(NOT NO_STATIC_OPTION)
     endif()
 endif()
 
-if(NOT (WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
-    set(DISCORD OFF)
-endif()
-
 if(HAIKU)
     set(OPENAL ON)
 endif()
@@ -145,12 +141,6 @@ if(BUILD_TESTING OR BUILD_BENCHMARKS)
     add_subdirectory(tests)
 endif()
 
-if((ARCH STREQUAL "arm64") OR (ARCH STREQUAL "loongarch64"))
-    set(NEW_DYNAREC ON)
-else()
-    option(NEW_DYNAREC "Use the PCem v15 (\"new\") dynamic recompiler" OFF)
-endif()
-
 if(CMAKE_SYSTEM_NAME STREQUAL "NetBSD")
     option(AUDIO4 "Use audio(4) as sound backend" ON)
 else()
@@ -184,9 +174,6 @@ if(WIN32 AND NOT CMAKE_WIN32_EXECUTABLE)
 endif()
 
 if(GDBSTUB)
-    if(NOT (ARCH STREQUAL "arm64"))
-        set(NEW_DYNAREC OFF CACHE BOOL "Use the PCem v15 (\"new\") dynamic recompiler" OFF)
-    endif()
     set(DYNAREC OFF CACHE BOOL "Dynamic Recompiler" FORCE)
 endif()
 

@@ -25,6 +25,7 @@
 #endif
 #include <stdarg.h>
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,7 +71,12 @@ typedef int sock_t;
 #include <86box/ui.h>
 #include <86box/video.h>
 #include <86box/version.h>
+#include <86box/nvr.h>
+#include <86box/acpi.h>
 #include <86box/automation.h>
+#ifdef USE_GDBSTUB
+#    include <86box/gdbstub.h>
+#endif
 
 #define AUTOMATION_PROTOCOL 1
 #define REQ_MAX             4096
@@ -117,6 +123,7 @@ char automation_path[1024]       = "";
 char automation_token_file[1024] = "";
 int  automation_start_held       = 0;
 int  automation_allow_remote     = 0;
+int  automation_insecure         = 0;
 
 static int       enabled;
 static thread_t *listen_thread;
@@ -139,6 +146,7 @@ static strbuf_t   resp;
 
 /* CPU thread state. */
 static int      held;
+extern bool     fast_forward; /* the UI's (qt_main.cpp, sdl_main.c) */
 static int      cmd;          /* long-running command in progress */
 static int      cmd_was_held; /* hold again once the command finishes */
 static uint64_t cmd_deadline; /* emulated ms at which step/wait ends */
@@ -273,24 +281,50 @@ typedef struct {
     uint32_t base;
 } text_info_t;
 
+/* Read guest memory for a client without charging the emulated CPU for it.
+   Device handlers bill the CPU for each access: VGA charges its wait states
+   (svga_read_common subtracts mon_video_timing_read_b from cycles). wait text
+   reads the whole text screen after every quantum, 2000 reads per emulated
+   millisecond, which on a 33 MHz 386 used up the cycles of the next quantum,
+   so the guest never ran while the wait went on. */
+static uint8_t
+peek_phys(uint32_t addr)
+{
+    int     saved = cycles;
+    uint8_t val   = mem_readb_phys(addr);
+
+    cycles = saved;
+    return val;
+}
+
+/* The same for a client's writes (memw). */
+static void
+poke_phys(uint32_t addr, uint8_t val)
+{
+    int saved = cycles;
+
+    mem_writeb_phys(addr, val);
+    cycles = saved;
+}
+
 static int
 text_info(text_info_t *ti)
 {
     int page;
 
-    ti->mode = mem_readb_phys(0x449) & 0x7f;
+    ti->mode = peek_phys(0x449) & 0x7f;
     if ((ti->mode > 3) && (ti->mode != 7))
         return 0;
-    ti->cols = mem_readb_phys(0x44a) | (mem_readb_phys(0x44b) << 8);
-    ti->rows = mem_readb_phys(0x484) + 1;
+    ti->cols = peek_phys(0x44a) | (peek_phys(0x44b) << 8);
+    ti->rows = peek_phys(0x484) + 1;
     if ((ti->cols < 40) || (ti->cols > 132))
         ti->cols = 80;
     if ((ti->rows < 25) || (ti->rows > 60))
         ti->rows = 25;
-    page        = mem_readb_phys(0x462) & 7;
-    ti->cur_col = mem_readb_phys(0x450 + (page * 2));
-    ti->cur_row = mem_readb_phys(0x451 + (page * 2));
-    ti->base    = ((ti->mode == 7) ? 0xb0000 : 0xb8000) + (mem_readb_phys(0x44e) | (mem_readb_phys(0x44f) << 8));
+    page        = peek_phys(0x462) & 7;
+    ti->cur_col = peek_phys(0x450 + (page * 2));
+    ti->cur_row = peek_phys(0x451 + (page * 2));
+    ti->base    = ((ti->mode == 7) ? 0xb0000 : 0xb8000) + (peek_phys(0x44e) | (peek_phys(0x44f) << 8));
     return 1;
 }
 
@@ -306,7 +340,7 @@ text_contains(const char *needle)
     /* Matches within a single row only. */
     for (int r = 0; r < ti.rows; r++) {
         for (int c = 0; c < ti.cols; c++)
-            line[c] = mem_readb_phys(ti.base + (((r * ti.cols) + c) * 2));
+            line[c] = peek_phys(ti.base + (((r * ti.cols) + c) * 2));
         line[ti.cols] = '\0';
         for (size_t c = 0; (c + nlen) <= (size_t) ti.cols; c++) {
             if (!memcmp(line + c, needle, nlen))
@@ -333,7 +367,7 @@ cmd_text(void)
               ti.mode, ti.cols, ti.rows, ti.cur_row, ti.cur_col);
     for (int r = 0; r < ti.rows; r++) {
         for (int c = 0; c < ti.cols; c++)
-            chars[c] = mem_readb_phys(ti.base + (((r * ti.cols) + c) * 2));
+            chars[c] = peek_phys(ti.base + (((r * ti.cols) + c) * 2));
         sb_printf(&resp, r ? ",\"" : "\"");
         sb_hex(&resp, chars, ti.cols);
         sb_printf(&resp, "\"");
@@ -341,7 +375,7 @@ cmd_text(void)
     sb_printf(&resp, "],\"attrs\":[");
     for (int r = 0; r < ti.rows; r++) {
         for (int c = 0; c < ti.cols; c++)
-            attrs[c] = mem_readb_phys(ti.base + (((r * ti.cols) + c) * 2) + 1);
+            attrs[c] = peek_phys(ti.base + (((r * ti.cols) + c) * 2) + 1);
         sb_printf(&resp, r ? ",\"" : "\"");
         sb_hex(&resp, attrs, ti.cols);
         sb_printf(&resp, "\"");
@@ -587,7 +621,7 @@ begin_timed(int which, uint64_t ms)
 }
 
 static void
-end_timed(int matched)
+end_timed_stopped(int matched, const char *stopped)
 {
     cmd      = CMD_NONE;
     held     = cmd_was_held;
@@ -596,8 +630,16 @@ end_timed(int matched)
               (unsigned long long) emu_ms, (unsigned long long) frame_count, held ? "true" : "false");
     if (matched >= 0)
         sb_printf(&resp, ",\"matched\":%s", matched ? "true" : "false");
+    if (stopped)
+        sb_printf(&resp, ",\"stopped\":\"%s\"", stopped);
     sb_printf(&resp, "}");
     complete();
+}
+
+static void
+end_timed(int matched)
+{
+    end_timed_stopped(matched, NULL);
 }
 
 /* Returns 1 when the condition of a wait command is satisfied. */
@@ -609,7 +651,7 @@ wait_satisfied(void)
 
     if (cmd == CMD_WAIT_MEM) {
         for (int i = 0; i < wait_len; i++) {
-            if (mem_readb_phys(wait_addr + i) != wait_bytes[i])
+            if (peek_phys(wait_addr + i) != wait_bytes[i])
                 return 0;
         }
         return 1;
@@ -651,19 +693,32 @@ handle_request(char *line)
     }
 
     if (!strcmp(argv[0], "status")) {
-        int mode = mem_readb_phys(0x449);
+        int mode = peek_phys(0x449);
         resp.len = 0;
         sb_printf(&resp, "{\"ok\":true,\"protocol\":%d,\"version\":", AUTOMATION_PROTOCOL);
         sb_json_string(&resp, EMU_VERSION_FULL);
-        sb_printf(&resp, ",\"ms\":%llu,\"frames\":%llu,\"held\":%s,\"paused\":%s,\"w\":%d,\"h\":%d,\"bios_mode\":%d,\"quantum_ms\":%d}",
+        sb_printf(&resp, ",\"ms\":%llu,\"frames\":%llu,\"held\":%s,\"paused\":%s,\"ff\":%s,\"w\":%d,\"h\":%d,\"bios_mode\":%d,\"quantum_ms\":%d}",
                   (unsigned long long) emu_ms, (unsigned long long) frame_count, held ? "true" : "false",
-                  dopause ? "true" : "false", frame_w, frame_h, mode, force_10ms ? 10 : 1);
+                  dopause ? "true" : "false", fast_forward ? "true" : "false", frame_w, frame_h, mode, force_10ms ? 10 : 1);
     } else if (!strcmp(argv[0], "hold")) {
         held = 1;
         respond_ok_time();
     } else if (!strcmp(argv[0], "release")) {
         held = 0;
         respond_ok_time();
+    } else if (!strcmp(argv[0], "ff") && (argc <= 2)) {
+        /* ff [on|off]: fast forward, as the menu's; with no argument, what
+           it is. */
+        if ((argc == 2) && strcmp(argv[1], "on") && strcmp(argv[1], "off")) {
+            respond_error("ff takes on or off");
+        } else {
+            if (argc == 2)
+                plat_fast_forward(!strcmp(argv[1], "on"));
+            resp.len = 0;
+            sb_printf(&resp, "{\"ok\":true,\"ff\":%s,\"ms\":%llu,\"frames\":%llu,\"held\":%s}",
+                      fast_forward ? "true" : "false", (unsigned long long) emu_ms,
+                      (unsigned long long) frame_count, held ? "true" : "false");
+        }
     } else if (!strcmp(argv[0], "step") && (argc == 2)) {
         uint64_t ms = strtoull(argv[1], NULL, 0);
         if (!ms) {
@@ -773,7 +828,7 @@ handle_request(char *line)
         } else {
             buf = malloc(len);
             for (int i = 0; i < len; i++)
-                buf[i] = mem_readb_phys(addr + i);
+                buf[i] = peek_phys(addr + i);
             resp.len = 0;
             sb_printf(&resp, "{\"ok\":true,\"addr\":%u,\"data\":\"", addr);
             sb_hex(&resp, buf, len);
@@ -788,7 +843,7 @@ handle_request(char *line)
             respond_error("bad hex bytes");
         } else {
             for (int i = 0; i < len; i++)
-                mem_writeb_phys(addr + i, buf[i]);
+                poke_phys(addr + i, buf[i]);
             respond_ok_time();
         }
         free(buf);
@@ -840,7 +895,10 @@ handle_request(char *line)
                     cdrom[id].insert(cdrom[id].priv);
             }
             ui_sb_update_icon_state(SB_CDROM | id, cdrom[id].image_path[0] ? 0 : 1);
-            respond_ok_time();
+            if (cdrom[id].image_path[0])
+                respond_ok_time();
+            else
+                respond_error("cannot load the image; the log says why");
         } else
             respond_error("usage: cd load <drive> <path> | cd eject <drive>");
     } else if (!strcmp(argv[0], "reset") && (argc == 2) && !strcmp(argv[1], "hard")) {
@@ -849,10 +907,20 @@ handle_request(char *line)
     } else if (!strcmp(argv[0], "reset") && (argc == 2) && !strcmp(argv[1], "cad")) {
         pc_send_cad();
         respond_ok_time();
-    } else if (!strcmp(argv[0], "quit")) {
+    } else if (!strcmp(argv[0], "quit") && (argc == 1)) {
         respond_ok_time();
         complete();
         plat_power_off();
+        return;
+    } else if (!strcmp(argv[0], "quit") && (argc == 2) && !strcmp(argv[1], "soft")) {
+        respond_ok_time();
+        complete();
+        if (acpi_enabled)
+            acpi_pwrbut_pressed = 1;
+        else if (device_has_power_button())
+            device_power_button();
+        else
+            plat_power_off();
         return;
     } else {
         respond_error("unknown command or wrong arguments");
@@ -885,6 +953,18 @@ automation_quantum(void)
 {
     if (!enabled)
         return;
+
+#ifdef USE_GDBSTUB
+    /* While the GDB stub has the CPU stopped, no emulated time passes. A timed
+       command would never finish, so it ends here. */
+    static uint64_t last_tsc;
+    if ((gdbstub_step != GDBSTUB_EXEC) && (tsc == last_tsc)) {
+        if (cmd != CMD_NONE)
+            end_timed_stopped(((cmd == CMD_WAIT_TEXT) || (cmd == CMD_WAIT_MEM)) ? 0 : -1, "debugger");
+        return;
+    }
+    last_tsc = tsc;
+#endif
 
     emu_ms += force_10ms ? 10 : 1;
 
@@ -971,7 +1051,7 @@ automation_thread(UNUSED(void *priv))
         }
         automation_log("Automation: client connected\n");
         inlen  = 0;
-        authed = !use_tcp;
+        authed = !use_tcp || automation_insecure;
 
         while (enabled) {
             char *nl;
@@ -1005,6 +1085,11 @@ automation_thread(UNUSED(void *priv))
                         write_all(client_fd, no, strlen(no));
                         goto disconnect;
                     }
+                } else if (automation_insecure && !strncmp(inbuf, "auth ", 5)) {
+                    /* No token to check: accept the clients that send one anyway. */
+                    static const char ok[] = "{\"ok\":true,\"auth\":true}\n";
+                    if (!write_all(client_fd, ok, strlen(ok)))
+                        goto disconnect;
                 } else {
                     strncpy(req_line, inbuf, sizeof(req_line) - 1);
                     req_line[sizeof(req_line) - 1] = '\0';
@@ -1168,9 +1253,9 @@ listen_tcp(void)
         return 0;
     }
     if (!is_loopback(res->ai_addr))
-        pclog("Automation: WARNING: listening on %s; anyone who can reach it and has the token "
+        pclog("Automation: WARNING: listening on %s; anyone who can reach it%s "
               "fully controls this machine, including its memory\n",
-              tcp_host);
+              tcp_host, automation_insecure ? "" : " and has the token");
 
     listen_fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (listen_fd == SOCK_INVALID) {
@@ -1187,6 +1272,10 @@ listen_tcp(void)
     }
     freeaddrinfo(res);
 
+    if (automation_insecure) {
+        pclog("Automation: WARNING: insecure mode: TCP clients need no token\n");
+        return 1;
+    }
     if (!make_token() || !write_token_file()) {
         pclog("Automation: cannot create the token file %s\n", automation_token_file);
         sock_close(listen_fd);
@@ -1264,7 +1353,10 @@ automation_init(void)
     enabled     = 1;
 
     listen_thread = thread_create_named(automation_thread, NULL, "automation");
-    if (use_tcp)
+    if (use_tcp && automation_insecure)
+        pclog("Automation: listening on tcp:%s:%s (insecure: no token)%s\n", tcp_host, tcp_port,
+              held ? " (held)" : "");
+    else if (use_tcp)
         pclog("Automation: listening on tcp:%s:%s (token %.8s..., in %s)%s\n", tcp_host, tcp_port, token,
               automation_token_file, held ? " (held)" : "");
     else
