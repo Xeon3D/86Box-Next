@@ -124,6 +124,7 @@ option(SOUNDCANVAS  "Roland Sound Canvas (88emu)"                               
 option(VNC          "VNC renderer"                                               OFF)
 option(MINITRACE    "Enable Chrome tracing using the modified minitrace library" OFF)
 option(GDBSTUB      "Enable GDB stub server for debugging"                       OFF)
+option(AUTOMATION   "Enable the automation control socket"                       OFF)
 option(DEV_BRANCH   "Development branch"                                         OFF)
 option(DISCORD      "Discord Rich Presence support"                              ON)
 option(DEBUGREGS486 "Enable debug register opeartion on 486+ CPUs"               OFF)
@@ -176,6 +177,10 @@ endif()
 if(WIN32 AND GDBSTUB)
     # Force console subsystem when building with GDBSTUB
     set(CMAKE_WIN32_EXECUTABLE OFF CACHE BOOL "Build a Windows GUI executable" FORCE)
+endif()
+
+if(WIN32 AND NOT CMAKE_WIN32_EXECUTABLE)
+    add_compile_definitions(WIN_CONSOLE_LOG=1)
 endif()
 
 if(GDBSTUB)

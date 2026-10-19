@@ -49,6 +49,9 @@ int mouse_type = 0;
 int tablet_type = 0;
 int mouse_input_mode;
 int mouse_timed = 1;
+/* Set by the automation socket: let injected input reach the emulated mouse
+   without the host UI capturing the pointer. */
+int mouse_automation          = 0;
 int mouse_tablet_in_proximity = 0;
 int tablet_tool_type          = 1; /* 0 = Puck/Cursor, 1 = Pen */
 
@@ -194,7 +197,7 @@ mouse_both_enabled(void)
 int
 mouse_live(void)
 {
-    return mouse_capture || guest_tools_pointer_active();
+    return mouse_capture || mouse_automation || guest_tools_pointer_active();
 }
 
 void
